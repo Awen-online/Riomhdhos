@@ -1,5 +1,4 @@
 #N canvas 40 40 1000 640 12;
-#X text 20 10 LCD: line1 = world (r keysinst) + play/silent glyph top-right \; line2 = subtitle. Play state read live off [r~ amp].;
 #X obj 40 60 r keysinst;
 #X obj 40 90 t b f;
 #X obj 300 60 r~ amp;
@@ -28,6 +27,7 @@
 #X obj 700 120 t b b b;
 #X msg 700 160 240 \, 0 \, 32 \, 107 \, 127 \, 66 \, 2 \, 2 \, 64 \, 106 \, 33 \, 247;
 #X msg 860 120 1;
+#X text 20 10 LCD: line1 = world (r keysinst) + play/silent glyph top-right \; line2 = subtitle. Play state read live off [r~ amp].;
 #X connect 0 0 1 0;
 #X connect 1 0 10 0;
 #X connect 1 1 8 1;
