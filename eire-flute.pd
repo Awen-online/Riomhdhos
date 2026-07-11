@@ -21,6 +21,10 @@
 #X obj 360 340 *~;
 #X obj 360 380 *~;
 #X obj 360 420 throw~ sfx;
+#X obj 40 520 f;
+#X obj 40 550 * 1;
+#X obj 40 580 r rootratio;
+#X obj 40 610 t b f;
 #X connect 1 0 2 0;
 #X connect 2 0 3 0;
 #X connect 3 0 4 0;
@@ -29,7 +33,7 @@
 #X connect 9 0 10 0;
 #X connect 10 0 11 0;
 #X connect 10 1 13 1;
-#X connect 11 0 12 0;
+#X connect 11 0 22 0;
 #X connect 12 0 13 0;
 #X connect 13 0 14 0;
 #X connect 14 0 18 0;
@@ -41,3 +45,8 @@
 #X connect 19 0 20 0;
 #X connect 5 0 20 1;
 #X connect 20 0 21 0;
+#X connect 22 0 23 0;
+#X connect 23 0 12 0;
+#X connect 24 0 25 0;
+#X connect 25 1 23 1;
+#X connect 25 0 22 0;
