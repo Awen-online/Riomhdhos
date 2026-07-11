@@ -1,0 +1,4 @@
+# Keep Unix line endings for anything that runs on the Pi
+*.sh       text eol=lf
+*.service  text eol=lf
+*.pd       text eol=lf
