@@ -1,9 +1,11 @@
 # Sample/IR libraries — large binaries tracked separately (see README)
 folk-samples/
+samples/
 sfz/
 *.wav
 *.sf2
 *.sf3
+*.zip
 
 # Runtime logs / bench output
 *_log.txt

@@ -10,7 +10,7 @@ SupplementaryGroups=audio
 Environment=HOME=/home/ian
 WorkingDirectory=/home/ian
 ExecStartPre=/bin/sleep 8
-ExecStart=/home/ian/start-rig.sh
+ExecStart=/home/ian/Riomhdhos/start-rig.sh
 Restart=always
 RestartSec=3
 
