@@ -5,6 +5,21 @@ Pure Data synthesis engine running **headless on a Raspberry Pi 3** ("folkpi"),
 played from an **Arturia MiniLab 3**. Evolving drone beds + triggered
 SFX/foley, with dynamics driven by the controller's faders, knobs and pedal.
 
+## The name
+
+**Ríomhdhos** *(Irish)* — pronounced roughly **"REEV-ghuss"** (IPA ≈ /ˌɾˠiːwˈɣɔsˠ/;
+the lenited *dh* is a soft guttural, and pronunciation varies by dialect).
+
+A coined compound of two Irish words:
+
+- **ríomh-** — *electronic / digital / computer-* (from *ríomh*, "to count, compute, reckon"; cf. *ríomhaire* = computer, *ríomhphost* = email)
+- **dos** — the *drone* / bass-pipe of the bagpipes (also "bush, tuft"; *dos mór* = greater drone, *dos beag* = lesser drone)
+
+In the compound the second element lenites (*dos → dhos*), so **Ríomhdhos**
+literally means an **"electronic drone"** — a fitting name for a digital drone
+synthesizer with the uilleann pipe's drone in its DNA.
+Meanings per Ó Dónaill (teanglann.ie).
+
 ## The four worlds
 
 Selected live via the MiniLab's browse encoder (name shown on the MiniLab LCD).
