@@ -19,9 +19,9 @@
 #X obj 360 300 *~;
 #X obj 360 340 *~;
 #X obj 360 380 throw~ sfx;
-#X obj 40 520 r rootratio;
-#X obj 40 550 * 330;
-#X obj 40 580 * 495;
+#X obj 40 520 r basefreq;
+#X obj 40 550 * 4.521;
+#X obj 40 580 * 6.781;
 #X connect 1 0 2 0;
 #X connect 2 0 3 0;
 #X connect 3 0 4 0;
