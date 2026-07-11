@@ -1,0 +1,15 @@
+#N canvas 30 30 600 320 12;
+#X text 20 10 Global pitch (Model A): the keys set rootratio \, the transpose factor that all sample loopers follow. Defaults to 1 (natural pitch) on load.;
+#X obj 30 70 notein 1;
+#X obj 30 100 stripnote;
+#X obj 30 140 expr pow(2 \, ($f1-60)/12.0);
+#X obj 30 180 s rootratio;
+#X obj 280 70 loadbang;
+#X msg 280 100 1;
+#X obj 280 140 s rootratio;
+#X connect 1 0 2 0;
+#X connect 1 1 2 1;
+#X connect 2 0 3 0;
+#X connect 3 0 4 0;
+#X connect 5 0 6 0;
+#X connect 6 0 7 0;

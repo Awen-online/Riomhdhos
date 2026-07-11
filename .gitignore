@@ -1,0 +1,14 @@
+# Sample/IR libraries — large binaries tracked separately (see README)
+folk-samples/
+sfz/
+*.wav
+*.sf2
+*.sf3
+
+# Runtime logs / bench output
+*_log.txt
+*_out.txt
+
+# OS cruft
+.DS_Store
+Thumbs.db
