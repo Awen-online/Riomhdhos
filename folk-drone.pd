@@ -164,6 +164,7 @@
 #X obj 980 910 s mcut;
 #X obj 30 895 lop~ 16000;
 #X obj 220 895 r mcut;
+#X obj 1000 950 s pedalstate;
 #X connect 0 0 1 0;
 #X connect 0 1 1 1;
 #X connect 1 0 2 0;
@@ -322,3 +323,4 @@
 #X connect 26 2 146 0;
 #X connect 26 3 147 0;
 #X connect 26 4 148 0;
+#X connect 8 0 165 0;
