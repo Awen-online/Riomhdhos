@@ -15,4 +15,4 @@ IDX=$(timeout 4 pd -nogui -alsa -listdev 2>&1 \
 logger -t folkdrone "Pd audio output device index = $IDX (patches from $DIR)"
 exec /usr/bin/pd -nogui -alsa -noadc -audiooutdev "$IDX" -channels 2 -r 44100 -audiobuf 60 \
   -midiindev 1 -midioutdev 1 \
-  "$DIR"/folk-drone.pd "$DIR"/minilab-map.pd "$DIR"/combo-synth.pd "$DIR"/combo-norse.pd "$DIR"/combo-eire.pd "$DIR"/combo-deep.pd "$DIR"/cairn-horn.pd "$DIR"/eire-flute.pd "$DIR"/deep-groan.pd "$DIR"/cairn-lyre.pd "$DIR"/cairn-air.pd "$DIR"/eire-harp.pd "$DIR"/eire-air.pd "$DIR"/deep-wind.pd "$DIR"/deep-rumble.pd "$DIR"/rig-nav.pd
+  "$DIR"/folk-drone.pd "$DIR"/minilab-map.pd "$DIR"/combo-synth.pd "$DIR"/combo-norse.pd "$DIR"/combo-eire.pd "$DIR"/combo-deep.pd "$DIR"/cairn-horn.pd "$DIR"/eire-flute.pd "$DIR"/deep-groan.pd "$DIR"/cairn-lyre.pd "$DIR"/cairn-air.pd "$DIR"/eire-harp.pd "$DIR"/eire-air.pd "$DIR"/deep-wind.pd "$DIR"/deep-rumble.pd "$DIR"/rig-nav.pd "$DIR"/lcd.pd
