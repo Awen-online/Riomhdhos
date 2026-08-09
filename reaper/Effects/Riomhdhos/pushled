@@ -119,11 +119,13 @@ function redraw(m) local(p, n, rootpc)(
   // upper row CC102-109 = ARM, lower row CC20-27 = MUTE, one pair per column
   // six channels: COSMOS CAIRN EIRE DEEP Zoom[1] Zoom[2]. Columns 7-8 stay dark
   // rather than lit-but-meaningless.
-  // UPPER row (CC102-109) = MUTE, LOWER row (CC20-27) = ARM.
+  // UPPER row (CC102-109) = ARM (these LEDs are red), LOWER row (CC20-27) = MUTE
+  // (white/grey). The colours are fixed by the hardware; only brightness is ours.
+  // Both are binary - dark unless the state is actually on.
   p = 0;
   loop(6,
-    midisend(0, 0xB0, 102 + p, (slider13 & (2^p)) ? slider14 : slider15);   // muted
-    midisend(0, 0xB0,  20 + p, (slider12 & (2^p)) ? slider14 : slider15);   // armed
+    midisend(0, 0xB0, 102 + p, (slider12 & (2^p)) ? slider14 : slider15);   // armed
+    midisend(0, 0xB0,  20 + p, (slider13 & (2^p)) ? slider14 : slider15);   // muted
     p += 1;
   );
 

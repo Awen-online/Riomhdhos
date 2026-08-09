@@ -126,7 +126,9 @@ local function findPush()
 end
 
 -- act on one button press.
--- PHYSICAL ROWS: row 0 = upper (CC102-109) = MUTE, row 1 = lower (CC20-27) = ARM.
+-- PHYSICAL ROWS: row 0 = upper (CC102-109) = ARM, row 1 = lower (CC20-27) = MUTE.
+-- The Push's button LEDs are fixed colours by position: the upper row is red, the
+-- lower row white/grey. Arm on red, mute on white, which is what those rows look like.
 local function handleButton(code)
   if code < 1 then return end
   local idx  = code - 1
@@ -137,7 +139,7 @@ local function handleButton(code)
   local tr = trackByFragment(name)
   if not tr then return end
 
-  if row == 1 then
+  if row == 0 then
     local now = reaper.GetMediaTrackInfo_Value(tr, "I_RECARM")
     reaper.SetMediaTrackInfo_Value(tr, "I_RECARM", now > 0.5 and 0 or 1)
   elseif MOOD_COLUMNS[col] then
