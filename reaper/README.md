@@ -46,6 +46,36 @@ all four moods. Per-mood control has to go through a JSFX (audio) or the Lua bri
 note-on on channel 1, and the `pushbrain` track's output feeds the control track — so
 lighting from there would play notes on COSMOS. Two tracks, two destinations.
 
+## Push layout
+
+```
+row 7      mood select x4                      (rest dark)
+row 6      dark
+rows 0-5   col 0   layer 1-4 on/off
+           col 1   dark, reserved
+           cols 2-7  6x6 scale-locked note grid
+buttons    6 columns: COSMOS CAIRN EIRE DEEP Zoom[1] Zoom[2]
+           upper CC102-109 = MUTE, lower CC20-27 = ARM, fully lit or fully dark
+encoders   CC71-78 -> the MiniLab's own knob CCs;  CC79 (9th) -> master volume
+octave     CC54 down / CC55 up, published to gmem so the LED colouring follows
+```
+
+⚠️ The Push 1 display is **four separate 17-character segments**, not one 68-character
+strip. Breaks fall at 17, 34 and 51. Column offsets are 0, 9 | 17, 26 | 34, 43 | 51, 60
+so no label straddles a break — laying them out every 8 characters renders `REVERB` as
+`R EVERB`.
+
+⚠️ Muting a mood does **not** use the track mute: `mood_mute` owns that and re-asserts
+the active mood every 30 ms. Moods mute through a slider on their layer mixer, which is
+the one thing the Lua bridge can set — it can neither read nor write gmem.
+
+## Mood selection needs no Kontakt setup
+
+Each mood receives only its own MIDI channel, but the send **remaps the channel to 1 on
+delivery** (`I_MIDIFLAGS = channel + 32`). Kontakt instruments default to channel 1, so
+every mood plays with **no per-instrument configuration at all**, and any instrument
+loaded later works immediately.
+
 ## gmem map
 
 ```
@@ -55,5 +85,7 @@ lighting from there would play notes on COSMOS. Two tracks, two destinations.
 64 + m*16 + 0..3    faders 1-4      (value+1, 0 = never touched)
 64 + m*16 + 4..11   knobs K1-K8     (value+1, 0 = never touched)
 64 + m*16 + 12..15  layer 1-4 muted (1 = silent)
+62          octave offset + 1   (pushbrain -> pushled)
+63          active mood + 1
 1000+       MIDI spy log
 ```

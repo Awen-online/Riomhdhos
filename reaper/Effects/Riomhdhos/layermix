@@ -47,6 +47,11 @@ slider10:0<0,3,1{COSMOS,THE CAIRN,EIRE,THE DEEP}>Which mood is this track?
 // give a way out without the Push.
 slider11:0<0,15,1>-layers muted (bitmask, read-only)
 slider12:0<0,1,1{idle,CLEAR ALL LAYER MUTES}>Unmute all layers
+// Muting a mood from the Push cannot use the TRACK mute: Riomhdhos_mood_mute.lua owns
+// that and re-asserts the active mood every 30 ms, so it would be undone within a
+// frame. It also cannot use the gmem layer mutes, because Lua can neither read nor
+// write gmem. A plain slider is the one thing the bridge CAN set.
+slider13:0<0,1,1{audible,MUTED}>Mood mute (from Push)
 
 @init
 t1 = t2 = t3 = t4 = 1;
@@ -160,6 +165,8 @@ slider8 > 0 ? (
   duckg = dtarget + (duckg - dtarget) * ducksm;
   mixl *= duckg; mixr *= duckg;
 );
+
+slider13 ? ( mixl = 0; mixr = 0; );
 
 spl0 = mixl; spl1 = mixr;
 spl2 = spl3 = spl4 = spl5 = spl6 = spl7 = 0;

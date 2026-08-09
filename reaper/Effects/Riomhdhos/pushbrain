@@ -15,9 +15,11 @@ desc:Riomhdhos Push brain (mood select + scale-locked grid)
 //
 // LAYOUT
 //   top row, left 4 (92-95)   mood select
-//   left column, rows 0-3     layer 1-4 on/off  (notes 36, 44, 52, 60)
-//   left column, rows 4-6     spare             (notes 68, 76, 84)
-//   columns 1-7, rows 0-6     scale-locked notes
+//   column 0, rows 0-3        layer 1-4 on/off  (notes 36, 44, 52, 60)
+//   column 0, rows 4-5        spare
+//   column 1, all rows        spare - reserved for mixer functions
+//   row 6 (notes 84-91)       spare
+//   columns 2-7, rows 0-5     scale-locked notes  (6 x 6)
 //
 // Layer on/off is published to gmem so the layer mixer can act on it and the LED
 // plugin can show it. It is a separate region from the fader positions, so a pad
@@ -29,11 +31,28 @@ options:gmem=riomhdhos
 slider1:0<0,11,1{C,C#,D,D#,E,F,F#,G,G#,A,A#,B}>Root
 slider2:0<0,3,1{minor (aeolian),dorian,major,minor pentatonic}>Scale
 slider3:3<1,8,1>Row step (scale degrees per row)
-slider4:2<0,5,1>Octave offset
+slider4:2<0,7,1>Octave offset  (CC54 down / CC55 up)
 slider5:1<0,1,1{off,on}>Grid sends notes
 // COMPILE CANARY - see the note in @init. Read this from the console to tell a
 // running plugin from one that merely loaded its sliders.
 slider6:0<0,99,1>-alive
+// Button presses are published for Riomhdhos_bridge.lua: a JSFX cannot set another
+// track's arm or mute, so the press has to travel out to Lua and act there.
+//   slider7 = 1 + row*8 + col   (row 0 = upper CC102-109 = ARM,
+//                                row 1 = lower CC20-27   = MUTE)
+//   slider8 = press counter - the bridge acts when this changes
+slider7:0<0,17,1>-last button
+slider8:0<0,9999,1>-button presses
+// The 9th knob (CC79, the master encoder at the right) has no display column above
+// it, so it gets no label - but it is the best-placed control on the surface. Read by
+// Riomhdhos_bridge.lua and applied to the master track. Starts at 127 = unity so the
+// first turn goes DOWN from where the master already is, rather than jumping.
+slider9:127<0,127,1>-master encoder
+// Octave Down = CC54, Octave Up = CC55. The octave is published to gmem[62] so
+// `pushled` follows it directly - previously both plugins carried their own copy of
+// the octave and had to be kept matching by hand, which meant the lit "root" pads
+// could quietly disagree with the notes actually played.
+//   gmem[62] = octave offset + 1   (+1 so 0 still means "nothing published yet")
 
 @init
 // A JSFX with a compile error still reports every slider through the API, so
@@ -46,6 +65,8 @@ enc = 5400;                     // accumulated absolute value per encoder (they 
 sc = 5200;                      // scale degree table
 i = 0; loop(128, padnote[i] = -1; i += 1; );
 i = 0; loop(8, enc[i] = 64; i += 1; );   // start centred
+menc = 127;                              // master encoder starts at unity
+gmem[62] = slider4 + 1;
 
 function loadscale() local(b)(
   b = slider2;
@@ -56,10 +77,11 @@ function loadscale() local(b)(
 );
 
 // grid pad (36..91) -> a note in the chosen scale
-// column 0 is reserved for layer toggles, so the playable grid is columns 1-7
+// columns 0 and 1 are reserved for functions, and row 6 is spare, so the playable
+// grid is columns 2-7 across rows 0-5
 function gridnote(p) local(idx, row, col, deg, oct)(
   idx = p - 36; row = (idx / 8) | 0; col = idx - row*8;
-  deg = row * slider3 + (col - 1);
+  deg = row * slider3 + (col - 2);
   oct = (deg / sclen) | 0;
   12 * (slider4 + oct) + slider1 + sc[deg - oct*sclen];
 );
@@ -68,6 +90,7 @@ loadscale();
 
 @slider
 loadscale();
+gmem[62] = slider4 + 1;
 
 @block
 while (midirecv(mpos, m1, m2, m3)) (
@@ -88,11 +111,12 @@ while (midirecv(mpos, m1, m2, m3)) (
         gmem[gi] = gmem[gi] > 0.5 ? 0 : 1;
       );
     ) :
-    // rest of column 0 is spare - consumed so it cannot play a stray note.
+    // columns 0-1 and row 6 are spare - consumed so they cannot play stray notes.
     // NB: an EMPTY block "( )" is a compile error in EEL2 and silently stops the
     // whole plugin running while still showing its sliders - needs a statement.
-    ((m2 - 36) % 8 == 0) ? ( spare = 1; ) :
-    (m2 >= 36 && m2 <= 91) ? (
+    (((m2 - 36) % 8) <= 1) ? ( spare = 1; ) :
+    (m2 >= 84) ? ( spare = 1; ) :
+    (m2 >= 36 && m2 <= 83) ? (
       slider5 ? (
         st == 0x90 && m3 > 0 ? (
           n = gridnote(m2);
@@ -110,9 +134,30 @@ while (midirecv(mpos, m1, m2, m3)) (
   ) :
 
   st == 0xB0 ? (
+    // the two small button rows: one pair per column, published for the Lua bridge
+    (m2 >= 102 && m2 <= 109) ? (
+      m3 > 0 ? ( slider7 = 1 + (m2 - 102); slider8 += 1;
+                 sliderchange(slider7); sliderchange(slider8); );
+    ) :
+    (m2 >= 20 && m2 <= 27) ? (
+      m3 > 0 ? ( slider7 = 1 + 8 + (m2 - 20); slider8 += 1;
+                 sliderchange(slider7); sliderchange(slider8); );
+    ) :
     // Push encoders are RELATIVE: 1..63 = clockwise, 127..65 = anticlockwise.
     // Accumulate to an absolute 0-127 and emit the MiniLab's own knob CC, so a Push
     // encoder and the matching MiniLab knob are the same control.
+    (m2 == 54 || m2 == 55) ? (
+      m3 > 0 ? (
+        slider4 = max(0, min(7, slider4 + (m2 == 55 ? 1 : -1)));
+        sliderchange(slider4);
+        gmem[62] = slider4 + 1;
+      );
+    ) :
+    m2 == 79 ? (
+      d = m3 < 64 ? m3 : m3 - 128;
+      menc = max(0, min(127, menc + d));
+      slider9 = menc; sliderchange(slider9);
+    ) :
     (m2 >= 71 && m2 <= 78) ? (
       e = m2 - 71;
       d = m3 < 64 ? m3 : m3 - 128;

@@ -23,7 +23,9 @@ options:gmem=riomhdhos
 slider1:0<0,11,1{C,C#,D,D#,E,F,F#,G,G#,A,A#,B}>Root (match pushbrain)
 slider2:0<0,3,1{minor (aeolian),dorian,major,minor pentatonic}>Scale (match pushbrain)
 slider3:3<1,8,1>Row step (match pushbrain)
-slider4:2<0,5,1>Octave offset (match pushbrain)
+// Octave now arrives from pushbrain via gmem[62] - no longer something to keep
+// matching by hand. This slider is only the fallback if nothing has published yet.
+slider4:2<0,7,1>Octave offset (fallback; gmem wins)
 slider5:126<0,127,1>Colour: active mood
 slider6:8<0,127,1>Colour: inactive mood
 slider7:20<0,127,1>Colour: root note
@@ -31,10 +33,19 @@ slider8:4<0,127,1>Colour: in-scale note
 slider9:0<0,1,1{idle,REDRAW}>Force redraw
 slider10:1<0,127,1>Colour: layer OFF
 slider11:64<0,127,1>Colour: layer ON
+// Written by Riomhdhos_bridge.lua - one bit per column, so the small buttons show
+// real track state rather than just acknowledging a press.
+slider12:0<0,255,1>-armed mask
+slider13:0<0,255,1>-muted mask
+// Arm/mute buttons read as binary state, so they are fully lit or fully dark - not
+// bright-vs-dim. A dim button still reads as "this does something", which is exactly
+// the ambiguity that made the panel hard to interpret.
+slider14:127<0,127,1>Button colour: ON
+slider15:0<0,127,1>Button colour: OFF
 
 @init
 buf = 90000; txt = 91000; sc = 92000;
-lastmood = -1; lastcfg = -1; dirty = 1;
+lastmood = -1; lastcfg = -1; dirty = 1; curoct = 2;
 
 function loadscale() local(b)(
   b = slider2;
@@ -46,9 +57,9 @@ function loadscale() local(b)(
 
 function gridnote(p) local(idx, row, col, deg, oct)(
   idx = p - 36; row = (idx / 8) | 0; col = idx - row*8;
-  deg = row * slider3 + (col - 1);
+  deg = row * slider3 + (col - 2);
   oct = (deg / sclen) | 0;
-  12 * (slider4 + oct) + slider1 + sc[deg - oct*sclen];
+  12 * (curoct + oct) + slider1 + sc[deg - oct*sclen];
 );
 
 function lcdsend(ln, n) local(bp, i)(
@@ -71,39 +82,63 @@ function moodtxt(m) local(n)(
   n;
 );
 
-// the eight encoder labels, 8 characters per column - the same trick Live uses to make
-// Push legible: whatever is under your finger is named directly above it
+// The Push 1 display is FOUR separate 17-character segments, not one 68-character
+// strip. Breaks fall at 17, 34 and 51. Laying columns out every 8 characters puts
+// REVERB across the first break ("R EVERB") and KNOB5 across the second ("KN OB5").
+//
+// So: two columns per segment, 8 characters each, with the spare character used as
+// the gap between them. Column offsets 0, 9 | 17, 26 | 34, 43 | 51, 60 - no label
+// ever crosses a physical break.
+//
+// NOTE: there are NINE knobs in that row - eight above the display plus a master
+// encoder (CC79) at the right. Only the eight display encoders get labels; the
+// master is deliberately unlabelled because it has no column above it.
+function colof(c)(
+  c==0?0 : c==1?9 : c==2?17 : c==3?26 : c==4?34 : c==5?43 : c==6?51 : 60;
+);
 function enclabels() local(o)(
   clr(68);
-  o=0;  txt[o]=70;txt[o+1]=73;txt[o+2]=76;txt[o+3]=84;txt[o+4]=69;txt[o+5]=82;      // FILTER
-  o=8;  txt[o]=84;txt[o+1]=65;txt[o+2]=80;txt[o+3]=69;                              // TAPE
-  o=16; txt[o]=82;txt[o+1]=69;txt[o+2]=86;txt[o+3]=69;txt[o+4]=82;txt[o+5]=66;      // REVERB
-  o=24; txt[o]=75;txt[o+1]=78;txt[o+2]=79;txt[o+3]=66;txt[o+4]=52;                  // KNOB4
-  o=32; txt[o]=75;txt[o+1]=78;txt[o+2]=79;txt[o+3]=66;txt[o+4]=53;                  // KNOB5
-  o=40; txt[o]=75;txt[o+1]=78;txt[o+2]=79;txt[o+3]=66;txt[o+4]=54;                  // KNOB6
-  o=48; txt[o]=75;txt[o+1]=78;txt[o+2]=79;txt[o+3]=66;txt[o+4]=55;                  // KNOB7
-  o=56; txt[o]=86;txt[o+1]=79;txt[o+2]=76;txt[o+3]=85;txt[o+4]=77;txt[o+5]=69;      // VOLUME
+  o=colof(0); txt[o]=70;txt[o+1]=73;txt[o+2]=76;txt[o+3]=84;txt[o+4]=69;txt[o+5]=82;   // FILTER
+  o=colof(1); txt[o]=84;txt[o+1]=65;txt[o+2]=80;txt[o+3]=69;                           // TAPE
+  o=colof(2); txt[o]=82;txt[o+1]=69;txt[o+2]=86;txt[o+3]=69;txt[o+4]=82;txt[o+5]=66;   // REVERB
+  o=colof(3); txt[o]=75;txt[o+1]=78;txt[o+2]=79;txt[o+3]=66;txt[o+4]=52;               // KNOB4
+  o=colof(4); txt[o]=75;txt[o+1]=78;txt[o+2]=79;txt[o+3]=66;txt[o+4]=53;               // KNOB5
+  o=colof(5); txt[o]=75;txt[o+1]=78;txt[o+2]=79;txt[o+3]=66;txt[o+4]=54;               // KNOB6
+  o=colof(6); txt[o]=75;txt[o+1]=78;txt[o+2]=79;txt[o+3]=66;txt[o+4]=55;               // KNOB7
+  o=colof(7); txt[o]=86;txt[o+1]=79;txt[o+2]=76;txt[o+3]=85;txt[o+4]=77;txt[o+5]=69;   // VOLUME
 );
 
 function redraw(m) local(p, n, rootpc)(
   loadscale();
   rootpc = slider1;
 
-  // Blank every button first. Nothing here uses them yet, and leaving stray ones lit
-  // makes the panel look like it means something it doesn't - Push's printed labels
-  // invite you to read a lit button as an active function.
+  // Blank every button, then light only the two rows that mean something. A lit
+  // button next to Push's printed labels reads as an active function, so anything
+  // unassigned must stay dark.
   p = 0; loop(120, midisend(0, 0xB0, p, 0); p += 1; );
+  // upper row CC102-109 = ARM, lower row CC20-27 = MUTE, one pair per column
+  // six channels: COSMOS CAIRN EIRE DEEP Zoom[1] Zoom[2]. Columns 7-8 stay dark
+  // rather than lit-but-meaningless.
+  // UPPER row (CC102-109) = MUTE, LOWER row (CC20-27) = ARM.
+  p = 0;
+  loop(6,
+    midisend(0, 0xB0, 102 + p, (slider13 & (2^p)) ? slider14 : slider15);   // muted
+    midisend(0, 0xB0,  20 + p, (slider12 & (2^p)) ? slider14 : slider15);   // armed
+    p += 1;
+  );
 
   // --- pads -------------------------------------------------------------------
   // column 0 = layer toggles (bottom four) then spare; columns 1-7 = the note grid
+  // column 0 rows 0-3 = layer toggles; columns 0-1 otherwise and row 6 are dark;
+  // columns 2-7 across rows 0-5 are the 6x6 note grid
   p = 36;
   loop(56,
-    ((p - 36) % 8) == 0 ? (
-      (p == 36 || p == 44 || p == 52 || p == 60) ? (
-        li = p == 36 ? 0 : p == 44 ? 1 : p == 52 ? 2 : 3;
-        midisend(0, 0x90, p, gmem[64 + m*16 + 12 + li] > 0.5 ? slider10 : slider11);
-      ) : midisend(0, 0x90, p, 0);
-    ) : (
+    (p == 36 || p == 44 || p == 52 || p == 60) ? (
+      li = p == 36 ? 0 : p == 44 ? 1 : p == 52 ? 2 : 3;
+      midisend(0, 0x90, p, gmem[64 + m*16 + 12 + li] > 0.5 ? slider10 : slider11);
+    ) :
+    ((((p - 36) % 8) <= 1) || p >= 84) ? midisend(0, 0x90, p, 0) :
+    (
       n = gridnote(p);
       midisend(0, 0x90, p, ((n % 12) == rootpc) ? slider7 : slider8);
     );
@@ -130,10 +165,13 @@ dirty = 1;
 @block
 mm = gmem[63] - 1;
 mm < 0 ? mm = 0;
+ov = gmem[62];
+curoct = ov > 0 ? ov - 1 : slider4;
 cfg = slider1 + slider2*16 + slider3*64 + slider4*512
     + slider5*4096 + slider6*524288
     + gmem[64+mm*16+12]*1 + gmem[64+mm*16+13]*2
-    + gmem[64+mm*16+14]*4 + gmem[64+mm*16+15]*8;
+    + gmem[64+mm*16+14]*4 + gmem[64+mm*16+15]*8
+    + slider12*1048576 + slider13*268435456 + curoct*4096;
 (mm != lastmood || cfg != lastcfg || dirty || slider9) ? (
   redraw(mm);
   lastmood = mm; lastcfg = cfg; dirty = 0;

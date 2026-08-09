@@ -20,10 +20,20 @@
 local KNOB_PARAM = { [2] = 1, [3] = 2, [4] = 3, [5] = 4 }  -- brain slider -> Kontakt param
 
 local MOOD_KEYS  = { [0]="COSMOS", [1]="CAIRN", [2]="IRE", [3]="DEEP" }
+
+-- Push column -> track. Columns 5 and 6 are the live inputs, which is the only place
+-- ARM means anything. MUTE is deliberately NOT offered on the mood tracks:
+-- Riomhdhos_mood_mute.lua owns those and re-asserts the active mood every 30 ms, so a
+-- Push mute there would be silently undone within a frame - worse than not having it.
+local COLUMN_TRACK = { "COSMOS", "CAIRN", "IRE", "DEEP", "ZOOM[1]", "ZOOM[2]" }
+local MOOD_COLUMNS = { [1]=true, [2]=true, [3]=true, [4]=true }
 local POLL       = 0.03
 local RESCAN     = 1.0
 ------------------------------------------------------------------
 
+local pushTr, pushFx, btnParam, cntParam, mstParam
+local lastMaster = -1
+local lastBtnCount = -1
 local ctrlTr, ctrlFx, moodParam
 local sliderParam = {}     -- brain slider index -> its FX param index
 local moodTracks  = {}
@@ -85,6 +95,105 @@ local function resolved()
   return ctrlTr ~= nil and reaper.ValidatePtr2(0, ctrlTr, "MediaTrack*")
 end
 
+local function trackByFragment(frag)
+  local want = norm(frag)
+  for i = 0, reaper.CountTracks(0) - 1 do
+    local tr = reaper.GetTrack(0, i)
+    if norm(trackName(tr)):find(want, 1, true) then return tr end
+  end
+end
+
+-- find the Push brain and the two sliders it publishes button presses on
+local function findPush()
+  for i = 0, reaper.CountTracks(0) - 1 do
+    local tr = reaper.GetTrack(0, i)
+    for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
+      local ok, n = reaper.TrackFX_GetFXName(tr, fx, "")
+      if ok and norm(n):find("PUSHBRAIN") then
+        local b, c
+        for pp = 0, reaper.TrackFX_GetNumParams(tr, fx) - 1 do
+          local ok2, pn = reaper.TrackFX_GetParamName(tr, fx, pp, "")
+          if ok2 then
+            if norm(pn) == "LASTBUTTON" then b = pp end
+            if norm(pn) == "BUTTONPRESSES" then c = pp end
+            if norm(pn) == "MASTERENCODER" then mstParam = pp end
+          end
+        end
+        if b and c then return tr, fx, b, c end
+      end
+    end
+  end
+end
+
+-- act on one button press.
+-- PHYSICAL ROWS: row 0 = upper (CC102-109) = MUTE, row 1 = lower (CC20-27) = ARM.
+local function handleButton(code)
+  if code < 1 then return end
+  local idx  = code - 1
+  local row  = math.floor(idx / 8)
+  local col  = (idx % 8) + 1
+  local name = COLUMN_TRACK[col]
+  if not name then return end
+  local tr = trackByFragment(name)
+  if not tr then return end
+
+  if row == 1 then
+    local now = reaper.GetMediaTrackInfo_Value(tr, "I_RECARM")
+    reaper.SetMediaTrackInfo_Value(tr, "I_RECARM", now > 0.5 and 0 or 1)
+  elseif MOOD_COLUMNS[col] then
+    -- a mood is muted through its layer mixer, NOT the track mute: mood_mute owns
+    -- B_MUTE and re-asserts the active mood every 30 ms, so a track mute here would
+    -- be undone within a frame.
+    for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
+      local ok, n = reaper.TrackFX_GetFXName(tr, fx, "")
+      if ok and norm(n):find("LAYERMIXER") then
+        local np = reaper.TrackFX_GetNumParams(tr, fx)
+        if np > 12 then
+          local now = reaper.TrackFX_GetParam(tr, fx, 12)
+          reaper.TrackFX_SetParam(tr, fx, 12, now > 0.5 and 0 or 1)
+        end
+      end
+    end
+  else
+    local now = reaper.GetMediaTrackInfo_Value(tr, "B_MUTE")
+    reaper.SetMediaTrackInfo_Value(tr, "B_MUTE", now > 0.5 and 0 or 1)
+  end
+end
+
+-- publish arm/mute state so pushled can light the buttons
+local function publishStates()
+  local led, ledFx
+  for i = 0, reaper.CountTracks(0) - 1 do
+    local tr = reaper.GetTrack(0, i)
+    for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
+      local ok, n = reaper.TrackFX_GetFXName(tr, fx, "")
+      if ok and norm(n):find("PUSHLEDS") then led, ledFx = tr, fx end
+    end
+  end
+  if not led then return end
+  local armed, muted = 0, 0
+  for col, name in ipairs(COLUMN_TRACK) do
+    local tr = trackByFragment(name)
+    if tr then
+      if reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") > 0.5 then armed = armed + 2^(col-1) end
+      local isMuted = reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") > 0.5
+      if MOOD_COLUMNS[col] then
+        isMuted = false
+        for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
+          local ok, n = reaper.TrackFX_GetFXName(tr, fx, "")
+          if ok and norm(n):find("LAYERMIXER") and reaper.TrackFX_GetNumParams(tr, fx) > 12 then
+            isMuted = reaper.TrackFX_GetParam(tr, fx, 12) > 0.5
+          end
+        end
+      end
+      if isMuted then muted = muted + 2^(col-1) end
+    end
+  end
+  local np = reaper.TrackFX_GetNumParams(led, ledFx)
+  if np > 12 then reaper.TrackFX_SetParam(led, ledFx, 11, armed) end
+  if np > 13 then reaper.TrackFX_SetParam(led, ledFx, 12, muted) end
+end
+
 ------------------------------------------------------------------ single instance
 local hb = tonumber(reaper.GetExtState("Riomhdhos", "bridge_hb")) or -1
 if hb > 0 and (reaper.time_precise() - hb) < 1.0 then return end
@@ -114,6 +223,32 @@ local function loop()
     end
   elseif now >= nextPoll then
     nextPoll = now + POLL
+
+    -- Push buttons: act only when the counter moves, so a held button fires once
+    if not pushTr or not reaper.ValidatePtr2(0, pushTr, "MediaTrack*") then
+      pushTr, pushFx, btnParam, cntParam = findPush()
+      lastBtnCount = -1
+    end
+    if pushTr then
+      local c = reaper.TrackFX_GetParam(pushTr, pushFx, cntParam)
+      if lastBtnCount >= 0 and c ~= lastBtnCount then
+        handleButton(math.floor(reaper.TrackFX_GetParam(pushTr, pushFx, btnParam) + 0.5))
+      end
+      lastBtnCount = c
+
+      -- 9th knob -> master volume. Square law so the travel feels even, capped at
+      -- unity: this is a performance level control, not somewhere to add gain.
+      if mstParam then
+        local v = reaper.TrackFX_GetParam(pushTr, pushFx, mstParam)
+        if v ~= lastMaster then
+          lastMaster = v
+          local f = v / 127
+          reaper.SetMediaTrackInfo_Value(reaper.GetMasterTrack(0), "D_VOL", f * f)
+        end
+      end
+
+      publishStates()
+    end
 
     local mood = math.floor(reaper.TrackFX_GetParam(ctrlTr, ctrlFx, moodParam) + 0.5)
     -- a mood change invalidates every cached value: the same knob now addresses a
