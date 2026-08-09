@@ -1,0 +1,23 @@
+desc:Riomhdhos LED scan (find which CC lights a given button)
+// Temporary diagnostic. Lights one contiguous CC range at one value and leaves
+// everything else dark, so a button that responds can be identified by eye.
+// A button's LED is not always at the CC it TRANSMITS - that assumption is what made
+// the Session button look broken.
+slider1:44<0,127,1>From CC
+slider2:60<0,127,1>To CC
+slider3:4<0,127,1>Value
+slider4:0<0,1,1{idle,SEND}>Send
+
+@init
+fire = 1;
+
+@slider
+slider4 ? fire = 1;
+
+@block
+fire ? (
+  i = 0; loop(120, midisend(0, 0xB0, i, 0); i += 1; );
+  i = slider1;
+  while (i <= slider2) ( midisend(0, 0xB0, i, slider3); i += 1; );
+  fire = 0; slider4 = 0; sliderchange(slider4);
+);

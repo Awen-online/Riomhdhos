@@ -15,11 +15,9 @@ desc:Riomhdhos Push brain (mood select + scale-locked grid)
 //
 // LAYOUT
 //   top row, left 4 (92-95)   mood select
-//   column 0, rows 0-3        layer 1-4 on/off  (notes 36, 44, 52, 60)
-//   column 0, rows 4-5        spare
-//   column 1, all rows        spare - reserved for mixer functions
-//   row 6 (notes 84-91)       spare
-//   columns 2-7, rows 0-5     scale-locked notes  (6 x 6)
+// NOTE view is purely a keyboard: ALL 64 pads play, including the top row. Mood
+// select and arm/mute belong to MIXER view only - moods are still reachable from the
+// MiniLab (pedal, pads, encoder) while playing, which is where the hands are anyway.
 //
 // Layer on/off is published to gmem so the layer mixer can act on it and the LED
 // plugin can show it. It is a separate region from the fader positions, so a pad
@@ -33,6 +31,29 @@ slider2:0<0,3,1{minor (aeolian),dorian,major,minor pentatonic}>Scale
 slider3:3<1,8,1>Row step (scale degrees per row)
 slider4:2<0,7,1>Octave offset  (CC54 down / CC55 up)
 slider5:1<0,1,1{off,on}>Grid sends notes
+// The touch strip sends PITCH BEND, not CC - which is why it already reached Kontakt
+// before anything was mapped. As modulation it becomes CC1, which the brain already
+// forwards to the active mood, so nothing downstream changes.
+slider17:1<0,1,1{pitch bend (as-is),modulation CC1}>Touch strip
+// VIEWS. The mode lives in gmem[61] so pushbrain and pushled cannot disagree about
+// which view is on screen - they are separate plugins on separate tracks, and every
+// piece of duplicated state between them has caused a bug at least once.
+// Notes played are published for the display. "What is playing" is ambiguous once a
+// chord is down, so we publish the MOST RECENT note plus how many are still held -
+// which reads as "C#4 v104 +2" and degrades gracefully from one note to a handful.
+//   gmem[54] = note event counter   gmem[55] = notes currently held
+//   gmem[56] = last note number     gmem[57] = its velocity
+//   0 = NOTE   (scale grid, layer toggles)
+//   1 = MIXER  a 4x4 block: one COLUMN per mood, one PAD per instrument slot.
+//              Press to toggle that layer in or out. Volume is already handled by
+//              the knobs and the mute buttons, so pads show instruments instead.
+//              Columns 5-8 stay dark until there is something to put there.
+// Mood select and PLAY-panic stay live in EVERY view: being in the wrong mode is not
+// an acceptable reason to be unable to change world or kill a stuck note.
+slider18:0<0,1,1{NOTE,MIXER}>View
+slider19:0<0,8,1>-mixer column touched
+slider20:0<0,127,1>-mixer value
+slider21:0<0,9999,1>-mixer events
 // COMPILE CANARY - see the note in @init. Read this from the console to tell a
 // running plugin from one that merely loaded its sliders.
 slider6:0<0,99,1>-alive
@@ -65,6 +86,7 @@ enc = 5400;                     // accumulated absolute value per encoder (they 
 sc = 5200;                      // scale degree table
 i = 0; loop(128, padnote[i] = -1; i += 1; );
 i = 0; loop(8, enc[i] = 64; i += 1; );   // start centred
+held = 0; gmem[54] = 0; gmem[55] = 0;
 menc = 127;                              // master encoder starts at unity
 gmem[62] = slider4 + 1;
 
@@ -77,11 +99,10 @@ function loadscale() local(b)(
 );
 
 // grid pad (36..91) -> a note in the chosen scale
-// columns 0 and 1 are reserved for functions, and row 6 is spare, so the playable
-// grid is columns 2-7 across rows 0-5
+// the whole grid below the mood row is playable: rows 0-6, all 8 columns
 function gridnote(p) local(idx, row, col, deg, oct)(
   idx = p - 36; row = (idx / 8) | 0; col = idx - row*8;
-  deg = row * slider3 + (col - 2);
+  deg = row * slider3 + col;
   oct = (deg / sclen) | 0;
   12 * (slider4 + oct) + slider1 + sc[deg - oct*sclen];
 );
@@ -91,46 +112,83 @@ loadscale();
 @slider
 loadscale();
 gmem[62] = slider4 + 1;
+gmem[61] = slider18;
+gmem[61] = slider18;
 
 @block
 while (midirecv(mpos, m1, m2, m3)) (
   st = m1 & 0xF0;
 
   (st == 0x90 || st == 0x80) ? (
-    (m2 >= 92 && m2 <= 95) ? (
-      // top-left four pads = mood select. Emitted exactly as the MiniLab's own mood
-      // pads are, so the brain needs no changes and there is one owner of `mood`.
+    // mood select lives in MIXER view only - in NOTE view the top row plays
+    (slider18 == 1 && m2 >= 92 && m2 <= 95) ? (
       st == 0x90 && m3 > 0 ? midisend(mpos, 0x99, 36 + (m2 - 92), 127);
     ) :
     // left column, bottom four rows = layer 1-4 toggles
-    (m2 == 36 || m2 == 44 || m2 == 52 || m2 == 60) ? (
+    // MIXER VIEW: each column is a track, each row a level. Pressing a pad sets that
+    // track's volume to that row - a fader you can hit rather than sweep.
+    (slider18 == 1) ? (
       st == 0x90 && m3 > 0 ? (
-        li = m2 == 36 ? 0 : m2 == 44 ? 1 : m2 == 52 ? 2 : 3;
-        mo = gmem[63] - 1; mo < 0 ? mo = 0;
-        gi = 64 + mo*16 + 12 + li;
-        gmem[gi] = gmem[gi] > 0.5 ? 0 : 1;
+        mrow = ((m2 - 36) / 8) | 0;
+        mcol = (m2 - 36) - mrow*8;
+        // column = which mood (not the active one - all four are visible at once),
+        // row = which instrument slot. Straight to gmem, so no Lua in the path.
+        (mcol <= 3 && mrow <= 3) ? (
+          gi = 64 + mcol*16 + 12 + mrow;
+          gmem[gi] = gmem[gi] > 0.5 ? 0 : 1;
+        );
       );
     ) :
-    // columns 0-1 and row 6 are spare - consumed so they cannot play stray notes.
     // NB: an EMPTY block "( )" is a compile error in EEL2 and silently stops the
     // whole plugin running while still showing its sliders - needs a statement.
-    (((m2 - 36) % 8) <= 1) ? ( spare = 1; ) :
-    (m2 >= 84) ? ( spare = 1; ) :
-    (m2 >= 36 && m2 <= 83) ? (
+    (m2 >= 36 && m2 <= 99) ? (
       slider5 ? (
         st == 0x90 && m3 > 0 ? (
           n = gridnote(m2);
           n = max(0, min(127, n));
           padnote[m2] = n;
           midisend(mpos, 0x90, n, m3);
+          held += 1;
+          gmem[55] = held; gmem[56] = n; gmem[57] = m3; gmem[54] += 1;
         ) : (
           // release the note this pad actually produced - the scale may have been
           // changed while it was held, so recomputing here would strand a note on
-          padnote[m2] >= 0 ? ( midisend(mpos, 0x80, padnote[m2], 0); padnote[m2] = -1; );
+          padnote[m2] >= 0 ? (
+            midisend(mpos, 0x80, padnote[m2], 0); padnote[m2] = -1;
+            held = max(0, held - 1);
+            gmem[55] = held; gmem[54] += 1;
+          );
         );
       );
     );
     // pads 96-99 (rest of the top row) are deliberately left unassigned
+  ) :
+
+  // NOTE (CC50) and SESSION (CC51) select a view DIRECTLY - they are not a toggle.
+  // A single button that flips between modes leaves you unsure which state you landed
+  // in, and the same 64 pads mean entirely different things in each view.
+  (st == 0xB0 && (m2 == 50 || m2 == 51) && m3 > 0) ? (
+    slider18 = (m2 == 51) ? 1 : 0;
+    sliderchange(slider18);
+    gmem[61] = slider18;
+  ) :
+
+  // PLAY (CC85) = panic. On a drone rig the classic failure is a stuck note, and
+  // this is the one control worth being able to hit without thinking: all-notes-off
+  // and sustain-off across every mood channel, not just the active one.
+  (st == 0xB0 && m2 == 85 && m3 > 0) ? (
+    ch = 0;
+    loop(4,
+      midisend(mpos, 0xB0 | ch, 123, 0);
+      midisend(mpos, 0xB0 | ch, 64, 0);
+      ch += 1;
+    );
+  ) :
+
+  // touch strip: pitch bend -> modulation, using the MSB as the 0-127 value
+  (st == 0xE0 && slider17) ? (
+    midisend(mpos, 0xB0, 1, m3);
+    gmem[59] = m3; gmem[60] = 14; gmem[58] += 1;   // label id 12 = MOD, published as id+2
   ) :
 
   st == 0xB0 ? (
@@ -151,6 +209,9 @@ while (midirecv(mpos, m1, m2, m3)) (
         slider4 = max(0, min(7, slider4 + (m2 == 55 ? 1 : -1)));
         sliderchange(slider4);
         gmem[62] = slider4 + 1;
+        // announce it on the display through the same channel the brain uses:
+        // label id 20 = OCTAVE, published as id+2
+        gmem[59] = slider4; gmem[60] = 22; gmem[58] += 1;
       );
     ) :
     m2 == 79 ? (
@@ -162,8 +223,15 @@ while (midirecv(mpos, m1, m2, m3)) (
       e = m2 - 71;
       d = m3 < 64 ? m3 : m3 - 128;
       enc[e] = max(0, min(127, enc[e] + d));
-      tcc = e==0?86 : e==1?87 : e==2?89 : e==3?90 : e==4?110 : e==5?111 : e==6?116 : 117;
-      midisend(mpos, 0xB0, tcc, enc[e] | 0);
+      slider18 == 1 ? (
+        // encoders keep doing what they do in note view - the knobs were never the
+        // problem, and having them change meaning per view is a trap
+        tcc = e==0?86 : e==1?87 : e==2?89 : e==3?90 : e==4?110 : e==5?111 : e==6?116 : 117;
+        midisend(mpos, 0xB0, tcc, enc[e] | 0);
+      ) : (
+        tcc = e==0?86 : e==1?87 : e==2?89 : e==3?90 : e==4?110 : e==5?111 : e==6?116 : 117;
+        midisend(mpos, 0xB0, tcc, enc[e] | 0);
+      );
     );
   );
 );

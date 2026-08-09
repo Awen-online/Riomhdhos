@@ -31,7 +31,8 @@ local POLL       = 0.03
 local RESCAN     = 1.0
 ------------------------------------------------------------------
 
-local pushTr, pushFx, btnParam, cntParam, mstParam
+local pushTr, pushFx, btnParam, cntParam, mstParam, mixColP, mixValP, mixCntP
+local lastMixCount = -1
 local lastMaster = -1
 local lastBtnCount = -1
 local ctrlTr, ctrlFx, moodParam
@@ -117,6 +118,9 @@ local function findPush()
             if norm(pn) == "LASTBUTTON" then b = pp end
             if norm(pn) == "BUTTONPRESSES" then c = pp end
             if norm(pn) == "MASTERENCODER" then mstParam = pp end
+            if norm(pn) == "MIXERCOLUMNTOUCHED" then mixColP = pp end
+            if norm(pn) == "MIXERVALUE" then mixValP = pp end
+            if norm(pn) == "MIXEREVENTS" then mixCntP = pp end
           end
         end
         if b and c then return tr, fx, b, c end
@@ -178,9 +182,14 @@ local function publishStates()
     local tr = trackByFragment(name)
     if tr then
       if reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") > 0.5 then armed = armed + 2^(col-1) end
+      -- The light shows whether the track is AUDIBLE, not merely whether the user
+      -- muted it. A mood can be silent for two unrelated reasons: mood_mute has it
+      -- muted for not being the active world, or it was muted from the Push. Showing
+      -- only the second made three of four moods look live when they were silent.
+      -- Consequence worth knowing: three mood lights will always be on, because only
+      -- one mood is ever audible.
       local isMuted = reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") > 0.5
-      if MOOD_COLUMNS[col] then
-        isMuted = false
+      if MOOD_COLUMNS[col] and not isMuted then
         for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
           local ok, n = reaper.TrackFX_GetFXName(tr, fx, "")
           if ok and norm(n):find("LAYERMIXER") and reaper.TrackFX_GetNumParams(tr, fx) > 12 then
@@ -194,6 +203,37 @@ local function publishStates()
   local np = reaper.TrackFX_GetNumParams(led, ledFx)
   if np > 12 then reaper.TrackFX_SetParam(led, ledFx, 11, armed) end
   if np > 13 then reaper.TrackFX_SetParam(led, ledFx, 12, muted) end
+  -- How many Kontakt slots each mood actually has loaded. Kontakt exposes each rack
+  -- slot as a 64-parameter block, so a populated slot has a real name at its base
+  -- index and an empty one does not. Lets the Push show empty slots as dark rather
+  -- than lit-but-silent.
+  for col = 1, 4 do
+    local tr = trackByFragment(COLUMN_TRACK[col])
+    local idx = 15 + col
+    if tr and np > idx then
+      -- Match the INSTRUMENT, not merely anything mentioning Kontakt. The layer
+      -- mixer's own description said "4 Kontakt layers", so a substring match found
+      -- it too - and because this loop kept the last match rather than the first, it
+      -- counted the mixer's parameters instead of the instrument's.
+      local kfx, n = nil, 0
+      for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
+        local ok, nm = reaper.TrackFX_GetFXName(tr, fx, "")
+        if ok and norm(nm):find("KONTAKT") and not norm(nm):find("LAYERMIXER") then
+          kfx = fx
+          break
+        end
+      end
+      if kfx then
+        for slot = 0, 3 do
+          local ok2, pn = reaper.TrackFX_GetParamName(tr, kfx, slot * 64, "")
+          if ok2 and pn ~= "" and not pn:match("^#%d") and not pn:match("^[Pp]ar%s*%d") then
+            n = n + 1
+          end
+        end
+      end
+      reaper.TrackFX_SetParam(led, ledFx, idx, n)
+    end
+  end
 end
 
 ------------------------------------------------------------------ single instance
@@ -247,6 +287,26 @@ local function loop()
           local f = v / 127
           reaper.SetMediaTrackInfo_Value(reaper.GetMasterTrack(0), "D_VOL", f * f)
         end
+      end
+
+      -- MIXER VIEW: a pad press or encoder move sets that column's track volume.
+      -- Square law, capped at unity - same curve as the master, and this sits above a
+      -- limiter, so there is nothing to gain by allowing more than 0 dB.
+      if mixCntP then
+        local mc = reaper.TrackFX_GetParam(pushTr, pushFx, mixCntP)
+        if lastMixCount >= 0 and mc ~= lastMixCount then
+          local col = math.floor(reaper.TrackFX_GetParam(pushTr, pushFx, mixColP) + 0.5)
+          local val = reaper.TrackFX_GetParam(pushTr, pushFx, mixValP)
+          local name = COLUMN_TRACK[col]
+          if name then
+            local tr = trackByFragment(name)
+            if tr then
+              local f = val / 127
+              reaper.SetMediaTrackInfo_Value(tr, "D_VOL", f * f)
+            end
+          end
+        end
+        lastMixCount = mc
       end
 
       publishStates()

@@ -9,9 +9,10 @@
 
 ------------------------------------------------------------------ config
 -- Seconds to let a departing mood's release tail ring before the hard mute lands.
+-- 2.5 read as lag when switching between phrases; 1.0 keeps the tail without the drag.
 -- The brain already sends all-notes-off, so the drone decays naturally over this window.
 -- Set to 0 for an instant, hard cut.
-local MUTE_DELAY = 2.5
+local MUTE_DELAY = 1.0
 
 -- mood index (as the brain counts them) -> a distinctive fragment of the track's name.
 -- Matched case-insensitively after stripping spaces/punctuation/accents, so "IRE" catches
@@ -129,12 +130,14 @@ end
 
 ------------------------------------------------------------------ single-instance guard
 -- Two copies would fight over the mutes, so a live heartbeat means we bow out.
-local hb = tonumber(reaper.GetExtState("Riomhdhos", "moodmute_hb")) or -1
-if hb > 0 and (reaper.time_precise() - hb) < 1.0 then return end
-
--- Generation counter: bump "moodmute_gen" from anywhere and the running loop exits at
--- its next poll, so an edited copy can take over WITHOUT restarting REAPER. The old
--- version had no way to stand down, which meant every fix waited for a restart.
+-- Single-instance by GENERATION, not heartbeat.
+--
+-- The previous version checked a heartbeat FIRST and returned if another copy was
+-- alive - which meant a new copy could never bump the generation, so the stand-down
+-- mechanism never fired and every edit still waited for a REAPER restart. Bumping the
+-- generation before anything else inverts that: the running copy sees a higher number
+-- at its next poll and exits, and this copy takes over. Two copies overlap for at most
+-- one poll (~30 ms), which is harmless - they would only agree with each other.
 local MY_GEN = (tonumber(reaper.GetExtState("Riomhdhos", "moodmute_gen")) or 0) + 1
 reaper.SetExtState("Riomhdhos", "moodmute_gen", tostring(MY_GEN), false)
 

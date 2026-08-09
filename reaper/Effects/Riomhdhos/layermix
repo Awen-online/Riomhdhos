@@ -1,4 +1,4 @@
-desc:Riomhdhos layer mixer (4 Kontakt layers -> stereo, per-mood filter, input duck)
+desc:Riomhdhos layer mixer (4 instrument layers -> stereo, per-mood filter, input duck)
 // Sits on a mood track DIRECTLY AFTER Kontakt, before the tape.
 //
 // Kontakt runs 64-out. Route instrument 1 -> st.1, 2 -> st.2, 3 -> st.3, 4 -> st.4

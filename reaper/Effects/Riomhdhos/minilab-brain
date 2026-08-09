@@ -27,6 +27,11 @@ desc:Riomhdhos MiniLab 3 brain
 // after Kontakt never sees CC20-31 at all. Shared memory is the only route.
 //   gmem[64 + mood*16 + 0..3]  = faders 1-4   (value+1; 0 = never touched)
 //   gmem[64 + mood*16 + 4..11] = knobs K1-K8  (value+1; 0 = never touched)
+//   gmem[58]                   = parameter-change counter (bumped on every move)
+//   gmem[59]                   = that control's value 0-127
+//   gmem[60]                   = that control's label id + 2 (0 = nothing yet)
+//                                Push encoders emit the MiniLab's own CCs, so this one
+//                                publisher feeds the display for BOTH controllers.
 //   gmem[63]                   = active mood + 1, so the Push brain can follow it
 //                                (+1 so 0 still means "nothing has published yet")
 options:gmem=riomhdhos
@@ -55,6 +60,7 @@ knbseen = 300120;                  // has this knob been touched yet this sessio
 KNBCC = 24;                        // knobs reach the mood as CC24-31
 kidx = 0; loop(8, knbval[kidx]=0; knbseen[kidx]=0; kidx += 1; );
 gmem[63] = mood + 1;
+last_pub_cc = -1; last_pub_val = -1; gmem[58] = 0;
 
 function emit(x)( buf[bp]=x; bp+=1; );
 function hdr()( bp=0; emit(0xF0);emit(0x00);emit(0x20);emit(0x6B);emit(0x7F);emit(0x42);emit(0x04);emit(0x02);emit(0x60);emit(0x01); );
@@ -202,6 +208,11 @@ mood != prevmood ? (                        // leaving a mood: silence what it s
 flash>0 ? flash -= samplesblock;
 want_type = flash>0 ? 1 : 0;
 changed = (want_type!=last_type) || (want_type==1 && (cur_cc!=last_cc||cur_val!=last_val)) || (want_type==0 && (mood!=last_mood||ped!=last_ped));
+// publish the moved control so pushled can show it on the Push display too
+(cur_cc != last_pub_cc || cur_val != last_pub_val) ? (
+  gmem[59] = cur_val; gmem[60] = cur_id + 2; gmem[58] += 1;
+  last_pub_cc = cur_cc; last_pub_val = cur_val;
+);
 (changed && (clk-lastsend)>=throttle) ? (
   want_type==1 ? (lcd_init(); lcd_param(cur_id,cur_val); last_cc=cur_cc; last_val=cur_val;)
               : (lcd_init(); lcd_mood(mood,ped); last_mood=mood; last_ped=ped;);

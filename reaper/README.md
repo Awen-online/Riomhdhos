@@ -46,20 +46,42 @@ all four moods. Per-mood control has to go through a JSFX (audio) or the Lua bri
 note-on on channel 1, and the `pushbrain` track's output feeds the control track — so
 lighting from there would play notes on COSMOS. Two tracks, two destinations.
 
-## Push layout
+## Push layout — two views
+
+`NOTE` (CC50) and `SESSION` (CC51) select a view directly; they are not a toggle.
+The mode lives in `gmem[61]` so the two plugins cannot disagree about what is on
+screen.
 
 ```
-row 7      mood select x4                      (rest dark)
-row 6      dark
-rows 0-5   col 0   layer 1-4 on/off
-           col 1   dark, reserved
-           cols 2-7  6x6 scale-locked note grid
-buttons    6 columns: COSMOS CAIRN EIRE DEEP Zoom[1] Zoom[2]
-           upper CC102-109 = ARM (red), lower CC20-27 = MUTE (white/grey)
-           both binary - dark unless the state is on; LED colours are fixed by hardware
-encoders   CC71-78 -> the MiniLab's own knob CCs;  CC79 (9th) -> master volume
-octave     CC54 down / CC55 up, published to gmem so the LED colouring follows
+NOTE view      all 64 pads play a scale-locked grid. Nothing else lit.
+               No mood row, no arm/mute - the panel is only the instrument.
+
+SESSION view   4x4 instrument grid: COLUMN = mood, ROW = instrument slot
+                 lit  = loaded and audible      dim  = loaded, toggled off
+                 dark = empty slot              cols 5-8 dark
+               mood select on the top row
+               arm/mute rows lit (upper CC102-109 red = ARM,
+                                  lower CC20-27 white = MUTE, both binary)
+
+BOTH views     PLAY (CC85) = panic, all-notes-off on every mood channel
+               octave CC54 down / CC55 up, dark at the limits
+               encoders CC71-78 -> the MiniLab's own knob CCs (same in both views)
+               CC79 (9th encoder) -> master volume, capped at unity
+               touch strip -> modulation CC1
 ```
+
+Display: line 1 encoder names (or mood names in SESSION) · line 2 mood + played note
+`C#4 v104 +2` · line 3 the parameter last moved, clearing after 2.5 s · line 4
+wordmark left, current view right.
+
+⚠️ Volume bars were tried in SESSION view and removed: volume is already covered by
+the knobs and the mute buttons, and a single bottom-row pad press silenced a live
+input. Pads show **instruments**, not levels.
+
+⚠️ Do not substring-match plugin names loosely. The layer mixer described itself as
+"4 Kontakt layers", so a search for `KONTAKT` matched it as well as the instrument -
+and a loop that kept the last match counted the wrong plugin's parameters. It is now
+named "4 instrument layers", and matching excludes the mixer explicitly.
 
 ⚠️ The Push 1 display is **four separate 17-character segments**, not one 68-character
 strip. Breaks fall at 17, 34 and 51. Column offsets are 0, 9 | 17, 26 | 34, 43 | 51, 60

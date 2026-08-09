@@ -1,0 +1,50 @@
+desc:Riomhdhos LED cycler (step one button through every LED value)
+// Temporary diagnostic. Steps a single CC through a list of values, holding each for
+// a couple of seconds, and prints the value it is currently sending on LCD line 3 -
+// so the value and its appearance can be read at the same time. Watching a burst of
+// values fired in one block is useless; only the last one is ever visible.
+
+slider1:51<0,127,1>Which CC
+slider2:2<0.5,10,0.1>Seconds per step
+slider3:0<0,127,1>-value now
+
+@init
+buf = 95000; txt = 95200;
+vals = 95400;
+vals[0]=0;  vals[1]=1;  vals[2]=2;  vals[3]=3;  vals[4]=4;  vals[5]=5;
+vals[6]=6;  vals[7]=7;  vals[8]=10; vals[9]=20; vals[10]=40; vals[11]=60;
+vals[12]=80; vals[13]=100; vals[14]=127;
+nvals = 15; idx = -1; clk = 0;
+
+function lcdsend(ln, n) local(bp, i)(
+  bp = 0;
+  buf[bp]=0xF0; bp+=1; buf[bp]=0x47; bp+=1; buf[bp]=0x7F; bp+=1; buf[bp]=0x15; bp+=1;
+  buf[bp]=ln;   bp+=1; buf[bp]=0x00; bp+=1; buf[bp]=0x45; bp+=1; buf[bp]=0x00; bp+=1;
+  i = 0; loop(68, buf[bp] = i < n ? txt[i] : 32; bp+=1; i+=1; );
+  buf[bp]=0xF7; bp+=1;
+  midisend_buf(0, buf, bp);
+);
+
+@block
+clk += samplesblock;
+(idx < 0 || clk >= srate * slider2) ? (
+  clk = 0;
+  idx = (idx + 1) % nvals;
+  v = vals[idx];
+  slider3 = v; sliderchange(slider3);
+  midisend(0, 0xB0, slider1, v);
+  // "CC51 = 40" on line 3
+  i = 0; loop(68, txt[i] = 32; i += 1; );
+  txt[0]=67; txt[1]=67;                                  // CC
+  a = (slider1/100)|0; b = ((slider1/10)|0)%10; c = slider1%10;
+  n = 2;
+  a > 0 ? ( txt[n]=48+a; n+=1; );
+  (a>0||b>0) ? ( txt[n]=48+b; n+=1; );
+  txt[n]=48+c; n+=1;
+  txt[n]=32; n+=1; txt[n]=61; n+=1; txt[n]=32; n+=1;     // " = "
+  a = (v/100)|0; b = ((v/10)|0)%10; c = v%10;
+  a > 0 ? ( txt[n]=48+a; n+=1; );
+  (a>0||b>0) ? ( txt[n]=48+b; n+=1; );
+  txt[n]=48+c; n+=1;
+  lcdsend(0x1A, n);
+);

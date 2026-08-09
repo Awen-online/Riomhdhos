@@ -42,10 +42,26 @@ slider13:0<0,255,1>-muted mask
 // the ambiguity that made the panel hard to interpret.
 slider14:127<0,127,1>Button colour: ON
 slider15:0<0,127,1>Button colour: OFF
+// How long the "what just moved" line stays before clearing. The MiniLab brain uses
+// 1.5 s for its own screen; 2.5 s suits the Push's larger display, where the line is
+// read from further away.
+slider16:2.5<0.5,10,0.1>Parameter readout hold (s)
+// per-column track levels 0-127, written by Riomhdhos_bridge.lua for the mixer bars
+slider17:0<0,127,1>-level 1
+slider18:0<0,127,1>-level 2
+slider19:0<0,127,1>-level 3
+slider20:0<0,127,1>-level 4
+slider21:0<0,127,1>-level 5
+slider22:0<0,127,1>-level 6
+// View buttons kept separate from arm/mute: NOTE lit white at 127 works, SESSION did
+// not light at all, so the two buttons evidently do not accept the same values.
+// Exposed so they can be found by trial rather than guessed at.
+slider23:4<0,127,1>View button: SELECTED
+slider24:1<0,127,1>View button: unselected
 
 @init
 buf = 90000; txt = 91000; sc = 92000;
-lastmood = -1; lastcfg = -1; dirty = 1; curoct = 2;
+lastmood = -1; lastcfg = -1; dirty = 1; curoct = 2; lastpc = -1; phold = 0; lastview = -1; lastnc = -1;
 
 function loadscale() local(b)(
   b = slider2;
@@ -57,7 +73,7 @@ function loadscale() local(b)(
 
 function gridnote(p) local(idx, row, col, deg, oct)(
   idx = p - 36; row = (idx / 8) | 0; col = idx - row*8;
-  deg = row * slider3 + (col - 2);
+  deg = row * slider3 + col;
   oct = (deg / sclen) | 0;
   12 * (curoct + oct) + slider1 + sc[deg - oct*sclen];
 );
@@ -108,6 +124,127 @@ function enclabels() local(o)(
   o=colof(7); txt[o]=86;txt[o+1]=79;txt[o+2]=76;txt[o+3]=85;txt[o+4]=77;txt[o+5]=69;   // VOLUME
 );
 
+// One control's name, for the "what just moved" line. Mirrors the brain's own
+// labelling so the two screens agree.
+function paramtxt(id) local(n)(
+  (id>=0 && id<=3) ? ( txt[0]=73;txt[1]=78;txt[2]=83;txt[3]=84;txt[4]=32;txt[5]=49+id; n=6; ) :
+  id==4  ? ( txt[0]=70;txt[1]=73;txt[2]=76;txt[3]=84;txt[4]=69;txt[5]=82; n=6; ) :
+  id==5  ? ( txt[0]=84;txt[1]=65;txt[2]=80;txt[3]=69; n=4; ) :
+  id==6  ? ( txt[0]=82;txt[1]=69;txt[2]=86;txt[3]=69;txt[4]=82;txt[5]=66; n=6; ) :
+  (id>=7 && id<=10) ? ( txt[0]=75;txt[1]=78;txt[2]=79;txt[3]=66;txt[4]=32;txt[5]=52+(id-7); n=6; ) :
+  id==11 ? ( txt[0]=86;txt[1]=79;txt[2]=76;txt[3]=85;txt[4]=77;txt[5]=69; n=6; ) :
+  id==12 ? ( txt[0]=77;txt[1]=79;txt[2]=68; n=3; ) :
+  id==13 ? ( txt[0]=69;txt[1]=88;txt[2]=80;txt[3]=82; n=4; ) :
+  id==20 ? ( txt[0]=79;txt[1]=67;txt[2]=84;txt[3]=65;txt[4]=86;txt[5]=69; n=6; ) :   // OCTAVE
+           ( txt[0]=67;txt[1]=67; n=2; );
+  n;
+);
+
+// line 3: "<CONTROL>   <value>" - what just moved and where it landed
+function paramline(id, val) local(n, a, b, c)(
+  clr(68);
+  n = paramtxt(id);
+  val = max(0, min(127, val|0));
+  a = (val/100)|0; b = ((val/10)|0)%10; c = val%10;
+  n = 10;
+  a > 0 ? ( txt[n] = 48+a; n += 1; );
+  (a > 0 || b > 0) ? ( txt[n] = 48+b; n += 1; );
+  txt[n] = 48+c; n += 1;
+  lcdsend(0x1A, n);
+);
+
+// Bottom line: wordmark on the left, current view on the right. The view name earns
+// that space more than the wordmark did - the same pads mean different things in each
+// view and there is no screen to glance at.
+// NOTE: no fada. SysEx data bytes are 7-bit, so only ASCII 32-126 can be rendered -
+// "Riomhdhos" is representable, the accented form is not.
+function bottomline(vw)(
+  clr(68);
+  txt[0]=82;txt[1]=105;txt[2]=111;txt[3]=109;txt[4]=104;txt[5]=100;txt[6]=104;txt[7]=111;txt[8]=115;
+  vw == 1 ?
+    ( txt[60]=77;txt[61]=73;txt[62]=88;txt[63]=69;txt[64]=82; ) :      // MIXER
+    ( txt[60]=78;txt[61]=79;txt[62]=84;txt[63]=69; );                  // NOTE
+  lcdsend(0x1B, 68);
+);
+
+// "C#4 v104 +2" on the right of line 2, beside the mood name. Kept off line 3 so a
+// knob move and a played note do not overwrite each other.
+function noteline(m, note, vel, heldn) local(n, pc, oc, a, b, c)(
+  clr(68);
+  n = moodtxt(m);                       // mood name stays on the left
+  heldn > 0 ? (
+    pc = note % 12; oc = ((note / 12) | 0) - 1;
+    n = 43;
+    // note letter, then a sharp if the pitch class has one
+    txt[n] = pc==0?67 : pc<=2?67+(pc>1?1:0) : 0;
+    txt[n] = (pc==0||pc==1)?67 : (pc==2||pc==3)?68 : pc==4?69 :
+             (pc==5||pc==6)?70 : (pc==7||pc==8)?71 : (pc==9||pc==10)?65 : 66;
+    n += 1;
+    (pc==1||pc==3||pc==6||pc==8||pc==10) ? ( txt[n]=35; n += 1; );   // '#'
+    oc < 0 ? ( txt[n]=45; n += 1; oc = -oc; );                       // '-'
+    txt[n] = 48 + (oc % 10); n += 1;
+    txt[n] = 32; n += 1;
+    txt[n] = 118; n += 1;                                            // 'v'
+    a = (vel/100)|0; b = ((vel/10)|0)%10; c = vel%10;
+    a > 0 ? ( txt[n]=48+a; n += 1; );
+    (a > 0 || b > 0) ? ( txt[n]=48+b; n += 1; );
+    txt[n] = 48+c; n += 1;
+    heldn > 1 ? (
+      txt[n]=32; n += 1; txt[n]=43; n += 1;                          // ' +'
+      txt[n] = 48 + min(9, heldn - 1); n += 1;
+    );
+  );
+  lcdsend(0x19, 68);
+);
+
+// How many instrument slots each mood actually has loaded, published by
+// Riomhdhos_bridge.lua. An empty slot stays dark rather than lit-but-silent, so the
+// grid shows the instrument shortage instead of hiding it.
+function slotsof(c)(
+  c==0?slider17 : c==1?slider18 : c==2?slider19 : c==3?slider20 : 0;
+);
+
+// MIXER VIEW: one column per track, a bar rising from the bottom row. Pads at or
+// below the level are lit, so the whole mix reads at a glance.
+function redraw_mixer(m) local(p, row, col, lit, lvl, mut)(
+  // arm/mute rows are a MIXER-view feature
+  p = 0;
+  loop(6,
+    midisend(0, 0xB0, 102 + p, (slider12 & (2^p)) ? slider14 : slider15);   // armed
+    midisend(0, 0xB0,  20 + p, (slider13 & (2^p)) ? slider14 : slider15);   // muted
+    p += 1;
+  );
+  // 4 x 4: column = mood, row = instrument slot
+  p = 36;
+  loop(56,
+    row = ((p - 36) / 8) | 0;
+    col = (p - 36) - row*8;
+    (col <= 3 && row <= 3) ? (
+      row < slotsof(col) ? (
+        mut = gmem[64 + col*16 + 12 + row] > 0.5;
+        midisend(0, 0x90, p, mut ? slider10 : slider11);
+      ) : midisend(0, 0x90, p, 0);          // empty slot - stays dark
+    ) : midisend(0, 0x90, p, 0);
+    p += 1;
+  );
+  // mood select stays on the top row in every view
+  p = 0;
+  loop(4, midisend(0, 0x90, 92 + p, p == m ? slider5 : slider6); p += 1; );
+  p = 0; loop(4, midisend(0, 0x90, 96 + p, 0); p += 1; );
+
+  // line 1: the six channel names, two per display segment
+  clr(68);
+  o=colof(0); txt[o]=67;txt[o+1]=79;txt[o+2]=83;txt[o+3]=77;txt[o+4]=79;txt[o+5]=83;      // COSMOS
+  o=colof(1); txt[o]=67;txt[o+1]=65;txt[o+2]=73;txt[o+3]=82;txt[o+4]=78;                  // CAIRN
+  o=colof(2); txt[o]=69;txt[o+1]=73;txt[o+2]=82;txt[o+3]=69;                              // EIRE
+  o=colof(3); txt[o]=68;txt[o+1]=69;txt[o+2]=69;txt[o+3]=80;                              // DEEP
+  o=colof(4); txt[o]=90;txt[o+1]=79;txt[o+2]=79;txt[o+3]=77;txt[o+4]=49;                  // ZOOM1
+  o=colof(5); txt[o]=90;txt[o+1]=79;txt[o+2]=79;txt[o+3]=77;txt[o+4]=50;                  // ZOOM2
+  lcdsend(0x18, 68);
+  n = moodtxt(m); lcdsend(0x19, n);
+  bottomline(1);
+);
+
 function redraw(m) local(p, n, rootpc)(
   loadscale();
   rootpc = slider1;
@@ -116,49 +253,45 @@ function redraw(m) local(p, n, rootpc)(
   // button next to Push's printed labels reads as an active function, so anything
   // unassigned must stay dark.
   p = 0; loop(120, midisend(0, 0xB0, p, 0); p += 1; );
-  // upper row CC102-109 = ARM, lower row CC20-27 = MUTE, one pair per column
-  // six channels: COSMOS CAIRN EIRE DEEP Zoom[1] Zoom[2]. Columns 7-8 stay dark
-  // rather than lit-but-meaningless.
-  // UPPER row (CC102-109) = ARM (these LEDs are red), LOWER row (CC20-27) = MUTE
-  // (white/grey). The colours are fixed by the hardware; only brightness is ours.
-  // Both are binary - dark unless the state is actually on.
-  p = 0;
-  loop(6,
-    midisend(0, 0xB0, 102 + p, (slider12 & (2^p)) ? slider14 : slider15);   // armed
-    midisend(0, 0xB0,  20 + p, (slider13 & (2^p)) ? slider14 : slider15);   // muted
-    p += 1;
-  );
+  // arm/mute belong to MIXER view only - in NOTE view those rows stay dark so the
+  // panel shows nothing but the instrument
+
+  // Octave down (CC54) / up (CC55). Lit when the move is available, dark at the
+  // limits - so the panel says not just "this is a control" but "this will do
+  // something", and you can see when you have bottomed or topped out.
+  midisend(0, 0xB0, 54, curoct > 0 ? slider14 : slider15);
+  midisend(0, 0xB0, 55, curoct < 7 ? slider14 : slider15);
+  // PLAY = panic, always available. RECORD stays dark: it is deliberately unmapped
+  // rather than lit and inert, which would invite pressing it mid-set.
+  midisend(0, 0xB0, 85, slider14);
+  midisend(0, 0xB0, 86, slider15);
+  // NOTE / SESSION: the active view is lit, the other dark, so the panel always says
+  // which view you are in
+  midisend(0, 0xB0, 50, gmem[61] == 1 ? slider24 : slider23);
+  midisend(0, 0xB0, 51, gmem[61] == 1 ? slider23 : slider24);
 
   // --- pads -------------------------------------------------------------------
-  // column 0 = layer toggles (bottom four) then spare; columns 1-7 = the note grid
-  // column 0 rows 0-3 = layer toggles; columns 0-1 otherwise and row 6 are dark;
-  // columns 2-7 across rows 0-5 are the 6x6 note grid
+  // The whole grid below the mood row plays: rows 0-6, all 8 columns, 56 pads.
+  // Layer toggles were removed from this view - they are a mixer function, and the
+  // two button rows already show all six channels at all times.
+  // all 64 pads play - the top row included
   p = 36;
-  loop(56,
-    (p == 36 || p == 44 || p == 52 || p == 60) ? (
-      li = p == 36 ? 0 : p == 44 ? 1 : p == 52 ? 2 : 3;
-      midisend(0, 0x90, p, gmem[64 + m*16 + 12 + li] > 0.5 ? slider10 : slider11);
-    ) :
-    ((((p - 36) % 8) <= 1) || p >= 84) ? midisend(0, 0x90, p, 0) :
-    (
-      n = gridnote(p);
-      midisend(0, 0x90, p, ((n % 12) == rootpc) ? slider7 : slider8);
-    );
+  loop(64,
+    n = gridnote(p);
+    midisend(0, 0x90, p, ((n % 12) == rootpc) ? slider7 : slider8);
     p += 1;
   );
-  // top row: four mood selectors, then four deliberately dark
-  p = 0;
-  loop(4, midisend(0, 0x90, 92 + p, p == m ? slider5 : slider6); p += 1; );
-  p = 0;
-  loop(4, midisend(0, 0x90, 96 + p, 0); p += 1; );
 
   // --- display ----------------------------------------------------------------
-  n = moodtxt(m);  lcdsend(0x18, n);
-  enclabels();     lcdsend(0x19, 68);
-  clr(68);
-  txt[0]=114;txt[1]=105;txt[2]=111;txt[3]=109;txt[4]=104;txt[5]=100;txt[6]=104;txt[7]=111;txt[8]=115;
-  lcdsend(0x1B, 9);
-  lcdsend(0x1A, 0);
+  // line 1 = the eight encoder names, so what you are turning is named directly
+  // above it. line 2 = the active mood. line 3 is left for parameter feedback.
+  enclabels();     lcdsend(0x18, 68);
+  n = moodtxt(m);  lcdsend(0x19, n);
+  // "riomhdhos" bottom-RIGHT. Offset 59 puts all 9 characters inside the fourth
+  // segment (51-67), so it cannot straddle a break.
+  // NOTE: no accent. SysEx data bytes are 7-bit, so the display can only render
+  // ASCII 32-126 - "Riomhdhos" is representable, "Riomhdhos" with the fada is not.
+  bottomline(0);
 );
 
 @slider
@@ -173,9 +306,33 @@ cfg = slider1 + slider2*16 + slider3*64 + slider4*512
     + slider5*4096 + slider6*524288
     + gmem[64+mm*16+12]*1 + gmem[64+mm*16+13]*2
     + gmem[64+mm*16+14]*4 + gmem[64+mm*16+15]*8
-    + slider12*1048576 + slider13*268435456 + curoct*4096;
-(mm != lastmood || cfg != lastcfg || dirty || slider9) ? (
-  redraw(mm);
+    + slider12*1048576 + slider13*268435456 + curoct*4096
+    + slider17 + slider18*2 + slider19*4 + slider20*8 + slider21*16 + slider22*32;
+// Parameter feedback refreshes ONLY line 3 - a full redraw is ~70 messages and would
+// flood the port on every knob movement.
+// notes played -> line 2, alongside the mood name
+nc = gmem[54];
+nc != lastnc ? (
+  lastnc = nc;
+  gmem[61] == 0 ? noteline(mm, gmem[56], gmem[57], gmem[55]);
+);
+
+pc = gmem[58];
+pc != lastpc ? (
+  lastpc = pc;
+  gmem[60] > 0 ? ( paramline(gmem[60] - 2, gmem[59]); phold = srate * slider16; );
+);
+// clear the readout once it has been sitting there long enough - a stale value is
+// worse than a blank line, because it looks like the current state
+phold > 0 ? (
+  phold -= samplesblock;
+  phold <= 0 ? ( phold = 0; clr(68); lcdsend(0x1A, 0); );
+);
+
+vw = gmem[61];
+(mm != lastmood || cfg != lastcfg || dirty || slider9 || vw != lastview) ? (
+  lastview = vw;
+  vw == 1 ? redraw_mixer(mm) : redraw(mm);
   lastmood = mm; lastcfg = cfg; dirty = 0;
   slider9 ? ( slider9 = 0; sliderchange(slider9); );
 );
