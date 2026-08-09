@@ -1,0 +1,209 @@
+desc:Riomhdhos MiniLab 3 brain
+// One plugin: mood-select (encoder CC28 + pads note36-39 on ch10), pedal latch glyph (CC64),
+// re-channels keys to the active mood (ch1-4), drives the LCD (name+glyph+param readout).
+// Place on CTRL track: All-MIDI input + armed + monitor ON, MIDI Hardware Output = Minilab3.
+// Route CTRL -> each mood track via a MIDI send filtered to channel (mood+1). (build script does this)
+// On a mood change: all-notes-off + sustain-release on the departing channel, and slider1 publishes
+// the active mood so Riomhdhos_mood_mute.lua can mute the non-active mood tracks.
+// Faders 1-4 -> CC20-23 on the active mood = volume of Kontakt instrument slots 1-4. MIDI-learn
+// CC20/21/22/23 to each instrument's Volume in every mood's Kontakt (same CCs in all four).
+// Knobs 1-8  -> CC24-31 on the active mood. In practice the mood-track FX are learned from the
+// RAW knob CCs in REAPER (K1=86 filter, K2=87 tape, K3=89 reverb, K8=117 volume), because
+// REAPER's FX-parameter learn listens to hardware input, not to track MIDI.
+// Sustain pedal (CC64) is LATCHING: press = on, press again = off, forwarded to the active mood
+// so a drone can be held hands-free. For a plain momentary pedal see the PEDAL block below.
+//
+// LCD: moving a control shows its NAME (FILTER / TAPE / REVERB / VOLUME / INST 1-4) instead of a
+// bare CC number, with the value underneath. NOTE: this is a label for the control being moved,
+// NOT proof that anything downstream responded - the brain cannot see whether REAPER's learn
+// picked it up. An unrecognised CC still falls back to "CC nnn".
+
+// slider1 is read by Riomhdhos_mood_mute.lua; sliders 2-5 by Riomhdhos_bridge.lua,
+// which points K4-K7 at whichever mood's Kontakt is currently live. Publishing them
+// here is the only way a Lua script can see these knobs at all - REAPER's own learn
+// cannot reach the brain's internal CCs.
+// gmem carries fader/knob positions to each mood's layer mixer. This is NOT a
+// convenience: Kontakt does not pass MIDI to FX downstream of it, so a JSFX sitting
+// after Kontakt never sees CC20-31 at all. Shared memory is the only route.
+//   gmem[64 + mood*16 + 0..3]  = faders 1-4   (value+1; 0 = never touched)
+//   gmem[64 + mood*16 + 4..11] = knobs K1-K8  (value+1; 0 = never touched)
+//   gmem[63]                   = active mood + 1, so the Push brain can follow it
+//                                (+1 so 0 still means "nothing has published yet")
+options:gmem=riomhdhos
+
+slider1:0<0,3,1>-active mood
+slider2:0<0,127,1>-K4
+slider3:0<0,127,1>-K5
+slider4:0<0,127,1>-K6
+slider5:0<0,127,1>-K7
+
+@init
+buf = 100000; bp = 0;
+notechan = 200000;                 // note -> channel-it-was-sent-on (for correct note-offs)
+mood = 0; ped = 0; prevmood = 0; slider1 = 0;
+last_type = -1; last_mood = -2; last_ped = -2; last_cc = -1; last_val = -1;
+flash = 0; clk = 0; lastsend = -1000000;
+FLASHLEN = srate * 1.5;
+cur_cc = -1; cur_val = 0; cur_id = -1;   // cur_id = which label to show (-1 = numeric CC)
+fadval = 300000;                   // last value each fader sent
+fadseen = 300010;                  // has this fader been touched yet this session?
+FADCC = 20;                        // faders reach the mood as CC20-23 = Kontakt slots 1-4
+fadval[0]=0; fadval[1]=0; fadval[2]=0; fadval[3]=0;
+fadseen[0]=0; fadseen[1]=0; fadseen[2]=0; fadseen[3]=0;
+knbval = 300100;                   // last value each knob sent
+knbseen = 300120;                  // has this knob been touched yet this session?
+KNBCC = 24;                        // knobs reach the mood as CC24-31
+kidx = 0; loop(8, knbval[kidx]=0; knbseen[kidx]=0; kidx += 1; );
+gmem[63] = mood + 1;
+
+function emit(x)( buf[bp]=x; bp+=1; );
+function hdr()( bp=0; emit(0xF0);emit(0x00);emit(0x20);emit(0x6B);emit(0x7F);emit(0x42);emit(0x04);emit(0x02);emit(0x60);emit(0x01); );
+function line2mark()( emit(0x00); emit(0x02); );
+function putnum(n) local(a,b)( n=max(0,min(127,n|0)); a=(n/100)|0; b=((n/10)|0)%10; a>0?emit(48+a); (a>0)||(b>0)?emit(48+b); emit(48+(n%10)); );
+function lcd_init()( bp=0; emit(0xF0);emit(0x00);emit(0x20);emit(0x6B);emit(0x7F);emit(0x42);emit(0x02);emit(0x02);emit(0x40);emit(0x6A);emit(0x21);emit(0xF7); midisend_buf(0,buf,bp); );
+function moodname(m)(
+  m==0?(emit(67);emit(79);emit(83);emit(77);emit(79);emit(83);):
+  m==1?(emit(84);emit(72);emit(69);emit(32);emit(67);emit(65);emit(73);emit(82);emit(78);):
+  m==2?(emit(69);emit(73);emit(82);emit(69);):
+       (emit(84);emit(72);emit(69);emit(32);emit(68);emit(69);emit(69);emit(80);); );
+function moodlen(m)( m==0?6:m==1?9:m==2?4:8; );
+// ---- control labels for the LCD -------------------------------------------------
+// id 0-3   faders  -> INST 1..INST 4   (Kontakt instrument slots)
+// id 4-11  knobs   -> FILTER TAPE REVERB KNOB4 KNOB5 KNOB6 KNOB7 VOLUME
+// id 12/13 mod / expression
+// id -1    anything else -> "CC nnn"
+function labelname(id)(
+  (id>=0 && id<=3) ? ( emit(73);emit(78);emit(83);emit(84);emit(32); emit(49+id); ) :  // INST n
+  id==4  ? ( emit(70);emit(73);emit(76);emit(84);emit(69);emit(82); ) :                // FILTER
+  id==5  ? ( emit(84);emit(65);emit(80);emit(69); ) :                                  // TAPE
+  id==6  ? ( emit(82);emit(69);emit(86);emit(69);emit(82);emit(66); ) :                // REVERB
+  (id>=7 && id<=10) ? ( emit(75);emit(78);emit(79);emit(66);emit(32); emit(52+(id-7)); ) : // KNOB n
+  id==11 ? ( emit(86);emit(79);emit(76);emit(85);emit(77);emit(69); ) :                // VOLUME
+  id==12 ? ( emit(77);emit(79);emit(68); ) :                                           // MOD
+  id==13 ? ( emit(69);emit(88);emit(80);emit(82); ) :                                  // EXPR
+           ( emit(67);emit(67);emit(32); putnum(cur_cc); );                            // CC nnn
+);
+function labellen(id)(
+  (id>=0 && id<=3) ? 6 :
+  id==4 ? 6 : id==5 ? 4 : id==6 ? 6 :
+  (id>=7 && id<=10) ? 6 :
+  id==11 ? 6 : id==12 ? 3 : id==13 ? 4 : 7;
+);
+function lcd_mood(m,pd) local(pad)(
+  hdr(); moodname(m);
+  pad=21-moodlen(m)-(pd?1:2); pad<0?pad=0; loop(pad,emit(32));
+  pd?emit(62):(emit(91);emit(93););
+  line2mark(); emit(114);emit(105);emit(111);emit(109);emit(104);emit(100);emit(104);emit(111);emit(115);
+  emit(0xF7); midisend_buf(0,buf,bp); );
+// line 1 = control name, line 2 = "val: nnn". Padded so a short name cannot leave
+// characters behind from a longer one.
+function lcd_param(id,val) local(pad)(
+  hdr(); labelname(id);
+  pad = 16 - labellen(id); pad<0?pad=0; loop(pad,emit(32));
+  line2mark(); emit(118);emit(97);emit(108);emit(58);emit(32); putnum(val);
+  emit(0xF7); midisend_buf(0,buf,bp); );
+// fader fi (0-3) -> CC20+fi on the active mood, remembered so a mood switch can re-send it
+function fader(fi,fpos,fv)(
+  fadval[fi]=fv; fadseen[fi]=1;
+  gmem[64 + mood*16 + fi] = fv/127 + 1;
+  midisend(fpos, 0xB0|mood, FADCC+fi, fv);
+  cur_cc=FADCC+fi; cur_val=fv; cur_id=fi; flash=FLASHLEN; );
+// knob ki (0-7) -> CC24+ki on the active mood, remembered the same way
+function knob(ki,kpos,kv)(
+  knbval[ki]=kv; knbseen[ki]=1;
+  gmem[64 + mood*16 + 4 + ki] = kv/127 + 1;
+  midisend(kpos, 0xB0|mood, KNBCC+ki, kv);
+  // K4-K7 (ki 3-6) are also published on sliders so the Lua bridge can map them to
+  // the ACTIVE mood's Kontakt macros - per-mood control of another plugin's params,
+  // which neither a JSFX nor REAPER's learn can do on its own.
+  ki==3 ? ( slider2=kv; sliderchange(slider2); ) :
+  ki==4 ? ( slider3=kv; sliderchange(slider3); ) :
+  ki==5 ? ( slider4=kv; sliderchange(slider4); ) :
+  ki==6 ? ( slider5=kv; sliderchange(slider5); );
+  cur_cc=KNBCC+ki; cur_val=kv; cur_id=4+ki; flash=FLASHLEN; );
+
+@block
+clk += samplesblock;
+throttle = srate * 0.04;
+while (midirecv(mpos, m1, m2, m3)) (
+  st = m1 & 0xF0; chn = m1 & 0x0F;
+  st==0xB0 ? (
+    m2==28 ? ( m3>=65 ? mood=min(mood+1,3); (m3>=1 && m3<=63) ? mood=max(mood-1,0); ) :
+    // ---- PEDAL: advance to the next mood ----
+    // Sustain latching moved to the MiniLab's own HOLD button, which is reachable
+    // whenever a hand is free. The pedal is the ONLY control that works with both
+    // hands on the guitar, so it is spent on the one frequent action that otherwise
+    // stops a phrase: changing world. Press only, wraps 0->1->2->3->0.
+    // The mood-change block below does the rest - all-notes-off on the departing
+    // channel, slider publish, gmem re-publish, and the LCD showing the new name.
+    //
+    // For the old latching-sustain behaviour instead, restore:
+    //   m2==64 ? ( m3>=64 ? ( ped = ped ? 0 : 1; midisend(mpos, 0xB0|mood, 64, ped?127:0); ); ) :
+    m2==64 ? ( m3>=64 ? ( mood = (mood + 1) % 4; ); ) :
+    m2==1  ? ( midisend(mpos, 0xB0|mood, m2, m3); cur_cc=m2; cur_val=m3; cur_id=12; flash=FLASHLEN; ) :
+    m2==11 ? ( midisend(mpos, 0xB0|mood, m2, m3); cur_cc=m2; cur_val=m3; cur_id=13; flash=FLASHLEN; ) :
+    (m2==14||m2==82) ? fader(0,mpos,m3) :                     // faders -> layer volumes;
+    (m2==15||m2==83) ? fader(1,mpos,m3) :                     // programs A and B send different
+    (m2==30||m2==85) ? fader(2,mpos,m3) :                     // CCs, so accept both sets
+    (m2==31||m2==17) ? fader(3,mpos,m3) :
+    // knobs K1-K8 -> CC24-31 on the active mood. Both program CC sets, same as the faders.
+    (m2==86 ||m2==74) ? knob(0,mpos,m3) :                     // K1  filter
+    (m2==87 ||m2==71) ? knob(1,mpos,m3) :                     // K2  tape / warmth
+    (m2==89 ||m2==76) ? knob(2,mpos,m3) :                     // K3  reverb
+    (m2==90 ||m2==77) ? knob(3,mpos,m3) :                     // K4  free
+    (m2==110||m2==93) ? knob(4,mpos,m3) :                     // K5  free
+    (m2==111||m2==18) ? knob(5,mpos,m3) :                     // K6  free
+    (m2==116||m2==19) ? knob(6,mpos,m3) :                     // K7  free
+    (m2==117||m2==16) ? knob(7,mpos,m3) :                     // K8  volume
+    ( cur_cc=m2; cur_val=m3; cur_id=-1; flash=FLASHLEN; );    // anything else -> "CC nnn"
+  ) :
+  (st==0x90 || st==0x80) ? (
+    chn==9 ? (                                                // ch10 = pads
+      (st==0x90 && m3>0 && m2>=36 && m2<=39) ? mood = m2-36;  // pads 1-4 select mood; others consumed
+    ) : (                                                     // keys
+      (st==0x90 && m3>0) ? ( notechan[m2]=mood+1; midisend(mpos, 0x90|mood, m2, m3); )
+                         : ( och=notechan[m2]-1; och<0 ? och=mood; midisend(mpos, 0x80|och, m2, m3); notechan[m2]=0; );
+    );
+  ) :
+  st==0xE0 ? midisend(mpos, 0xE0|mood, m2, m3) :
+  st==0xD0 ? midisend(mpos, 0xD0|mood, m2, m3) :
+  st==0xA0 ? midisend(mpos, 0xA0|mood, m2, m3) :
+  midisend(mpos, m1, m2, m3);
+);
+mood != prevmood ? (                        // leaving a mood: silence what it still has sounding
+  midisend(0, 0xB0|prevmood, 123, 0);       // all-notes-off (respects each patch's release tail)
+  midisend(0, 0xB0|prevmood,  64, 0);       // drop sustain there too
+  prevmood = mood;
+  slider1 = mood; sliderchange(slider1);    // publish to Riomhdhos_mood_mute.lua
+  gmem[63] = mood + 1;                      // publish to the Push brain
+  // Re-send the faders so the new mood matches where the sliders physically sit. Faders you
+  // have not touched are skipped, leaving that mood's own saved layer mix alone.
+  fidx = 0;
+  loop(4,
+    fadseen[fidx] ? (
+      midisend(0, 0xB0|mood, FADCC+fidx, fadval[fidx]);
+      gmem[64 + mood*16 + fidx] = fadval[fidx]/127 + 1;
+    );
+    fidx += 1;
+  );
+  // Same for the knobs, so filter/warmth/reverb carry across a mood change.
+  kidx = 0;
+  loop(8,
+    knbseen[kidx] ? (
+      midisend(0, 0xB0|mood, KNBCC+kidx, knbval[kidx]);
+      gmem[64 + mood*16 + 4 + kidx] = knbval[kidx]/127 + 1;
+    );
+    kidx += 1;
+  );
+  // Nothing to carry: the pedal no longer holds sustain, and the MiniLab's HOLD is
+  // local firmware the brain cannot see. A drone does not survive a mood change by
+  // design - the all-notes-off above is what makes worlds swap cleanly.
+);
+flash>0 ? flash -= samplesblock;
+want_type = flash>0 ? 1 : 0;
+changed = (want_type!=last_type) || (want_type==1 && (cur_cc!=last_cc||cur_val!=last_val)) || (want_type==0 && (mood!=last_mood||ped!=last_ped));
+(changed && (clk-lastsend)>=throttle) ? (
+  want_type==1 ? (lcd_init(); lcd_param(cur_id,cur_val); last_cc=cur_cc; last_val=cur_val;)
+              : (lcd_init(); lcd_mood(mood,ped); last_mood=mood; last_ped=ped;);
+  last_type=want_type; lastsend=clk;
+);

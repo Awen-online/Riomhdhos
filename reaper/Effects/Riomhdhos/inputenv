@@ -1,0 +1,57 @@
+desc:Riomhdhos input envelope (publishes playing dynamics to the mood tracks)
+// Goes FIRST on a live input track (Zoom [1] = guitar, Zoom [2] = voice/second source).
+//
+// Measures how hard you are playing and publishes it through gmem, which every JSFX in
+// the session shares. The layer mixer on each mood track reads it and ducks the drone.
+// No MIDI routing, no sends, no track order dependency - just a number in shared memory.
+//
+//   gmem[0] = input 1 envelope (guitar)     gmem[1] = input 2 envelope (voice)
+//   gmem[8] / gmem[9] = peak hold, for metering
+//
+// AUDIO IS PASSED THROUGH COMPLETELY UNTOUCHED. This only measures. It is safe to leave
+// on a live input permanently, and safe to leave enabled when the duck depth is zero.
+//
+// This is the "reactivity" idea from the original Pd rig, finally wired up: the drone
+// breathes with your playing instead of sitting flat underneath it.
+
+options:gmem=riomhdhos
+
+slider1:0<0,7,1>gmem slot (0 = guitar, 1 = second input)
+slider2:8<1,200,1>Attack (ms)
+slider3:260<20,2000,1>Release (ms)
+slider4:-40<-70,-10,1>Sensitivity floor (dB)
+slider5:0<0,1,1{off,on}>Show level below
+slider6:0<0,1,0.001>Current envelope (read only)
+
+@init
+env = 0; pk = 0; disp = 0;
+
+@slider
+atk = exp(-1 / (srate * max(0.001, slider2 * 0.001)));
+rel = exp(-1 / (srate * max(0.001, slider3 * 0.001)));
+floorlin = 10 ^ (slider4 / 20);
+
+@sample
+// rectified peak of whichever channels are present
+a = abs(spl0); b = abs(spl1);
+lvl = max(a, b);
+
+// asymmetric follower: fast up so a pick attack registers, slow down so the drone
+// returns gently rather than pumping
+lvl > env ? ( env = lvl + (env - lvl) * atk; )
+          : ( env = lvl + (env - lvl) * rel; );
+
+// map the useful dynamic range onto 0..1 - below the floor counts as silence
+norm = (env - floorlin) / (1 - floorlin);
+norm = max(0, min(1, norm));
+
+gmem[slider1] = norm;
+pk = max(pk * 0.99999, norm);
+gmem[8 + slider1] = pk;
+
+// audio continues untouched - spl0/spl1 are deliberately never written
+
+@block
+slider5 ? (
+  disp != gmem[slider1] ? ( slider6 = gmem[slider1]; sliderchange(slider6); disp = slider6; );
+);

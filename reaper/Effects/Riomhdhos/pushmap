@@ -1,0 +1,87 @@
+desc:Riomhdhos Push mapper (records every note/CC a controller emits, and drives its LCD)
+// Put on a track whose RECORD INPUT is the Push's port 2 and whose MIDI HARDWARE
+// OUTPUT is the Push's port 2. Then it only ever sees the Push, not the MiniLab.
+//
+// Every note and CC number seen is recorded as a bit in one of eight 32-bit bitmaps,
+// exposed as sliders. Lua can read sliders (but not gmem), so the remote console can
+// decode the full 128-note / 128-CC picture from eight numbers.
+//
+// slider9 also fires the LED sweep and writes text to the Push 1 LCD:
+//   F0 47 7F 15 <line> 00 45 00 <68 ASCII> F7      line = 0x18..0x1B
+
+slider1:0<0,4294967295,1>notes 0-31
+slider2:0<0,4294967295,1>notes 32-63
+slider3:0<0,4294967295,1>notes 64-95
+slider4:0<0,4294967295,1>notes 96-127
+slider5:0<0,4294967295,1>cc 0-31
+slider6:0<0,4294967295,1>cc 32-63
+slider7:0<0,4294967295,1>cc 64-95
+slider8:0<0,4294967295,1>cc 96-127
+slider9:0<0,1,1{idle,SEND}>Light LEDs + write LCD
+slider10:0<0,127,1>last note
+slider11:0<0,127,1>last cc
+slider12:0<0,100000,1>events
+slider13:0<0,1,1{keep,CLEAR}>Reset maps
+
+@init
+nb0=nb1=nb2=nb3=0; cb0=cb1=cb2=cb3=0; ev=0; sendfire=0;
+buf = 90000; txt = 91000;
+
+function setbit(n, which) local(w, b)(
+  w = (n / 32) | 0; b = n - w*32;
+  which == 0 ? (
+    w==0 ? nb0 = nb0 | (2^b) : w==1 ? nb1 = nb1 | (2^b) :
+    w==2 ? nb2 = nb2 | (2^b) : nb3 = nb3 | (2^b);
+  ) : (
+    w==0 ? cb0 = cb0 | (2^b) : w==1 ? cb1 = cb1 | (2^b) :
+    w==2 ? cb2 = cb2 | (2^b) : cb3 = cb3 | (2^b);
+  );
+);
+
+function publish()(
+  slider1=nb0; slider2=nb1; slider3=nb2; slider4=nb3;
+  slider5=cb0; slider6=cb1; slider7=cb2; slider8=cb3;
+  slider12=ev;
+  sliderchange(slider1);sliderchange(slider2);sliderchange(slider3);sliderchange(slider4);
+  sliderchange(slider5);sliderchange(slider6);sliderchange(slider7);sliderchange(slider8);
+  sliderchange(slider10);sliderchange(slider11);sliderchange(slider12);
+);
+
+// Push 1 LCD: 4 lines x 68 chars, one 77-byte SysEx per line.
+//   F0 47 7F 15 <line> 00 45 00 <68 ASCII> F7      line = 0x18..0x1B
+// Text is staged in `txt` as character codes, then padded out to 68 with spaces.
+// Lines must be written explicitly to clear them - the boot message sits on lines
+// 2-4 and survives until something overwrites it.
+function lcdsend(ln, n) local(bp, i)(
+  bp = 0;
+  buf[bp]=0xF0; bp+=1; buf[bp]=0x47; bp+=1; buf[bp]=0x7F; bp+=1; buf[bp]=0x15; bp+=1;
+  buf[bp]=ln;   bp+=1; buf[bp]=0x00; bp+=1; buf[bp]=0x45; bp+=1; buf[bp]=0x00; bp+=1;
+  i = 0;
+  loop(68, buf[bp] = i < n ? txt[i] : 32; bp+=1; i+=1; );
+  buf[bp]=0xF7; bp+=1;
+  midisend_buf(0, buf, bp);
+);
+
+function lcdclear(ln)( lcdsend(ln, 0); );
+
+@slider
+slider13 ? ( nb0=nb1=nb2=nb3=0; cb0=cb1=cb2=cb3=0; ev=0; slider13=0; publish(); );
+slider9 ? sendfire = 1;
+
+@block
+sendfire ? (
+  i = 0;  loop(120, midisend(0, 0xB0, i, 4); i += 1; );        // 4 = "lit"
+  n = 36; loop(64,  midisend(0, 0x90, n, 100); n += 1; );      // pads
+  // line 1 = RIOMHDHOS, lines 2-4 blanked to wipe the "start Live" boot message
+  txt[0]=82;txt[1]=73;txt[2]=79;txt[3]=77;txt[4]=72;txt[5]=68;txt[6]=72;txt[7]=79;txt[8]=83;
+  lcdsend(0x18, 9);
+  lcdclear(0x19); lcdclear(0x1A); lcdclear(0x1B);
+  sendfire = 0; slider9 = 0; sliderchange(slider9);
+);
+
+while (midirecv(mpos, m1, m2, m3)) (
+  st = m1 & 0xF0;
+  (st == 0x90 && m3 > 0) ? ( setbit(m2, 0); slider10 = m2; ev += 1; publish(); ) :
+  st == 0xB0            ? ( setbit(m2, 1); slider11 = m2; ev += 1; publish(); );
+  midisend(mpos, m1, m2, m3);
+);

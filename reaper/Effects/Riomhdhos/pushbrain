@@ -1,0 +1,121 @@
+desc:Riomhdhos Push brain (mood select + scale-locked grid)
+// Goes on the PUSH track: record input = MIDIIN2 (Ableton Push), armed + monitoring.
+// Its MIDI output is SENT TO THE CTRL TRACK, not to hardware and not to the moods.
+// Everything it emits is shaped so the existing MiniLab brain handles it unchanged:
+//   mood select -> note 36-39 on ch10, which the brain already treats as mood select
+//   grid notes  -> plain notes on ch1, which the brain re-channels to the active mood
+//   encoders    -> the MiniLab's own knob CCs, so they do exactly what K1-K8 do
+// That means no new routing, no duplicated logic, and one place that owns `mood`.
+//
+// LEDs and the LCD are NOT driven from here - see `pushled` on its own track. They have
+// to be separate: pad-lighting messages are note-ons on ch1, and this track's output
+// feeds the brain, so lighting from here would play notes on COSMOS.
+//
+// Push 1 grid: note 36 = bottom-left, ascending left-to-right then upward, 99 = top-right.
+//
+// LAYOUT
+//   top row, left 4 (92-95)   mood select
+//   left column, rows 0-3     layer 1-4 on/off  (notes 36, 44, 52, 60)
+//   left column, rows 4-6     spare             (notes 68, 76, 84)
+//   columns 1-7, rows 0-6     scale-locked notes
+//
+// Layer on/off is published to gmem so the layer mixer can act on it and the LED
+// plugin can show it. It is a separate region from the fader positions, so a pad
+// toggle and a fader move do not fight over the same slot:
+//   gmem[64 + mood*16 + 12..15] = layer 1-4 muted (1 = silent)
+
+options:gmem=riomhdhos
+
+slider1:0<0,11,1{C,C#,D,D#,E,F,F#,G,G#,A,A#,B}>Root
+slider2:0<0,3,1{minor (aeolian),dorian,major,minor pentatonic}>Scale
+slider3:3<1,8,1>Row step (scale degrees per row)
+slider4:2<0,5,1>Octave offset
+slider5:1<0,1,1{off,on}>Grid sends notes
+slider6:0<0,127,1>-last note in
+slider7:0<0,16,1>-last channel in
+slider8:0<0,9999,1>-mood selects fired
+slider9:0<0,127,1>-last CC in
+slider10:0<0,9999,1>-any midi seen
+
+@init
+padnote = 5000;                 // pad note -> the note we actually emitted, for note-off
+enc = 5400;                     // accumulated absolute value per encoder (they send relative)
+sc = 5200;                      // scale degree table
+i = 0; loop(128, padnote[i] = -1; i += 1; );
+i = 0; loop(8, enc[i] = 64; i += 1; );   // start centred
+
+function loadscale() local(b)(
+  b = slider2;
+  b == 0 ? ( sclen = 7; sc[0]=0; sc[1]=2; sc[2]=3; sc[3]=5; sc[4]=7; sc[5]=8;  sc[6]=10; ) :
+  b == 1 ? ( sclen = 7; sc[0]=0; sc[1]=2; sc[2]=3; sc[3]=5; sc[4]=7; sc[5]=9;  sc[6]=10; ) :
+  b == 2 ? ( sclen = 7; sc[0]=0; sc[1]=2; sc[2]=4; sc[3]=5; sc[4]=7; sc[5]=9;  sc[6]=11; ) :
+           ( sclen = 5; sc[0]=0; sc[1]=3; sc[2]=5; sc[3]=7; sc[4]=10; );
+);
+
+// grid pad (36..91) -> a note in the chosen scale
+// column 0 is reserved for layer toggles, so the playable grid is columns 1-7
+function gridnote(p) local(idx, row, col, deg, oct)(
+  idx = p - 36; row = (idx / 8) | 0; col = idx - row*8;
+  deg = row * slider3 + (col - 1);
+  oct = (deg / sclen) | 0;
+  12 * (slider4 + oct) + slider1 + sc[deg - oct*sclen];
+);
+
+loadscale();
+
+@slider
+loadscale();
+
+@block
+while (midirecv(mpos, m1, m2, m3)) (
+  st = m1 & 0xF0;
+  slider10 += 1; sliderchange(slider10);
+  st == 0xB0 ? ( slider9 = m2; sliderchange(slider9); );
+
+  (st == 0x90 || st == 0x80) ? (
+    (m2 >= 92 && m2 <= 95) ? (
+      // top-left four pads = mood select. Emitted exactly as the MiniLab's own mood
+      // pads are, so the brain needs no changes and there is one owner of `mood`.
+      st == 0x90 && m3 > 0 ? midisend(mpos, 0x99, 36 + (m2 - 92), 127);
+    ) :
+    // left column, bottom four rows = layer 1-4 toggles
+    (m2 == 36 || m2 == 44 || m2 == 52 || m2 == 60) ? (
+      st == 0x90 && m3 > 0 ? (
+        li = m2 == 36 ? 0 : m2 == 44 ? 1 : m2 == 52 ? 2 : 3;
+        mo = gmem[63] - 1; mo < 0 ? mo = 0;
+        gi = 64 + mo*16 + 12 + li;
+        gmem[gi] = gmem[gi] > 0.5 ? 0 : 1;
+      );
+    ) :
+    // rest of column 0 is spare - consumed so it cannot play a stray note
+    ((m2 - 36) % 8 == 0) ? ( ) :
+    (m2 >= 36 && m2 <= 91) ? (
+      slider5 ? (
+        st == 0x90 && m3 > 0 ? (
+          n = gridnote(m2);
+          n = max(0, min(127, n));
+          padnote[m2] = n;
+          midisend(mpos, 0x90, n, m3);
+        ) : (
+          // release the note this pad actually produced - the scale may have been
+          // changed while it was held, so recomputing here would strand a note on
+          padnote[m2] >= 0 ? ( midisend(mpos, 0x80, padnote[m2], 0); padnote[m2] = -1; );
+        );
+      );
+    );
+    // pads 96-99 (rest of the top row) are deliberately left unassigned
+  ) :
+
+  st == 0xB0 ? (
+    // Push encoders are RELATIVE: 1..63 = clockwise, 127..65 = anticlockwise.
+    // Accumulate to an absolute 0-127 and emit the MiniLab's own knob CC, so a Push
+    // encoder and the matching MiniLab knob are the same control.
+    (m2 >= 71 && m2 <= 78) ? (
+      e = m2 - 71;
+      d = m3 < 64 ? m3 : m3 - 128;
+      enc[e] = max(0, min(127, enc[e] + d));
+      tcc = e==0?86 : e==1?87 : e==2?89 : e==3?90 : e==4?110 : e==5?111 : e==6?116 : 117;
+      midisend(mpos, 0xB0, tcc, enc[e] | 0);
+    );
+  );
+);

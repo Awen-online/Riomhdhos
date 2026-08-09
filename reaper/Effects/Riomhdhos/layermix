@@ -1,0 +1,150 @@
+desc:Riomhdhos layer mixer (4 Kontakt layers -> stereo, per-mood filter, input duck)
+// Sits on a mood track DIRECTLY AFTER Kontakt, before the tape.
+//
+// Kontakt runs 64-out. Route instrument 1 -> st.1, 2 -> st.2, 3 -> st.3, 4 -> st.4
+// inside Kontakt's Outputs page; those arrive here as track channels 1-8.
+//
+// WHY THIS READS MIDI ITSELF: REAPER's FX-parameter learn only sees HARDWARE input,
+// so it cannot see CC20-31, which the brain invents inside the track MIDI stream.
+// Reading the stream here means every control below is PER-MOOD automatically - each
+// mood track only ever receives its own channel, so each keeps its own settings.
+//   CC20-23 = faders 1-4 -> layer volumes
+//   CC24    = knob 1     -> lowpass filter, 127 = dry/bypassed, closing as you turn down
+//
+// INPUT DUCK: reads a live envelope published by the `inputenv` JSFX through gmem.
+// gmem is shared across all JSFX in the session, so no MIDI routing or sends are
+// needed to get the guitar's dynamics from an input track over to here.
+//   gmem[0] = guitar envelope   gmem[1] = second input envelope   0..1
+// Depth defaults to 0, so this does nothing until deliberately dialled in.
+
+options:gmem=riomhdhos
+
+in_pin:layer1 L
+in_pin:layer1 R
+in_pin:layer2 L
+in_pin:layer2 R
+in_pin:layer3 L
+in_pin:layer3 R
+in_pin:layer4 L
+in_pin:layer4 R
+out_pin:out L
+out_pin:out R
+
+slider1:100<0,100,0.1>Layer 1  (CC20)
+slider2:100<0,100,0.1>Layer 2  (CC21)
+slider3:100<0,100,0.1>Layer 3  (CC22)
+slider4:100<0,100,0.1>Layer 4  (CC23)
+slider5:1<0,1,1{ignore CC,follow CC20-31}>Fader/knob control
+slider6:100<0,100,0.1>Filter  (CC24)  100 = dry / wide open
+slider7:20<0,90,0.1>Filter resonance
+slider8:0<0,100,1>Input duck depth %
+slider9:0<0,1,1{guitar (in 1),both inputs}>Duck source
+slider10:0<0,3,1{COSMOS,THE CAIRN,EIRE,THE DEEP}>Which mood is this track?
+
+@init
+t1 = t2 = t3 = t4 = 1;
+g1 = g2 = g3 = g4 = 1;
+smooth = exp(-1 / (srate * 0.02));       // ~20 ms, stops fader sweeps zippering
+duckg = 1; ducksm = exp(-1 / (srate * 0.05));
+fc = 20000; ftype = 0;                   // 0 = bypass, 1 = lowpass, 2 = highpass
+// state-variable filter state, per channel
+ic1L = ic2L = ic1R = ic2R = 0;
+
+function recalc_gains()(
+  t1 = (slider1*0.01)*(slider1*0.01);    // square law: half a fader is about -12 dB
+  t2 = (slider2*0.01)*(slider2*0.01);
+  t3 = (slider3*0.01)*(slider3*0.01);
+  t4 = (slider4*0.01)*(slider4*0.01);
+);
+
+// Single-direction lowpass. Knob fully up (127 / 100%) is DRY - the filter is switched
+// out entirely, not merely wide open, so there is no phase smear or resonance colour at
+// rest. Turning down closes the filter, logarithmically so the sweep is even to the ear.
+//   100% -> bypass        75% -> ~3.5 kHz        50% -> ~1.1 kHz        0% -> 50 Hz
+function recalc_filter() local(p)(
+  p = slider6 * 0.01;
+  p >= 0.995 ? ( ftype = 0; ) : (
+    ftype = 1;
+    fc = exp(log(50) + (log(20000) - log(50)) * p);
+  );
+  fc = max(20, min(srate * 0.45, fc));
+  fg = tan($pi * fc / srate);
+  fk = 1 / max(0.5, (slider7 * 0.05 + 0.5));   // resonance -> 1/Q
+  fa1 = 1 / (1 + fg * (fg + fk));
+  fa2 = fg * fa1;
+  fa3 = fg * fa2;
+);
+
+@slider
+recalc_gains();
+recalc_filter();
+
+@block
+// ---- controls arrive through gmem, NOT MIDI -------------------------------------
+// Kontakt does not pass MIDI to FX downstream of it, and this plugin has to sit after
+// Kontakt to mix its outputs. So the brain publishes positions into shared memory and
+// we read our own mood's block. A stored 0 means "never touched" - the brain writes
+// value+1 - so an untouched control leaves the slider alone instead of slamming it to
+// zero and muting the track on load.
+gbase = 64 + slider10*16;
+
+gv = gmem[gbase+0]; (gv > 0 && abs((gv-1)*100 - slider1) > 0.05) ? ( slider1 = (gv-1)*100; sliderchange(slider1); recalc_gains(); );
+gv = gmem[gbase+1]; (gv > 0 && abs((gv-1)*100 - slider2) > 0.05) ? ( slider2 = (gv-1)*100; sliderchange(slider2); recalc_gains(); );
+gv = gmem[gbase+2]; (gv > 0 && abs((gv-1)*100 - slider3) > 0.05) ? ( slider3 = (gv-1)*100; sliderchange(slider3); recalc_gains(); );
+gv = gmem[gbase+3]; (gv > 0 && abs((gv-1)*100 - slider4) > 0.05) ? ( slider4 = (gv-1)*100; sliderchange(slider4); recalc_gains(); );
+gv = gmem[gbase+4]; (gv > 0 && abs((gv-1)*100 - slider6) > 0.05) ? ( slider6 = (gv-1)*100; sliderchange(slider6); recalc_filter(); );
+
+// Layer on/off from the Push's left-column pads. A separate gmem region from the
+// fader positions, so a pad toggle and a fader move never overwrite each other:
+// the fader sets the level, the pad decides whether that level is heard at all.
+// Recomputed every block - four multiplies, and it means a toggle takes effect
+// immediately rather than waiting for the next fader move.
+t1 = (slider1*0.01)*(slider1*0.01) * (gmem[gbase+12] > 0.5 ? 0 : 1);
+t2 = (slider2*0.01)*(slider2*0.01) * (gmem[gbase+13] > 0.5 ? 0 : 1);
+t3 = (slider3*0.01)*(slider3*0.01) * (gmem[gbase+14] > 0.5 ? 0 : 1);
+t4 = (slider4*0.01)*(slider4*0.01) * (gmem[gbase+15] > 0.5 ? 0 : 1);
+
+// MIDI is still read and passed through: harmless here, and it keeps working if this
+// plugin is ever placed somewhere the stream does reach it.
+while (midirecv(mpos, m1, m2, m3)) (
+  st = m1 & 0xF0;
+  (slider5 && st == 0xB0) ? (
+    m2 == 20 ? ( slider1 = m3*100/127; sliderchange(slider1); recalc_gains(); ) :
+    m2 == 21 ? ( slider2 = m3*100/127; sliderchange(slider2); recalc_gains(); ) :
+    m2 == 22 ? ( slider3 = m3*100/127; sliderchange(slider3); recalc_gains(); ) :
+    m2 == 23 ? ( slider4 = m3*100/127; sliderchange(slider4); recalc_gains(); ) :
+    m2 == 24 ? ( slider6 = m3*100/127; sliderchange(slider6); recalc_filter(); );
+  );
+  midisend(mpos, m1, m2, m3);            // pass everything on untouched
+);
+
+@sample
+g1 = t1 + (g1 - t1) * smooth;
+g2 = t2 + (g2 - t2) * smooth;
+g3 = t3 + (g3 - t3) * smooth;
+g4 = t4 + (g4 - t4) * smooth;
+
+mixl = spl0*g1 + spl2*g2 + spl4*g3 + spl6*g4;
+mixr = spl1*g1 + spl3*g2 + spl5*g3 + spl7*g4;
+
+// ---- per-mood lowpass (topology-preserving state variable) ----
+ftype ? (
+  v3 = mixl - ic2L; v1 = fa1*ic1L + fa2*v3; v2 = ic2L + fa2*ic1L + fa3*v3;
+  ic1L = 2*v1 - ic1L; ic2L = 2*v2 - ic2L;
+  mixl = v2;
+
+  v3 = mixr - ic2R; v1 = fa1*ic1R + fa2*v3; v2 = ic2R + fa2*ic1R + fa3*v3;
+  ic1R = 2*v1 - ic1R; ic2R = 2*v2 - ic2R;
+  mixr = v2;
+);
+
+// ---- duck against the live input, so the drone steps back when you play or speak ----
+slider8 > 0 ? (
+  env = slider9 ? max(gmem[0], gmem[1]) : gmem[0];
+  dtarget = 1 - (env * slider8 * 0.01);
+  duckg = dtarget + (duckg - dtarget) * ducksm;
+  mixl *= duckg; mixr *= duckg;
+);
+
+spl0 = mixl; spl1 = mixr;
+spl2 = spl3 = spl4 = spl5 = spl6 = spl7 = 0;

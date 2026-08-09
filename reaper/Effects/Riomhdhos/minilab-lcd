@@ -1,0 +1,69 @@
+desc:Riomhdhos MiniLab 3 LCD driver
+// mood name + play/stop glyph, plus a live knob readout (flash CC/value on turn).
+// gmem[0]=mood (mood-switch.lua), gmem[1]=pedal (pedal-glyph.lua).
+// Reads knob CCs from the track's MIDI input -> REVERB track must be armed + monitoring, input=All MIDI.
+options:gmem=riomhdhos
+
+slider1:0<0,1,1{gmem (live),slider2 (test)}>Mood source
+slider2:0<0,3,1{COSMOS,THE CAIRN,EIRE,THE DEEP}>Test mood
+
+@init
+buf = 100000; bp = 0;
+last_type = -1; last_mood = -2; last_ped = -2; last_cc = -1; last_val = -1;
+flash = 0; clk = 0; lastsend = -1000000;
+FLASHLEN = srate * 1.5;
+
+function emit(x) ( buf[bp] = x; bp += 1; );
+function hdr() ( bp=0;
+  emit(0xF0);emit(0x00);emit(0x20);emit(0x6B);emit(0x7F);emit(0x42);
+  emit(0x04);emit(0x02);emit(0x60);emit(0x01); );
+function line2mark() ( emit(0x00); emit(0x02); );
+function putnum(n) local(a,b) (
+  n = max(0, min(127, n|0));
+  a = (n/100)|0; b = ((n/10)|0)%10;
+  a>0 ? emit(48+a);
+  (a>0)||(b>0) ? emit(48+b);
+  emit(48 + (n%10)); );
+function lcd_init() ( bp=0;
+  emit(0xF0);emit(0x00);emit(0x20);emit(0x6B);emit(0x7F);emit(0x42);
+  emit(0x02);emit(0x02);emit(0x40);emit(0x6A);emit(0x21);emit(0xF7);
+  midisend_buf(0, buf, bp); );
+function put_moodname(m) (
+  m==0 ? ( emit(67);emit(79);emit(83);emit(77);emit(79);emit(83); ) :
+  m==1 ? ( emit(84);emit(72);emit(69);emit(32);emit(67);emit(65);emit(73);emit(82);emit(78); ) :
+  m==2 ? ( emit(69);emit(73);emit(82);emit(69); ) :
+         ( emit(84);emit(72);emit(69);emit(32);emit(68);emit(69);emit(69);emit(80); ); );
+function moodlen(m) ( m==0 ? 6 : m==1 ? 9 : m==2 ? 4 : 8; );
+function lcd_mood(m, ped) local(pad) (
+  hdr(); put_moodname(m);
+  pad = 21 - moodlen(m) - (ped ? 1 : 2); pad<0 ? pad=0;
+  loop(pad, emit(32));
+  ped ? emit(62) : ( emit(91); emit(93); );          // '>' or '[]'
+  line2mark();
+  emit(114);emit(105);emit(111);emit(109);emit(104);emit(100);emit(104);emit(111);emit(115); // riomhdhos
+  emit(0xF7); midisend_buf(0, buf, bp); );
+function lcd_param(cc, val) (
+  hdr();
+  emit(67); emit(67); emit(32); putnum(cc);          // "CC nnn"
+  line2mark();
+  emit(118);emit(97);emit(108);emit(58);emit(32); putnum(val);   // "val: nnn"
+  emit(0xF7); midisend_buf(0, buf, bp); );
+
+@block
+clk += samplesblock;
+throttle = srate * 0.04;
+while (midirecv(mpos, m1, m2, m3)) (
+  (m1 & 0xF0) == 0xB0 ? ( (m2 != 28 && m2 != 64) ? ( cur_cc=m2; cur_val=m3; flash=FLASHLEN; ); );
+);
+flash > 0 ? flash -= samplesblock;
+mood = (slider1==0 ? gmem[0] : slider2) | 0; mood = min(max(mood,0),3);
+ped  = gmem[1] | 0;
+want_type = flash > 0 ? 1 : 0;
+changed = (want_type != last_type)
+   || (want_type==1 && (cur_cc != last_cc || cur_val != last_val))
+   || (want_type==0 && (mood != last_mood || ped != last_ped));
+(changed && (clk - lastsend) >= throttle) ? (
+  want_type==1 ? ( lcd_init(); lcd_param(cur_cc, cur_val); last_cc=cur_cc; last_val=cur_val; )
+               : ( lcd_init(); lcd_mood(mood, ped);        last_mood=mood; last_ped=ped; );
+  last_type = want_type; lastsend = clk;
+);

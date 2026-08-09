@@ -1,0 +1,37 @@
+desc:Riomhdhos Push lamp (lights every button and pad so the panel is readable)
+// Push has no self-illumination - all LEDs are host-driven, so an unconnected unit
+// is a dark slab with unreadable labels. This lights everything at once.
+//
+// Put it on a track whose MIDI HARDWARE OUTPUT is set to the Ableton Push, then
+// toggle slider1. Button LEDs are set by CC value, pad LEDs by note-on velocity.
+// Pad colour on Push 1 is velocity-indexed, so different velocities give different
+// colours; 100 is a bright, readable default.
+
+slider1:0<0,1,1{idle,LIGHT EVERYTHING}>Lamp
+slider2:100<1,127,1>Pad brightness / colour (velocity)
+slider3:127<1,127,1>Button brightness (CC value)
+slider4:0<0,1,1{all pads,pads off}>Pads
+
+@init
+fire = 1;   // light once on load too, so simply adding it is enough
+
+@slider
+fire = 1;
+
+@block
+fire ? (
+  // buttons: sweep the whole CC range. Push ignores CCs that are not buttons,
+  // so a blanket sweep is safe and avoids needing a per-button map.
+  i = 0;
+  loop(120,
+    midisend(0, 0xB0, i, slider1 ? slider3 : 0);
+    i += 1;
+  );
+  // pads: notes 36-99 on channel 1
+  n = 36;
+  loop(64,
+    midisend(0, 0x90, n, (slider1 && !slider4) ? slider2 : 0);
+    n += 1;
+  );
+  fire = 0;
+);

@@ -1,0 +1,51 @@
+desc:Riomhdhos MIDI spy (mirrors raw input to sliders for remote inspection)
+// Put FIRST on the CTRL track, ahead of the brain, so it sees hardware MIDI before
+// the brain consumes any of it. Passes everything through untouched.
+//
+// Captured events are mirrored onto SLIDERS, not just gmem, because Lua can read
+// FX parameters but CANNOT read gmem - so a gmem-only log is invisible to the
+// remote console. Sliders 3-8 hold the most recent event and a running count;
+// sliders 9-12 hold the highest and lowest note and CC seen, which is what actually
+// identifies an unknown controller.
+
+options:gmem=riomhdhos
+
+slider1:0<0,1,1{everything,CC and SysEx only}>Capture filter
+slider2:0<0,1,1{running,paused}>Pause capture
+slider3:0<0,255,1>last status
+slider4:0<0,127,1>last data1
+slider5:0<0,127,1>last data2
+slider6:0<0,16,1>last channel
+slider7:0<0,100000,1>events seen
+slider8:0<0,255,1>last note-on note
+slider9:0<0,127,1>lowest note seen
+slider10:0<0,127,1>highest note seen
+slider11:0<0,127,1>lowest CC seen
+slider12:0<0,127,1>highest CC seen
+
+@init
+spyn = 0; lon = 999; hin = -1; loc = 999; hic = -1;
+
+@block
+while (midirecv(mpos, m1, m2, m3)) (
+  st = m1 & 0xF0; ch = (m1 & 0x0F) + 1;
+  keep = slider2 ? 0 : (slider1 ? (st == 0xB0 || m1 == 0xF0) : 1);
+  keep ? (
+    slider3 = st; slider4 = m2; slider5 = m3; slider6 = ch;
+    spyn += 1; slider7 = spyn;
+    (st == 0x90 && m3 > 0) ? (
+      slider8 = m2;
+      m2 < lon ? lon = m2;  m2 > hin ? hin = m2;
+      slider9 = lon; slider10 = hin;
+    );
+    st == 0xB0 ? (
+      m2 < loc ? loc = m2;  m2 > hic ? hic = m2;
+      slider11 = loc; slider12 = hic;
+    );
+    sliderchange(slider3); sliderchange(slider4); sliderchange(slider5);
+    sliderchange(slider6); sliderchange(slider7); sliderchange(slider8);
+    sliderchange(slider9); sliderchange(slider10);
+    sliderchange(slider11); sliderchange(slider12);
+  );
+  midisend(mpos, m1, m2, m3);
+);
