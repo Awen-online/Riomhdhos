@@ -55,7 +55,8 @@ rows 0-5   col 0   layer 1-4 on/off
            col 1   dark, reserved
            cols 2-7  6x6 scale-locked note grid
 buttons    6 columns: COSMOS CAIRN EIRE DEEP Zoom[1] Zoom[2]
-           upper CC102-109 = MUTE, lower CC20-27 = ARM, fully lit or fully dark
+           upper CC102-109 = ARM (red), lower CC20-27 = MUTE (white/grey)
+           both binary - dark unless the state is on; LED colours are fixed by hardware
 encoders   CC71-78 -> the MiniLab's own knob CCs;  CC79 (9th) -> master volume
 octave     CC54 down / CC55 up, published to gmem so the LED colouring follows
 ```
