@@ -31,13 +31,16 @@ slider2:0<0,3,1{minor (aeolian),dorian,major,minor pentatonic}>Scale
 slider3:3<1,8,1>Row step (scale degrees per row)
 slider4:2<0,5,1>Octave offset
 slider5:1<0,1,1{off,on}>Grid sends notes
-slider6:0<0,127,1>-last note in
-slider7:0<0,16,1>-last channel in
-slider8:0<0,9999,1>-mood selects fired
-slider9:0<0,127,1>-last CC in
-slider10:0<0,9999,1>-any midi seen
+// COMPILE CANARY - see the note in @init. Read this from the console to tell a
+// running plugin from one that merely loaded its sliders.
+slider6:0<0,99,1>-alive
 
 @init
+// A JSFX with a compile error still reports every slider through the API, so
+// TrackFX_GetNumParams and GetParamName look perfectly healthy while no code runs.
+// This counter is the only cheap way to tell the difference: if it is 0, @init never
+// executed and the plugin is dead. An empty block "( )" was what killed it once.
+slider6 = 1; sliderchange(slider6);
 padnote = 5000;                 // pad note -> the note we actually emitted, for note-off
 enc = 5400;                     // accumulated absolute value per encoder (they send relative)
 sc = 5200;                      // scale degree table
@@ -69,8 +72,6 @@ loadscale();
 @block
 while (midirecv(mpos, m1, m2, m3)) (
   st = m1 & 0xF0;
-  slider10 += 1; sliderchange(slider10);
-  st == 0xB0 ? ( slider9 = m2; sliderchange(slider9); );
 
   (st == 0x90 || st == 0x80) ? (
     (m2 >= 92 && m2 <= 95) ? (
@@ -87,8 +88,10 @@ while (midirecv(mpos, m1, m2, m3)) (
         gmem[gi] = gmem[gi] > 0.5 ? 0 : 1;
       );
     ) :
-    // rest of column 0 is spare - consumed so it cannot play a stray note
-    ((m2 - 36) % 8 == 0) ? ( ) :
+    // rest of column 0 is spare - consumed so it cannot play a stray note.
+    // NB: an EMPTY block "( )" is a compile error in EEL2 and silently stops the
+    // whole plugin running while still showing its sliders - needs a statement.
+    ((m2 - 36) % 8 == 0) ? ( spare = 1; ) :
     (m2 >= 36 && m2 <= 91) ? (
       slider5 ? (
         st == 0x90 && m3 > 0 ? (
