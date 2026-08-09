@@ -40,6 +40,13 @@ slider7:20<0,90,0.1>Filter resonance
 slider8:0<0,100,1>Input duck depth %
 slider9:0<0,1,1{guitar (in 1),both inputs}>Duck source
 slider10:0<0,3,1{COSMOS,THE CAIRN,EIRE,THE DEEP}>Which mood is this track?
+// The layer mutes live in gmem, written by the Push's pads. That made them invisible
+// from everywhere except the Push's LEDs - and because Kontakt's outputs are not split
+// yet, ALL audio arrives on layer 1, so muting layer 1 silences the whole mood while
+// the "Layer 1" level slider still reads 100. These two make the state visible and
+// give a way out without the Push.
+slider11:0<0,15,1>-layers muted (bitmask, read-only)
+slider12:0<0,1,1{idle,CLEAR ALL LAYER MUTES}>Unmute all layers
 
 @init
 t1 = t2 = t3 = t4 = 1;
@@ -99,6 +106,14 @@ gv = gmem[gbase+4]; (gv > 0 && abs((gv-1)*100 - slider6) > 0.05) ? ( slider6 = (
 // the fader sets the level, the pad decides whether that level is heard at all.
 // Recomputed every block - four multiplies, and it means a toggle takes effect
 // immediately rather than waiting for the next fader move.
+slider12 ? (
+  gmem[gbase+12] = 0; gmem[gbase+13] = 0; gmem[gbase+14] = 0; gmem[gbase+15] = 0;
+  slider12 = 0; sliderchange(slider12);
+);
+mb = (gmem[gbase+12] > 0.5 ? 1 : 0) + (gmem[gbase+13] > 0.5 ? 2 : 0)
+   + (gmem[gbase+14] > 0.5 ? 4 : 0) + (gmem[gbase+15] > 0.5 ? 8 : 0);
+mb != slider11 ? ( slider11 = mb; sliderchange(slider11); );
+
 t1 = (slider1*0.01)*(slider1*0.01) * (gmem[gbase+12] > 0.5 ? 0 : 1);
 t2 = (slider2*0.01)*(slider2*0.01) * (gmem[gbase+13] > 0.5 ? 0 : 1);
 t3 = (slider3*0.01)*(slider3*0.01) * (gmem[gbase+14] > 0.5 ? 0 : 1);
