@@ -81,11 +81,10 @@ loaded later works immediately.
 ```
 0, 1        live input envelopes (guitar, second input)
 8, 9        envelope peak hold
-63          active mood + 1
+62          octave offset + 1   (pushbrain -> pushled)
+63          active mood + 1     (minilab-brain -> pushled, bridge)
 64 + m*16 + 0..3    faders 1-4      (value+1, 0 = never touched)
 64 + m*16 + 4..11   knobs K1-K8     (value+1, 0 = never touched)
 64 + m*16 + 12..15  layer 1-4 muted (1 = silent)
-62          octave offset + 1   (pushbrain -> pushled)
-63          active mood + 1
 1000+       MIDI spy log
 ```
