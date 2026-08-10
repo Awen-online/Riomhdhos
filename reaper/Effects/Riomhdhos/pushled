@@ -262,7 +262,9 @@ function redraw_mixer(m) local(p, row, col, lit, lvl, mut, islot)(
       // instrument 1 at the TOP of the four rows, matching the rack order
       islot = 3 - row;
       islot < slotsof(col) ? (
-        mut = (slider25 & (2 ^ (col*4 + islot))) != 0;
+        // read the gmem flag, not the bridge's mask: pushbrain sets it directly, so
+        // the pad updates immediately and stays correct even if the bridge is down
+        mut = gmem[64 + col*16 + 12 + islot] > 0.5;
         midisend(0, 0x90, p, mut ? slider10 : slider11);
       ) : midisend(0, 0x90, p, 0);          // empty slot - stays dark
     ) : midisend(0, 0x90, p, 0);
@@ -353,7 +355,11 @@ cfg = slider1 + slider2*16 + slider3*64 + slider4*512
     + gmem[64+mm*16+14]*4 + gmem[64+mm*16+15]*8
     + slider12*1048576 + slider13*268435456 + curoct*4096
     + slider17 + slider18*2 + slider19*4 + slider20*8 + slider21*16 + slider22*32
-    + slider25*65536 + gmem[53]*262144;
+    + slider25*65536 + gmem[53]*262144
+    + gmem[64+0*16+12]*1 + gmem[64+0*16+13]*2 + gmem[64+0*16+14]*4 + gmem[64+0*16+15]*8
+    + gmem[64+1*16+12]*16 + gmem[64+1*16+13]*32 + gmem[64+1*16+14]*64 + gmem[64+1*16+15]*128
+    + gmem[64+2*16+12]*256 + gmem[64+2*16+13]*512 + gmem[64+2*16+14]*1024 + gmem[64+2*16+15]*2048
+    + gmem[64+3*16+12]*4096 + gmem[64+3*16+13]*8192 + gmem[64+3*16+14]*16384 + gmem[64+3*16+15]*32768;
 // Parameter feedback refreshes ONLY line 3 - a full redraw is ~70 messages and would
 // flood the port on every knob movement.
 // notes played -> line 2, alongside the mood name

@@ -33,10 +33,11 @@ local RESCAN     = 1.0
 
 local pushTr, pushFx, btnParam, cntParam, mstParam, mixColP, mixValP, mixCntP
 local lastMixCount = -1
--- Kontakt exposes no per-instrument mute to the host, only each slot's Volume. So a
+-- Kontakt exposes no per-instrument mute to the host, only each slot's volume. So a
 -- "mute" is: drive that instrument's volume to silence and remember where it was.
--- Keyed mood*4+slot -> the normalised volume it had before muting.
-local instPrevVol = {}
+-- Previous levels are kept in ExtState (key instvol_<mood>_<slot>_<param>) rather than
+-- a Lua table, so they survive script reloads - and muted state is always re-derived
+-- from the parameter itself.
 
 local ctrlTr, ctrlFx, moodParam
 local sliderParam = {}     -- brain slider index -> its FX param index
@@ -304,9 +305,24 @@ local function publishStates()
     end
   end
 
-  -- which instruments are currently muted, one bit per mood*4+slot
+  -- which instruments are currently muted, read from the parameters themselves
   local imask = 0
-  for k, _ in pairs(instPrevVol) do imask = imask + 2^k end
+  for col = 1, 4 do
+    local tr = trackByFragment(COLUMN_TRACK[col])
+    local kfx = tr and kontaktOfStrict(tr)
+    if kfx then
+      for slot = 0, 3 do
+        local vps = slotVolumeParams(tr, kfx, slot)
+        if #vps > 0 then
+          local m = true
+          for _, vp in ipairs(vps) do
+            if reaper.TrackFX_GetParamNormalized(tr, kfx, vp) > 0.001 then m = false end
+          end
+          if m then imask = imask + 2^((col-1)*4 + slot) end
+        end
+      end
+    end
+  end
   if np > 24 then reaper.TrackFX_SetParam(led, ledFx, 24, imask) end
 end
 
@@ -386,21 +402,35 @@ local function body()
             if kfx then
               local vps = slotVolumeParams(tr, kfx, slot)
               if #vps > 0 then
-                local key = idx
-                local nowMuted
-                if instPrevVol[key] then
-                  for _, e in ipairs(instPrevVol[key]) do
-                    reaper.TrackFX_SetParamNormalized(tr, kfx, e.p, e.v)
+                -- ⚠️ Decide muted/unmuted by READING the parameters, never from an
+                -- in-memory table. A cached flag desyncs the moment anything else
+                -- touches the value - a manual restore, a project reload, a plugin
+                -- swap - and then a press "restores" a volume that was never muted, so
+                -- nothing audible happens and the pad looks broken. Reality is the
+                -- only trustworthy state. Previous levels live in ExtState so they
+                -- survive reloads.
+                local isMuted = true
+                for _, vp in ipairs(vps) do
+                  if reaper.TrackFX_GetParamNormalized(tr, kfx, vp) > 0.001 then
+                    isMuted = false
                   end
-                  instPrevVol[key] = nil
+                end
+                local nowMuted
+                if isMuted then
+                  for _, vp in ipairs(vps) do
+                    local k = "instvol_" .. mood .. "_" .. slot .. "_" .. vp
+                    local prev = tonumber(reaper.GetExtState("Riomhdhos", k))
+                    -- fall back to unity rather than leaving it stuck silent
+                    reaper.TrackFX_SetParamNormalized(tr, kfx, vp, prev or 1.0)
+                  end
                   nowMuted = 0
                 else
-                  local saved = {}
                   for _, vp in ipairs(vps) do
-                    saved[#saved+1] = { p = vp, v = reaper.TrackFX_GetParamNormalized(tr, kfx, vp) }
+                    local k = "instvol_" .. mood .. "_" .. slot .. "_" .. vp
+                    reaper.SetExtState("Riomhdhos", k,
+                      tostring(reaper.TrackFX_GetParamNormalized(tr, kfx, vp)), false)
                     reaper.TrackFX_SetParamNormalized(tr, kfx, vp, 0)
                   end
-                  instPrevVol[key] = saved
                   nowMuted = 1
                 end
                 -- announce it on the Push display

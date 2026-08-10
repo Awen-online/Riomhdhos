@@ -109,6 +109,29 @@ COSMOS  'Cutoff' at 0, 64      CAIRN  'Cutoff' at 0, 64
 EIRE    'Solo'   at 0, 40      DEEP   'Noise'  at 0
 ```
 
+## Muting an instrument — two routes, one gate
+
+A green pad drives both, because neither alone covers every case:
+
+- **instrument volume** (via the Lua bridge) — works today with no routing, but only
+  for libraries publishing a usable volume. COSMOS, THE CAIRN and THE DEEP do; the
+  Uilleann Pipes library on ÉIRE does not.
+- **gmem layer mute** (in `layermix`) — works for ANY instrument whatever it publishes,
+  but only once Kontakt's outputs are split (inst 1 → st.1, 2 → st.2 …).
+
+⚠️ The layer mutes are **gated behind the `Kontakt outputs` switch** on each mixer,
+default off. Applying them unsplit is actively wrong: everything arrives on layer 1, so
+muting instrument 1 takes the whole mood with it and muting instrument 2 mutes silence.
+Split the outputs, then set that switch to SPLIT per mood.
+
+⚠️ Muted state is **derived by reading the parameter**, never cached. A remembered flag
+desyncs the moment anything else touches the value — a manual restore, a reload — and
+then a press "restores" a volume that was never muted, so nothing happens and the pad
+looks dead. Previous levels live in ExtState so they survive reloads.
+
+⚠️ Kontakt's **formatted parameter values lag one write behind**. Compare normalised
+values, or listen. Two separate diagnoses were sent the wrong way by trusting the text.
+
 ## LED convention — three states, not two
 
 ```

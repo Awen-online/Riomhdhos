@@ -143,16 +143,27 @@ while (midirecv(mpos, m1, m2, m3)) (
       st == 0x90 && m3 > 0 ? (
         mrow = ((m2 - 36) / 8) | 0;
         mcol = (m2 - 36) - mrow*8;
-        // column = which mood (all four visible at once), row = instrument slot.
-        // This has to go via the BRIDGE, not gmem: muting an instrument means
-        // driving ITS volume inside Kontakt, and only REAPER can set a plugin
-        // parameter. The old gmem route muted the track's channels instead, which
-        // did nothing once Kontakt's outputs were unsplit - everything arrives on
-        // layer 1, so only the bottom pad ever had an effect.
-        // Instrument 1 sits at the TOP of the four rows, reading downward the way
-        // the rack does. Pad row 3 = slot 0, row 0 = slot 3.
+        // Column = which mood (all four visible at once), row = instrument slot.
+        // Instrument 1 is the TOP of the four rows, reading downward like the rack.
+        //
+        // A pad drives BOTH mute routes, because neither alone covers every case:
+        //   gmem layer mute  - mutes that instrument's CHANNEL PAIR in the layer
+        //                      mixer. Works for ANY instrument whatever it publishes,
+        //                      but only once Kontakt's outputs are split (inst 1 ->
+        //                      st.1, 2 -> st.2 ...). Until then everything arrives on
+        //                      layer 1 and only that pad bites.
+        //   bridge -> volume - drives the instrument's own volume parameter inside
+        //                      Kontakt. Works today with no routing, but only for
+        //                      libraries publishing a usable volume - EIRE's pipes
+        //                      publish none.
+        // Doing both is harmless: each silences the same instrument, and together they
+        // cover the rig before and after the outputs are split. The LED reads the gmem
+        // flag, so a pad shows its state immediately without waiting on Lua.
         (mcol <= 3 && mrow <= 3) ? (
-          slider19 = 1 + mcol*4 + (3 - mrow);
+          islot = 3 - mrow;
+          gi = 64 + mcol*16 + 12 + islot;
+          gmem[gi] = gmem[gi] > 0.5 ? 0 : 1;
+          slider19 = 1 + mcol*4 + islot;
           slider21 += 1;
           sliderchange(slider19); sliderchange(slider21);
         );

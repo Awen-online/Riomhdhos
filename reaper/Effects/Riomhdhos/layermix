@@ -52,6 +52,12 @@ slider12:0<0,1,1{idle,CLEAR ALL LAYER MUTES}>Unmute all layers
 // frame. It also cannot use the gmem layer mutes, because Lua can neither read nor
 // write gmem. A plain slider is the one thing the bridge CAN set.
 slider13:0<0,1,1{audible,MUTED}>Mood mute (from Push)
+// ⚠️ Until Kontakt's outputs are split (inst 1 -> st.1, 2 -> st.2 ...) EVERYTHING
+// arrives on layer 1. Applying the per-layer mutes in that state is actively wrong:
+// muting instrument 1 takes the whole mood with it, and muting instrument 2 mutes a
+// channel carrying no audio. So the layer mutes are IGNORED until this is switched on.
+// The Push still tracks its own pad state either way - only the effect is gated.
+slider14:0<0,1,1{not split - ignore layer mutes,SPLIT - apply them}>Kontakt outputs
 
 @init
 t1 = t2 = t3 = t4 = 1;
@@ -119,10 +125,11 @@ mb = (gmem[gbase+12] > 0.5 ? 1 : 0) + (gmem[gbase+13] > 0.5 ? 2 : 0)
    + (gmem[gbase+14] > 0.5 ? 4 : 0) + (gmem[gbase+15] > 0.5 ? 8 : 0);
 mb != slider11 ? ( slider11 = mb; sliderchange(slider11); );
 
-t1 = (slider1*0.01)*(slider1*0.01) * (gmem[gbase+12] > 0.5 ? 0 : 1);
-t2 = (slider2*0.01)*(slider2*0.01) * (gmem[gbase+13] > 0.5 ? 0 : 1);
-t3 = (slider3*0.01)*(slider3*0.01) * (gmem[gbase+14] > 0.5 ? 0 : 1);
-t4 = (slider4*0.01)*(slider4*0.01) * (gmem[gbase+15] > 0.5 ? 0 : 1);
+lmute = slider14;   // only honour the per-layer mutes once the outputs are split
+t1 = (slider1*0.01)*(slider1*0.01) * ((lmute && gmem[gbase+12] > 0.5) ? 0 : 1);
+t2 = (slider2*0.01)*(slider2*0.01) * ((lmute && gmem[gbase+13] > 0.5) ? 0 : 1);
+t3 = (slider3*0.01)*(slider3*0.01) * ((lmute && gmem[gbase+14] > 0.5) ? 0 : 1);
+t4 = (slider4*0.01)*(slider4*0.01) * ((lmute && gmem[gbase+15] > 0.5) ? 0 : 1);
 
 // MIDI is still read and passed through: harmless here, and it keeps working if this
 // plugin is ever placed somewhere the stream does reach it.
