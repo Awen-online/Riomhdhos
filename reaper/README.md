@@ -63,7 +63,8 @@ SESSION view   4x4 instrument grid: COLUMN = mood, ROW = instrument slot
                arm/mute rows lit (upper CC102-109 red = ARM,
                                   lower CC20-27 white = MUTE, both binary)
 
-BOTH views     PLAY (CC85) = panic, all-notes-off on every mood channel
+BOTH views     PLAY (CC85)   = panic, all-notes-off on every mood channel
+               REPEAT (CC56) = HOLD - a true note latch, lit while engaged
                octave CC54 down / CC55 up, dark at the limits
                encoders CC71-78 -> the MiniLab's own knob CCs (same in both views)
                CC79 (9th encoder) -> master volume, capped at unity
@@ -91,6 +92,25 @@ so no label straddles a break — laying them out every 8 characters renders `RE
 ⚠️ Muting a mood does **not** use the track mute: `mood_mute` owns that and re-asserts
 the active mood every 30 ms. Moods mute through a slider on their layer mixer, which is
 the one thing the Lua bridge can set — it can neither read nor write gmem.
+
+## ⚠️ An instrument is only visible if it publishes host automation
+
+The Push can only see, count or mute an instrument that exposes named parameters to
+the host. Kontakt's rack is opaque and its state chunk is compressed (557 KB with no
+readable strings), so there is no other way to know an instrument is loaded.
+
+- **Play Series** libraries publish automatically — `Volume` at slot base + 7.
+- The **Cutoff / Vol A / Vol B family** publishes too, but has **no single `Volume`** —
+  it exposes `Vol A` and `Vol B` for its two layers, and both must be driven together
+  or muting leaves half the instrument sounding.
+- **Plain Kontakt libraries publish nothing.** Uilleann Pipes on ÉIRE shows every
+  parameter as `#000`, `#001`… and is therefore invisible: no pad, no mute.
+
+Fix, once per instrument: in that mood's Kontakt, **Browser → Automation → Host
+Automation**, drag the instrument's Volume onto a slot.
+
+⚠️ Kontakt exposes **no per-instrument mute** to the host. Muting is implemented as
+"drive that instrument's volume parameter(s) to zero and remember the previous value".
 
 ## Mood selection needs no Kontakt setup
 

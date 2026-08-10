@@ -51,6 +51,15 @@ slider17:1<0,1,1{pitch bend (as-is),modulation CC1}>Touch strip
 // Mood select and PLAY-panic stay live in EVERY view: being in the wrong mode is not
 // an acceptable reason to be unable to change world or kill a stuck note.
 slider18:0<0,1,1{NOTE,MIXER}>View
+// REPEAT (CC56) = HOLD. A true note-latch, not a sustain message: CC64 is taken by
+// the brain for mood-advance, so sending sustain from here would change world instead
+// of holding notes. Suppressing note-offs also holds more reliably than sustain does -
+// sustain asks the patch to hold and each patch decides, whereas a note that was never
+// released is simply still down.
+// Built as a MODE rather than a one-off so the planned "Repeat + time division"
+// note-repeat can sit on the same button. The division buttons are CC36-43, which are
+// the bi-colour red/green LEDs - the one place on this panel where hue is selectable.
+slider29:0<0,1,1{off,HOLDING}>Repeat / hold
 slider19:0<0,8,1>-mixer column touched
 slider20:0<0,127,1>-mixer value
 slider21:0<0,9999,1>-mixer events
@@ -87,6 +96,9 @@ sc = 5200;                      // scale degree table
 i = 0; loop(128, padnote[i] = -1; i += 1; );
 i = 0; loop(8, enc[i] = 64; i += 1; );   // start centred
 held = 0; gmem[54] = 0; gmem[55] = 0;
+heldpad = 5600;   // pads whose note is being latched
+i = 0; loop(128, heldpad[i] = 0; i += 1; );
+gmem[53] = 0;
 menc = 127;                              // master encoder starts at unity
 gmem[62] = slider4 + 1;
 
@@ -131,11 +143,18 @@ while (midirecv(mpos, m1, m2, m3)) (
       st == 0x90 && m3 > 0 ? (
         mrow = ((m2 - 36) / 8) | 0;
         mcol = (m2 - 36) - mrow*8;
-        // column = which mood (not the active one - all four are visible at once),
-        // row = which instrument slot. Straight to gmem, so no Lua in the path.
+        // column = which mood (all four visible at once), row = instrument slot.
+        // This has to go via the BRIDGE, not gmem: muting an instrument means
+        // driving ITS volume inside Kontakt, and only REAPER can set a plugin
+        // parameter. The old gmem route muted the track's channels instead, which
+        // did nothing once Kontakt's outputs were unsplit - everything arrives on
+        // layer 1, so only the bottom pad ever had an effect.
+        // Instrument 1 sits at the TOP of the four rows, reading downward the way
+        // the rack does. Pad row 3 = slot 0, row 0 = slot 3.
         (mcol <= 3 && mrow <= 3) ? (
-          gi = 64 + mcol*16 + 12 + mrow;
-          gmem[gi] = gmem[gi] > 0.5 ? 0 : 1;
+          slider19 = 1 + mcol*4 + (3 - mrow);
+          slider21 += 1;
+          sliderchange(slider19); sliderchange(slider21);
         );
       );
     ) :
@@ -153,15 +172,38 @@ while (midirecv(mpos, m1, m2, m3)) (
         ) : (
           // release the note this pad actually produced - the scale may have been
           // changed while it was held, so recomputing here would strand a note on
-          padnote[m2] >= 0 ? (
-            midisend(mpos, 0x80, padnote[m2], 0); padnote[m2] = -1;
-            held = max(0, held - 1);
-            gmem[55] = held; gmem[54] += 1;
+          // while holding, keep the note down and remember which pad owns it
+          slider29 ? ( heldpad[m2] = 1; ) : (
+            padnote[m2] >= 0 ? (
+              midisend(mpos, 0x80, padnote[m2], 0); padnote[m2] = -1;
+              held = max(0, held - 1);
+              gmem[55] = held; gmem[54] += 1;
+            );
           );
         );
       );
     );
     // pads 96-99 (rest of the top row) are deliberately left unassigned
+  ) :
+
+  // REPEAT (CC56): toggle hold. Releasing it sends note-offs for everything latched,
+  // so nothing can be stranded on.
+  (st == 0xB0 && m2 == 56 && m3 > 0) ? (
+    slider29 = slider29 ? 0 : 1;
+    sliderchange(slider29);
+    gmem[53] = slider29;
+    slider29 ? 0 : (
+      i = 36;
+      loop(64,
+        heldpad[i] ? (
+          midisend(mpos, 0x80, padnote[i], 0);
+          heldpad[i] = 0; padnote[i] = -1;
+          held = max(0, held - 1);
+        );
+        i += 1;
+      );
+      gmem[55] = held; gmem[54] += 1;
+    );
   ) :
 
   // NOTE (CC50) and SESSION (CC51) select a view DIRECTLY - they are not a toggle.

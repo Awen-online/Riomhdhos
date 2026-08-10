@@ -58,10 +58,21 @@ slider22:0<0,127,1>-level 6
 // Exposed so they can be found by trial rather than guessed at.
 slider23:4<0,127,1>View button: SELECTED
 slider24:1<0,127,1>View button: unselected
+// Which instruments are muted, one bit per mood*4+slot, written by the bridge.
+// Not gmem: muting an instrument is a Kontakt parameter, so only Lua can do it and
+// only Lua knows the result.
+slider25:0<0,65535,1>-instruments muted
+// Which instrument was just muted or unmuted, written by the bridge for the readout.
+// Kontakt does NOT expose instrument names to the host and its state chunk is
+// compressed - 557 KB with no readable strings - so the display names the SLOT
+// ("COSMOS I2"), which is unambiguous, rather than a name nobody can retrieve.
+slider26:0<0,16,1>-mute slot code
+slider27:0<0,1,1>-mute state
+slider28:0<0,9999,1>-mute events
 
 @init
 buf = 90000; txt = 91000; sc = 92000;
-lastmood = -1; lastcfg = -1; dirty = 1; curoct = 2; lastpc = -1; phold = 0; lastview = -1; lastnc = -1;
+lastmood = -1; lastcfg = -1; dirty = 1; curoct = 2; lastpc = -1; phold = 0; lastview = -1; lastnc = -1; lastmc2 = -1;
 
 function loadscale() local(b)(
   b = slider2;
@@ -200,13 +211,34 @@ function noteline(m, note, vel, heldn) local(n, pc, oc, a, b, c)(
 // How many instrument slots each mood actually has loaded, published by
 // Riomhdhos_bridge.lua. An empty slot stays dark rather than lit-but-silent, so the
 // grid shows the instrument shortage instead of hiding it.
+// "COSMOS I2  MUTED" / "COSMOS I2  ON" on line 3.
+// Kontakt does not expose instrument names to the host, and its state chunk is
+// compressed - 557 KB with no readable strings - so this names the SLOT, which is
+// unambiguous, rather than a name that cannot be retrieved.
+function muteline(code, state) local(n, mo, sl)(
+  clr(68);
+  mo = ((code - 1) / 4) | 0;
+  sl = (code - 1) - mo*4;
+  n = moodtxt(mo);
+  txt[n] = 32; n += 1;
+  txt[n] = 73; n += 1;                       // 'I'
+  txt[n] = 49 + sl; n += 1;                  // slot number
+  txt[n] = 32; n += 1; txt[n] = 32; n += 1;
+  state ? (
+    txt[n]=77;txt[n+1]=85;txt[n+2]=84;txt[n+3]=69;txt[n+4]=68; n += 5;   // MUTED
+  ) : (
+    txt[n]=79;txt[n+1]=78; n += 2;                                        // ON
+  );
+  lcdsend(0x1A, n);
+);
+
 function slotsof(c)(
   c==0?slider17 : c==1?slider18 : c==2?slider19 : c==3?slider20 : 0;
 );
 
 // MIXER VIEW: one column per track, a bar rising from the bottom row. Pads at or
 // below the level are lit, so the whole mix reads at a glance.
-function redraw_mixer(m) local(p, row, col, lit, lvl, mut)(
+function redraw_mixer(m) local(p, row, col, lit, lvl, mut, islot)(
   // arm/mute rows are a MIXER-view feature
   p = 0;
   loop(6,
@@ -220,8 +252,10 @@ function redraw_mixer(m) local(p, row, col, lit, lvl, mut)(
     row = ((p - 36) / 8) | 0;
     col = (p - 36) - row*8;
     (col <= 3 && row <= 3) ? (
-      row < slotsof(col) ? (
-        mut = gmem[64 + col*16 + 12 + row] > 0.5;
+      // instrument 1 at the TOP of the four rows, matching the rack order
+      islot = 3 - row;
+      islot < slotsof(col) ? (
+        mut = (slider25 & (2 ^ (col*4 + islot))) != 0;
         midisend(0, 0x90, p, mut ? slider10 : slider11);
       ) : midisend(0, 0x90, p, 0);          // empty slot - stays dark
     ) : midisend(0, 0x90, p, 0);
@@ -265,6 +299,9 @@ function redraw(m) local(p, n, rootpc)(
   // rather than lit and inert, which would invite pressing it mid-set.
   midisend(0, 0xB0, 85, slider14);
   midisend(0, 0xB0, 86, slider15);
+  // REPEAT lit while notes are latched - whether a drone is being held is the last
+  // thing you want to be guessing about mid-piece
+  midisend(0, 0xB0, 56, gmem[53] > 0.5 ? slider14 : slider15);
   // NOTE / SESSION: the active view is lit, the other dark, so the panel always says
   // which view you are in
   midisend(0, 0xB0, 50, gmem[61] == 1 ? slider24 : slider23);
@@ -307,7 +344,8 @@ cfg = slider1 + slider2*16 + slider3*64 + slider4*512
     + gmem[64+mm*16+12]*1 + gmem[64+mm*16+13]*2
     + gmem[64+mm*16+14]*4 + gmem[64+mm*16+15]*8
     + slider12*1048576 + slider13*268435456 + curoct*4096
-    + slider17 + slider18*2 + slider19*4 + slider20*8 + slider21*16 + slider22*32;
+    + slider17 + slider18*2 + slider19*4 + slider20*8 + slider21*16 + slider22*32
+    + slider25*65536 + gmem[53]*262144;
 // Parameter feedback refreshes ONLY line 3 - a full redraw is ~70 messages and would
 // flood the port on every knob movement.
 // notes played -> line 2, alongside the mood name
@@ -315,6 +353,13 @@ nc = gmem[54];
 nc != lastnc ? (
   lastnc = nc;
   gmem[61] == 0 ? noteline(mm, gmem[56], gmem[57], gmem[55]);
+);
+
+// an instrument mute announces itself on the same line as parameter changes
+mc2 = slider28;
+mc2 != lastmc2 ? (
+  lastmc2 = mc2;
+  slider26 > 0 ? ( muteline(slider26, slider27); phold = srate * slider16; );
 );
 
 pc = gmem[58];

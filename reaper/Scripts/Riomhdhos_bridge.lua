@@ -33,8 +33,11 @@ local RESCAN     = 1.0
 
 local pushTr, pushFx, btnParam, cntParam, mstParam, mixColP, mixValP, mixCntP
 local lastMixCount = -1
-local lastMaster = -1
-local lastBtnCount = -1
+-- Kontakt exposes no per-instrument mute to the host, only each slot's Volume. So a
+-- "mute" is: drive that instrument's volume to silence and remember where it was.
+-- Keyed mood*4+slot -> the normalised volume it had before muting.
+local instPrevVol = {}
+
 local ctrlTr, ctrlFx, moodParam
 local sliderParam = {}     -- brain slider index -> its FX param index
 local moodTracks  = {}
@@ -43,6 +46,42 @@ local lastMood
 local nextPoll, nextScan, startedAt = 0, 0, nil
 
 local function norm(s) return (tostring(s):upper():gsub("[^A-Z0-9]", "")) end
+
+-- NB: these must live AFTER norm() is declared. They were originally placed with the
+-- other locals near the top, where `norm` was still a nil global - Lua resolves a
+-- local only from its declaration onward. Pressing a pad threw "attempt to call a nil
+-- value", REAPER opened a modal error dialog, and a modal dialog stalls EVERY defer
+-- script - the remote console included.
+-- Kontakt lays each rack slot out as a 64-parameter block, but the volume is NOT
+-- always at the same offset - EIRE's instrument has "Chord" where the Play Series
+-- ones have "Volume". Always find it by NAME.
+-- Instruments do not agree on what "the volume" is. Play Series ones expose a single
+-- `Volume`; the family used on THE CAIRN and ELIRE exposes `Vol A` and `Vol B` for its
+-- two layers and no master at all. So collect every volume-ish parameter in the slot
+-- and drive them together - muting only the first would leave half the instrument
+-- sounding.
+local function slotVolumeParams(tr, kfx, slot)
+  local base, exact, pairAB = slot * 64, nil, {}
+  for off = 0, 63 do
+    local ok, pn = reaper.TrackFX_GetParamName(tr, kfx, base + off, "")
+    if ok and pn and pn ~= "" then
+      if pn == "Volume" then exact = base + off end
+      if pn == "Vol A" or pn == "Vol B" then pairAB[#pairAB+1] = base + off end
+    end
+  end
+  if exact then return { exact } end
+  if #pairAB > 0 then return pairAB end
+  return {}
+end
+
+local function kontaktOfStrict(tr)
+  for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
+    local ok, nm = reaper.TrackFX_GetFXName(tr, fx, "")
+    if ok and norm(nm):find("KONTAKT") and not norm(nm):find("LAYERMIXER") then return fx end
+  end
+end
+local lastMaster = -1
+local lastBtnCount = -1
 
 local function trackName(tr)
   local ok, nm = reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)
@@ -94,6 +133,17 @@ end
 
 local function resolved()
   return ctrlTr ~= nil and reaper.ValidatePtr2(0, ctrlTr, "MediaTrack*")
+end
+
+-- Never let a control surface write silence. On 2026-08-09 both live inputs and two
+-- mood tracks were found at D_VOL = 0 after stray pad presses, twice, and each time it
+-- presented as "the rig stopped making sound" rather than as an obvious cause. Mute
+-- already exists as a visible, reversible control; a volume of exactly zero is almost
+-- always an accident.
+local MIN_SURFACE_VOL = 0.02          -- about -34 dB
+
+local function setTrackVolSafe(tr, v)
+  reaper.SetMediaTrackInfo_Value(tr, "D_VOL", math.max(MIN_SURFACE_VOL, v))
 end
 
 local function trackByFragment(frag)
@@ -234,6 +284,11 @@ local function publishStates()
       reaper.TrackFX_SetParam(led, ledFx, idx, n)
     end
   end
+
+  -- which instruments are currently muted, one bit per mood*4+slot
+  local imask = 0
+  for k, _ in pairs(instPrevVol) do imask = imask + 2^k end
+  if np > 24 then reaper.TrackFX_SetParam(led, ledFx, 24, imask) end
 end
 
 ------------------------------------------------------------------ single instance
@@ -246,7 +301,14 @@ reaper.atexit(function()
 end)
 
 ------------------------------------------------------------------ main loop
-local function loop()
+-- Everything the loop does is wrapped. An uncaught error in a defer script raises a
+-- MODAL dialog, and a modal dialog stalls EVERY defer script in the session - on
+-- 2026-08-09 one nil call here took down the mood watchdog and the remote console with
+-- it, leaving no way to diagnose remotely. A logged failure that keeps running is
+-- strictly better than a correct-looking script that can halt the rig.
+local errCount, lastErr = 0, ""
+
+local function body()
   local now = reaper.time_precise()
   reaper.SetExtState("Riomhdhos", "bridge_hb", tostring(now), false)
 
@@ -295,14 +357,49 @@ local function loop()
       if mixCntP then
         local mc = reaper.TrackFX_GetParam(pushTr, pushFx, mixCntP)
         if lastMixCount >= 0 and mc ~= lastMixCount then
-          local col = math.floor(reaper.TrackFX_GetParam(pushTr, pushFx, mixColP) + 0.5)
-          local val = reaper.TrackFX_GetParam(pushTr, pushFx, mixValP)
-          local name = COLUMN_TRACK[col]
-          if name then
-            local tr = trackByFragment(name)
-            if tr then
-              local f = val / 127
-              reaper.SetMediaTrackInfo_Value(tr, "D_VOL", f * f)
+          local code = math.floor(reaper.TrackFX_GetParam(pushTr, pushFx, mixColP) + 0.5)
+          if code >= 1 and code <= 16 then
+            local idx  = code - 1
+            local mood = math.floor(idx / 4)
+            local slot = idx % 4
+            local tr   = trackByFragment(COLUMN_TRACK[mood + 1])
+            local kfx  = tr and kontaktOfStrict(tr)
+            if kfx then
+              local vps = slotVolumeParams(tr, kfx, slot)
+              if #vps > 0 then
+                local key = idx
+                local nowMuted
+                if instPrevVol[key] then
+                  for _, e in ipairs(instPrevVol[key]) do
+                    reaper.TrackFX_SetParamNormalized(tr, kfx, e.p, e.v)
+                  end
+                  instPrevVol[key] = nil
+                  nowMuted = 0
+                else
+                  local saved = {}
+                  for _, vp in ipairs(vps) do
+                    saved[#saved+1] = { p = vp, v = reaper.TrackFX_GetParamNormalized(tr, kfx, vp) }
+                    reaper.TrackFX_SetParamNormalized(tr, kfx, vp, 0)
+                  end
+                  instPrevVol[key] = saved
+                  nowMuted = 1
+                end
+                -- announce it on the Push display
+                local led2, ledFx2
+                for i2 = 0, reaper.CountTracks(0) - 1 do
+                  local t2 = reaper.GetTrack(0, i2)
+                  for f2 = 0, reaper.TrackFX_GetCount(t2) - 1 do
+                    local ok3, n3 = reaper.TrackFX_GetFXName(t2, f2, "")
+                    if ok3 and norm(n3):find("PUSHLEDS") then led2, ledFx2 = t2, f2 end
+                  end
+                end
+                if led2 and reaper.TrackFX_GetNumParams(led2, ledFx2) > 27 then
+                  reaper.TrackFX_SetParam(led2, ledFx2, 25, code)
+                  reaper.TrackFX_SetParam(led2, ledFx2, 26, nowMuted)
+                  reaper.TrackFX_SetParam(led2, ledFx2, 27,
+                    reaper.TrackFX_GetParam(led2, ledFx2, 27) + 1)
+                end
+              end
             end
           end
         end
@@ -337,6 +434,18 @@ local function loop()
     end
   end
 
+end
+
+local function loop()
+  local ok, err = pcall(body)
+  if not ok then
+    errCount = errCount + 1
+    if err ~= lastErr then
+      lastErr = err
+      reaper.SetExtState("Riomhdhos", "bridge_err", tostring(err), false)
+    end
+    reaper.SetExtState("Riomhdhos", "bridge_errcount", tostring(errCount), false)
+  end
   reaper.defer(loop)
 end
 
