@@ -81,8 +81,15 @@ input. Pads show **instruments**, not levels.
 
 ⚠️ Do not substring-match plugin names loosely. The layer mixer described itself as
 "4 Kontakt layers", so a search for `KONTAKT` matched it as well as the instrument -
-and a loop that kept the last match counted the wrong plugin's parameters. It is now
-named "4 instrument layers", and matching excludes the mixer explicitly.
+and a loop that kept the last match counted the wrong plugin's parameters. Matching now
+excludes the mixer explicitly, by `LAYERMIXER`.
+
+⚠️ **Renaming the JSFX did not fix that, and cannot.** `TrackFX_GetFXName` returns the
+name stored in the project **when the FX was added**, not the plugin's current `desc:`.
+The mixer's `desc:` has said "4 instrument layers" for some time, yet every instantiated
+copy still reports "4 Kontakt layers -> stereo" and still collides with a `KONTAKT`
+search. A rename only takes effect on FX added afterwards, so a name change is never a
+fix for a matching bug - the explicit exclusion is what actually holds.
 
 ⚠️ The Push 1 display is **four separate 17-character segments**, not one 68-character
 strip. Breaks fall at 17, 34 and 51. Column offsets are 0, 9 | 17, 26 | 34, 43 | 51, 60
@@ -155,15 +162,29 @@ The Push can only see, count or mute an instrument that exposes named parameters
 the host. Kontakt's rack is opaque and its state chunk is compressed (557 KB with no
 readable strings), so there is no other way to know an instrument is loaded.
 
-- **Play Series** libraries publish automatically — `Volume` at slot base + 7.
-- The **Cutoff / Vol A / Vol B family** publishes too, but has **no single `Volume`** —
-  it exposes `Vol A` and `Vol B` for its two layers, and both must be driven together
-  or muting leaves half the instrument sounding.
-- **Plain Kontakt libraries publish nothing.** Uilleann Pipes on ÉIRE shows every
-  parameter as `#000`, `#001`… and is therefore invisible: no pad, no mute.
+⚠️ **Do not assume a library publishes nothing because it has no `Volume`.** Every
+library names its own controls, and only one of the three in this rig calls the level
+"Volume". Read the parameter names before concluding an instrument is unreachable:
 
-Fix, once per instrument: in that mood's Kontakt, **Browser → Automation → Host
-Automation**, drag the instrument's Volume onto a slot.
+```
+Play Series        Volume                    one master
+Cutoff/Vol family  Vol A, Vol B              two layers, no master
+Uilleann Pipes     Rel Vol, Drone Vol        chanter + drone, no master
+```
+
+ÉIRE was written off as "publishes nothing usable" and slated for a manual host-automation
+assignment on that basis. It publishes `Rel Vol` and `Drone Vol`, and needed **no Kontakt
+setup at all** — only a matcher that recognises volume names by **shape** (a token equal
+to `vol`/`volume`, at most two words) rather than from a hardcoded list. Every match in
+the slot is driven together: muting the chanter alone leaves the drone sounding.
+
+A parameter genuinely publishing nothing shows as `#000`, `#001`… — *that* is the
+signature of an unassigned slot, and the only case needing the manual fix below.
+
+Fix, once per instrument, only if the names really are `#000`-style: in that mood's
+Kontakt, **Classic view → Browser → Automation → Host Automation**, drag the
+instrument's Volume onto a slot. The Automation tab does **not** exist in Kontakt 7/8's
+redesigned browser; it is Classic view only.
 
 ⚠️ Kontakt exposes **no per-instrument mute** to the host. Muting is implemented as
 "drive that instrument's volume parameter(s) to zero and remember the previous value".

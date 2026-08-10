@@ -79,26 +79,45 @@ local function instrumentBounds(tr, kfx)
   return out
 end
 
--- Instruments do not agree on what "the volume" is. Play Series ones expose a single
--- `Volume`; the family used on THE CAIRN and ELIRE exposes `Vol A` and `Vol B` for its
--- two layers and no master at all. So collect every volume-ish parameter in the slot
--- and drive them together - muting only the first would leave half the instrument
--- sounding.
+-- Instruments do not agree on what "the volume" is, and there is no reliable list to
+-- hardcode - every library names its own. Observed so far:
+--
+--   Play Series          "Volume"                     one master
+--   Cutoff/Vol family    "Vol A", "Vol B"             two layers, no master
+--   Uilleann Pipes       "Rel Vol", "Drone Vol"       chanter + drone, no master
+--
+-- So recognise volume names by SHAPE rather than by table, and drive every match in
+-- the slot together - muting only the first leaves half the instrument sounding (the
+-- pipes keep droning, the second layer keeps playing).
+--
+-- Tokenised, not substring: some token must be exactly "vol" or "volume", and the name
+-- must be at most two words. "Rel Vol" and "Vol A" match; "Vol Attack Curve" and
+-- "Volume Env Decay" are shaping controls, not levels, and are left alone.
+local function isVolumeName(pn)
+  local toks, hit = 0, false
+  for w in pn:gmatch("%S+") do
+    toks = toks + 1
+    local lw = w:lower()
+    if lw == "vol" or lw == "volume" then hit = true end
+  end
+  return hit and toks <= 2
+end
+
 local function slotVolumeParams(tr, kfx, slot)
   local bounds = instrumentBounds(tr, kfx)
   local b = bounds[slot + 1]
   if not b then return {} end
-  local exact, pairAB = nil, {}
+  local exact, others = nil, {}
   for p = b.start, b.stop do
     local ok, pn = reaper.TrackFX_GetParamName(tr, kfx, p, "")
     if ok and pn and pn ~= "" then
-      if pn == "Volume" then exact = p end
-      if pn == "Vol A" or pn == "Vol B" then pairAB[#pairAB+1] = p end
+      if pn == "Volume" then exact = p            -- a real master wins outright
+      elseif isVolumeName(pn) then others[#others+1] = p end
     end
   end
   if exact then return { exact } end
-  if #pairAB > 0 then return pairAB end
-  return {}      -- library exposes no master volume; needs a manual host-automation assign
+  if #others > 0 then return others end
+  return {}      -- library exposes no volume at all; needs a manual host-automation assign
 end
 
 local function kontaktOfStrict(tr)
@@ -327,12 +346,23 @@ local function publishStates()
 end
 
 ------------------------------------------------------------------ single instance
-local hb = tonumber(reaper.GetExtState("Riomhdhos", "bridge_hb")) or -1
-if hb > 0 and (reaper.time_precise() - hb) < 1.0 then return end
+-- Generation counter, not a heartbeat freshness check. A freshness check makes the NEW
+-- instance back off, so editing this file meant restarting REAPER to pick the change up.
+-- Here the new instance claims the generation and the OLD one notices it has been
+-- superseded and returns - so re-running the action hot-swaps the script in place.
+--
+-- The bump happens BEFORE any other guard, or a run that bailed early would leave the
+-- previous generation believing it was still current.
+local myGen = (tonumber(reaper.GetExtState("Riomhdhos", "bridge_gen")) or 0) + 1
+reaper.SetExtState("Riomhdhos", "bridge_gen", tostring(myGen), false)
 startedAt = reaper.time_precise()
 
 reaper.atexit(function()
-  reaper.DeleteExtState("Riomhdhos", "bridge_hb", false)
+  -- Only clear the heartbeat if we are still the current generation; a superseded
+  -- instance exiting must not erase its successor's.
+  if (tonumber(reaper.GetExtState("Riomhdhos", "bridge_gen")) or 0) == myGen then
+    reaper.DeleteExtState("Riomhdhos", "bridge_hb", false)
+  end
 end)
 
 ------------------------------------------------------------------ main loop
@@ -346,6 +376,11 @@ local errCount, lastErr = 0, ""
 local function body()
   local now = reaper.time_precise()
   reaper.SetExtState("Riomhdhos", "bridge_hb", tostring(now), false)
+
+  -- superseded by a newer run of this script - stand down
+  if (tonumber(reaper.GetExtState("Riomhdhos", "bridge_gen")) or 0) ~= myGen then
+    return "stop"
+  end
 
   if not resolved() then
     ctrlTr, moodTracks, sliderParam, lastSent = nil, {}, {}, {}
@@ -487,6 +522,7 @@ end
 
 local function loop()
   local ok, err = pcall(body)
+  if ok and err == "stop" then return end   -- superseded; do not re-defer
   if not ok then
     errCount = errCount + 1
     if err ~= lastErr then
