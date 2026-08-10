@@ -55,23 +55,49 @@ local function norm(s) return (tostring(s):upper():gsub("[^A-Z0-9]", "")) end
 -- Kontakt lays each rack slot out as a 64-parameter block, but the volume is NOT
 -- always at the same offset - EIRE's instrument has "Chord" where the Play Series
 -- ones have "Volume". Always find it by NAME.
+-- ⚠️ Kontakt does NOT lay instruments out in fixed 64-parameter blocks. It assigns
+-- host automation IDs CONSECUTIVELY as each instrument publishes them, and the count
+-- varies by library: Play Series publishes 64, the Uilleann Pipes library publishes 40.
+-- The old base = slot*64 model was right only by coincidence.
+--
+-- Instrument boundaries are found by the FIRST parameter's name repeating: every
+-- instrument of the same library starts with the same control ("Cutoff", "Solo",
+-- "Noise"), so each repeat marks a new one.
+local function instrumentBounds(tr, kfx)
+  local out = {}
+  local ok, first = reaper.TrackFX_GetParamName(tr, kfx, 0, "")
+  if not ok or first == "" or first:match("^#%d") then return out end
+  local scan = math.min(512, reaper.TrackFX_GetNumParams(tr, kfx))
+  for p = 0, scan - 1 do
+    local ok2, pn = reaper.TrackFX_GetParamName(tr, kfx, p, "")
+    if ok2 and pn == first then out[#out+1] = p end
+  end
+  for i = 1, #out do
+    out[i] = { start = out[i], stop = (out[i+1] and out[i+1] - 1) or (scan - 1) }
+  end
+  return out
+end
+
 -- Instruments do not agree on what "the volume" is. Play Series ones expose a single
 -- `Volume`; the family used on THE CAIRN and ELIRE exposes `Vol A` and `Vol B` for its
 -- two layers and no master at all. So collect every volume-ish parameter in the slot
 -- and drive them together - muting only the first would leave half the instrument
 -- sounding.
 local function slotVolumeParams(tr, kfx, slot)
-  local base, exact, pairAB = slot * 64, nil, {}
-  for off = 0, 63 do
-    local ok, pn = reaper.TrackFX_GetParamName(tr, kfx, base + off, "")
+  local bounds = instrumentBounds(tr, kfx)
+  local b = bounds[slot + 1]
+  if not b then return {} end
+  local exact, pairAB = nil, {}
+  for p = b.start, b.stop do
+    local ok, pn = reaper.TrackFX_GetParamName(tr, kfx, p, "")
     if ok and pn and pn ~= "" then
-      if pn == "Volume" then exact = base + off end
-      if pn == "Vol A" or pn == "Vol B" then pairAB[#pairAB+1] = base + off end
+      if pn == "Volume" then exact = p end
+      if pn == "Vol A" or pn == "Vol B" then pairAB[#pairAB+1] = p end
     end
   end
   if exact then return { exact } end
   if #pairAB > 0 then return pairAB end
-  return {}
+  return {}      -- library exposes no master volume; needs a manual host-automation assign
 end
 
 local function kontaktOfStrict(tr)
@@ -273,14 +299,7 @@ local function publishStates()
           break
         end
       end
-      if kfx then
-        for slot = 0, 3 do
-          local ok2, pn = reaper.TrackFX_GetParamName(tr, kfx, slot * 64, "")
-          if ok2 and pn ~= "" and not pn:match("^#%d") and not pn:match("^[Pp]ar%s*%d") then
-            n = n + 1
-          end
-        end
-      end
+      if kfx then n = math.min(4, #instrumentBounds(tr, kfx)) end
       reaper.TrackFX_SetParam(led, ledFx, idx, n)
     end
   end

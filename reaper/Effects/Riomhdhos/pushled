@@ -69,6 +69,13 @@ slider25:0<0,65535,1>-instruments muted
 slider26:0<0,16,1>-mute slot code
 slider27:0<0,1,1>-mute state
 slider28:0<0,9999,1>-mute events
+// Three states, not two. Arm/mute are binary because they answer a yes/no question,
+// but a button that is AVAILABLE and not engaged is a different thing from one that
+// does nothing here - and dark says the second. 1 = dim on Push's LED table.
+//   0   = not applicable here
+//   dim = available, not engaged
+//   lit = engaged
+slider30:1<0,127,1>Button colour: available/idle
 
 @init
 buf = 90000; txt = 91000; sc = 92000;
@@ -290,18 +297,19 @@ function redraw(m) local(p, n, rootpc)(
   // arm/mute belong to MIXER view only - in NOTE view those rows stay dark so the
   // panel shows nothing but the instrument
 
-  // Octave down (CC54) / up (CC55). Lit when the move is available, dark at the
-  // limits - so the panel says not just "this is a control" but "this will do
-  // something", and you can see when you have bottomed or topped out.
-  midisend(0, 0xB0, 54, curoct > 0 ? slider14 : slider15);
-  midisend(0, 0xB0, 55, curoct < 7 ? slider14 : slider15);
+  // Octave down (CC54) / up (CC55). Lit while the move is available, DIM at the
+  // limits - not dark. Dark means "unassigned" everywhere else on this panel, and a
+  // button that still exists should not borrow that meaning just because it has
+  // temporarily run out of travel.
+  midisend(0, 0xB0, 54, curoct > 0 ? slider14 : slider30);
+  midisend(0, 0xB0, 55, curoct < 7 ? slider14 : slider30);
   // PLAY = panic, always available. RECORD stays dark: it is deliberately unmapped
   // rather than lit and inert, which would invite pressing it mid-set.
   midisend(0, 0xB0, 85, slider14);
   midisend(0, 0xB0, 86, slider15);
   // REPEAT lit while notes are latched - whether a drone is being held is the last
   // thing you want to be guessing about mid-piece
-  midisend(0, 0xB0, 56, gmem[53] > 0.5 ? slider14 : slider15);
+  midisend(0, 0xB0, 56, gmem[53] > 0.5 ? slider14 : slider30);
   // NOTE / SESSION: the active view is lit, the other dark, so the panel always says
   // which view you are in
   midisend(0, 0xB0, 50, gmem[61] == 1 ? slider24 : slider23);

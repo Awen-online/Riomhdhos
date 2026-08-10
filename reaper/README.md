@@ -93,6 +93,39 @@ so no label straddles a break — laying them out every 8 characters renders `RE
 the active mood every 30 ms. Moods mute through a slider on their layer mixer, which is
 the one thing the Lua bridge can set — it can neither read nor write gmem.
 
+## ⚠️ Kontakt does NOT use fixed 64-parameter blocks
+
+Host automation IDs are assigned **consecutively as each instrument publishes them**,
+and the count varies by library — Play Series publishes 64, the Uilleann Pipes library
+publishes 40. A `slot * 64` model is right only by coincidence, and when it is wrong it
+reaches into the *next* instrument's parameters.
+
+Instrument boundaries are found by the **first parameter's name repeating**: every
+instrument of a given library starts with the same control (`Cutoff`, `Solo`, `Noise`),
+so each repeat marks a new instrument.
+
+```
+COSMOS  'Cutoff' at 0, 64      CAIRN  'Cutoff' at 0, 64
+EIRE    'Solo'   at 0, 40      DEEP   'Noise'  at 0
+```
+
+## LED convention — three states, not two
+
+```
+dark  = does nothing here / unassigned
+dim   = available, not engaged
+lit   = engaged
+```
+
+Arm and mute are deliberately binary, because they answer a yes/no question about a
+track. Anything that is a MODE (Repeat/hold, the octave buttons at their limits) uses
+dim rather than dark, so "available" never reads as "unassigned".
+
+⚠️ Push button LEDs are **fixed colours by position** — upper row red, lower white.
+Only off/dim/lit/blink are selectable, never hue. The only bi-colour buttons are the
+time-division ones at **CC36-43** (red/green), which is where a selected value can be
+shown by colour when sequencing lands.
+
 ## ⚠️ An instrument is only visible if it publishes host automation
 
 The Push can only see, count or mute an instrument that exposes named parameters to
