@@ -50,7 +50,7 @@ slider17:1<0,1,1{pitch bend (as-is),modulation CC1}>Touch strip
 //              Columns 5-8 stay dark until there is something to put there.
 // Mood select and PLAY-panic stay live in EVERY view: being in the wrong mode is not
 // an acceptable reason to be unable to change world or kill a stuck note.
-slider18:0<0,1,1{NOTE,MIXER}>View
+slider18:0<0,2,1{NOTE,MIXER,SEQ}>View
 // REPEAT (CC56) = HOLD. A true note-latch, not a sustain message: CC64 is taken by
 // the brain for mood-advance, so sending sustain from here would change world instead
 // of holding notes. Suppressing note-offs also holds more reliably than sustain does -
@@ -155,6 +155,19 @@ while (midirecv(mpos, m1, m2, m3)) (
     (slider18 == 1 && m2 >= 92 && m2 <= 95) ? (
       st == 0x90 && m3 > 0 ? midisend(mpos, 0x99, 36 + (m2 - 92), 127);
     ) :
+    // SEQ VIEW: row = voice, column = step. Every pad is one step of one voice, so the
+    // whole pattern is on the panel at once with no paging - which matters far more on
+    // a dark stage than the extra resolution a 16-step layout would buy.
+    // Voice 1 is the TOP row, matching the instrument rack and the mixer view.
+    (slider18 == 2) ? (
+      st == 0x90 && m3 > 0 ? (
+        srow = ((m2 - 36) / 8) | 0;
+        scol = (m2 - 36) - srow*8;
+        svoice = 7 - srow;
+        gi = 2000 + svoice*8 + scol;
+        gmem[gi] = gmem[gi] > 0.5 ? 0 : 1;
+      );
+    ) :
     // left column, bottom four rows = layer 1-4 toggles
     // MIXER VIEW: each column is a track, each row a level. Pressing a pad sets that
     // track's volume to that row - a fader you can hit rather than sweep.
@@ -239,6 +252,13 @@ while (midirecv(mpos, m1, m2, m3)) (
   // NOTE (CC50) and SESSION (CC51) select a view DIRECTLY - they are not a toggle.
   // A single button that flips between modes leaves you unsure which state you landed
   // in, and the same 64 pads mean entirely different things in each view.
+  // SEQ view is selected by RECORD (CC86). That button was deliberately left dark and
+  // inert so it could not be pressed mid-set by mistake; a step sequencer is the one
+  // thing it can mean here without lying about what it does.
+  (st == 0xB0 && m2 == 86 && m3 > 0) ? (
+    slider18 = 2; sliderchange(slider18); gmem[61] = slider18;
+  ) :
+
   (st == 0xB0 && (m2 == 50 || m2 == 51) && m3 > 0) ? (
     slider18 = (m2 == 51) ? 1 : 0;
     sliderchange(slider18);
@@ -286,6 +306,21 @@ while (midirecv(mpos, m1, m2, m3)) (
   ) :
 
   st == 0xB0 ? (
+    // SEQ view claims the upper row for transport before the arm/mute handler sees it.
+    // Scoped to the view, so RUN cannot be hit while looking at the mixer.
+    //   CC102 = run / stop        CC103 = clear the pattern
+    (slider18 == 2 && m2 >= 102 && m2 <= 103) ? (
+      m3 > 0 ? (
+        m2 == 102 ? ( gmem[2101] = gmem[2101] > 0.5 ? 0 : 1; ) : (
+          i = 0; loop(64, gmem[2000 + i] = 0; i += 1; );
+        );
+      );
+    ) :
+    // Step division (CC36-43), 1/4 through 1/32T. These are the only bi-colour LEDs on
+    // the panel, which is why the sequencer's one selectable value lives here.
+    (slider18 == 2 && m2 >= 36 && m2 <= 43) ? (
+      m3 > 0 ? ( gmem[2102] = m2 - 36; );
+    ) :
     // the two small button rows: one pair per column, published for the Lua bridge
     (m2 >= 102 && m2 <= 109) ? (
       m3 > 0 ? ( slider7 = 1 + (m2 - 102); slider8 += 1;

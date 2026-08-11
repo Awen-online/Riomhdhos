@@ -168,6 +168,45 @@ function paramtxt(id) local(n)(
   n;
 );
 
+// SEQ view. Row = voice, column = step, voice 1 on top - the same reading order as the
+// rack and the mixer, so "top" means the same thing in all three views.
+//
+// Four pad states, not two: a step is on or off, and is or is not under the playhead.
+// Collapsing that to on/off would make a running sequencer unreadable, because the
+// brightest thing on the panel would never move.
+function redraw_seq() local(v, s, p, on, head, col) (
+  p = 0; loop(120, midisend(0, 0xB0, p, 0); p += 1; );
+
+  // view buttons: SEQ is on RECORD, so that is the one lit here
+  midisend(0, 0xB0, 50, slider24);
+  midisend(0, 0xB0, 51, slider24);
+  midisend(0, 0xB0, 86, slider23);
+  midisend(0, 0xB0, 85, slider14);            // panic stays available in every view
+
+  // transport for this view only: RUN lit while running, CLEAR always available
+  midisend(0, 0xB0, 102, gmem[2101] > 0.5 ? slider14 : slider30);
+  midisend(0, 0xB0, 103, slider30);
+
+  // step division - the only bi-colour buttons on the panel; selected one lit
+  s = 0;
+  loop(8, midisend(0, 0xB0, 36 + s, s == (gmem[2102] | 0) ? slider14 : slider30); s += 1; );
+
+  head = gmem[2100];
+  v = 0;
+  loop(8,
+    s = 0;
+    loop(8,
+      on  = gmem[2000 + v*8 + s] > 0.5;
+      col = (s == head) ? (on ? slider5  : slider30)      // under the playhead
+                        : (on ? slider11 : 0);
+      // voice 1 is the TOP row: pad note 36 is bottom-left, so invert
+      midisend(0, 0x90, 36 + (7 - v)*8 + s, col);
+      s += 1;
+    );
+    v += 1;
+  );
+);
+
 // line 3: "<CONTROL>   <value>" - what just moved and where it landed
 function paramline(id, val) local(n, a, b, c)(
   clr(68);
@@ -408,9 +447,18 @@ phold > 0 ? (
 );
 
 vw = gmem[61];
-(mm != lastmood || cfg != lastcfg || dirty || slider9 || vw != lastview) ? (
+
+// The sequencer has to repaint on its own schedule as well as on view changes: the
+// playhead moves while nothing else about the rig changes, so the usual
+// "redraw when something differs" test would never fire and the column would sit still.
+seqstep = gmem[2100];
+seqrun  = gmem[2101];
+seqdirty = (vw == 2) && (seqstep != lastseqstep || seqrun != lastseqrun);
+seqdirty ? ( lastseqstep = seqstep; lastseqrun = seqrun; );
+
+(mm != lastmood || cfg != lastcfg || dirty || slider9 || vw != lastview || seqdirty) ? (
   lastview = vw;
-  vw == 1 ? redraw_mixer(mm) : redraw(mm);
+  vw == 2 ? redraw_seq() : vw == 1 ? redraw_mixer(mm) : redraw(mm);
   lastmood = mm; lastcfg = cfg; dirty = 0;
   slider9 ? ( slider9 = 0; sliderchange(slider9); );
 );
