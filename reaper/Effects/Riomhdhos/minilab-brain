@@ -41,6 +41,15 @@ slider2:0<0,127,1>-K4
 slider3:0<0,127,1>-K5
 slider4:0<0,127,1>-K6
 slider5:0<0,127,1>-K7
+// K2, K3 and K8 were reachable ONLY by REAPER MIDI learn, which sees hardware input
+// and nothing else. That made them work from the MiniLab and do NOTHING from the Push,
+// whose CCs are invented inside the track stream - while the display still labelled
+// them and flashed a readout, so the panel claimed success. Publishing them here puts
+// them on the same route as K4-K7: the Lua bridge, which can reach any plugin AND can
+// tell which mood is active, so they become per-mood instead of global.
+slider6:0<0,127,1>-K2
+slider7:0<0,127,1>-K3
+slider8:0<0,127,1>-K8
 
 @init
 buf = 100000; bp = 0;
@@ -125,7 +134,10 @@ function knob(ki,kpos,kv)(
   ki==3 ? ( slider2=kv; sliderchange(slider2); ) :
   ki==4 ? ( slider3=kv; sliderchange(slider3); ) :
   ki==5 ? ( slider4=kv; sliderchange(slider4); ) :
-  ki==6 ? ( slider5=kv; sliderchange(slider5); );
+  ki==6 ? ( slider5=kv; sliderchange(slider5); ) :
+  ki==1 ? ( slider6=kv; sliderchange(slider6); ) :
+  ki==2 ? ( slider7=kv; sliderchange(slider7); ) :
+  ki==7 ? ( slider8=kv; sliderchange(slider8); );
   cur_cc=KNBCC+ki; cur_val=kv; cur_id=4+ki; flash=FLASHLEN; );
 
 @block

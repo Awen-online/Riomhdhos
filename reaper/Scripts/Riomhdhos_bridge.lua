@@ -153,11 +153,52 @@ local function findBrain()
             for s = 2, 5 do
               if n == ("K" .. (s + 2)) then sliders[s] = p end
             end
+            -- K2, K3, K8 arrive on sliders 6-8; see FXPARAM below for why they moved
+            if n == "K2" then sliders[6] = p end
+            if n == "K3" then sliders[7] = p end
+            if n == "K8" then sliders[8] = p end
           end
         end
         if moodP then return tr, fx, moodP, sliders end
       end
     end
+  end
+end
+
+-- Encoders 2, 3 and 8 reached their targets ONLY through REAPER MIDI learn, which sees
+-- hardware input and nothing else. From the MiniLab they worked; from the Push they did
+-- nothing at all, because the Push's CCs are invented inside the track stream - while
+-- the display still labelled them and flashed a readout, so the panel claimed success.
+--
+-- Routing them through the bridge fixes that AND upgrades them: the bridge knows which
+-- mood is active, so these become per-mood rather than global.
+--
+-- Targets are found BY NAME, never by index. Waves plugins do not number their
+-- parameters the way their GUIs are laid out - Kramer Tape's Flux is param 5 and its
+-- Playback Level is param 12, with Bias and Low Pass sitting where you would expect
+-- those to be.
+local FXPARAM = {
+  [6] = { fx = "KRAMERTAPE", param = "FLUX",          scope = "mood"   },  -- K2
+  [7] = { fx = "IRL",        param = "WET",           scope = "reverb" },  -- K3
+  [8] = { fx = "KRAMERTAPE", param = "PLAYBACKLEVEL", scope = "mood"   },  -- K8
+}
+
+local function fxByName(tr, needle)
+  for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
+    local ok, n = reaper.TrackFX_GetFXName(tr, fx, "")
+    if ok and norm(n):find(needle, 1, true) then return fx end
+  end
+end
+
+local function paramByName(tr, fx, needle)
+  for p = 0, reaper.TrackFX_GetNumParams(tr, fx) - 1 do
+    local ok, n = reaper.TrackFX_GetParamName(tr, fx, p, "")
+    if ok and norm(n) == needle then return p end
+  end
+  -- fall back to a contained match, so "WET" still finds "Wet/Dry"
+  for p = 0, reaper.TrackFX_GetNumParams(tr, fx) - 1 do
+    local ok, n = reaper.TrackFX_GetParamName(tr, fx, p, "")
+    if ok and norm(n):find(needle, 1, true) then return p end
   end
 end
 
@@ -561,6 +602,28 @@ local function body()
               if kParam < reaper.TrackFX_GetNumParams(tr, kfx) then
                 reaper.TrackFX_SetParamNormalized(tr, kfx, kParam, math.max(0, math.min(1, v / 127)))
               end
+            end
+          end
+        end
+      end
+    end
+
+    -- K2 / K3 / K8 -> Waves params, per mood (K3 is the shared reverb bus, so global)
+    for sIdx, spec in pairs(FXPARAM) do
+      local p = sliderParam[sIdx]
+      if p then
+        local v = reaper.TrackFX_GetParam(ctrlTr, ctrlFx, p)      -- 0..127 from the brain
+        local dest = (spec.scope == "reverb") and trackByFragment("REVERB") or tr
+        -- key the cache on mood too: the same knob addresses a different track's
+        -- plugin after a mood change, so a bare value cache would suppress the re-send
+        local ck = "fx" .. sIdx .. "_" .. (spec.scope == "reverb" and "R" or mood)
+        if dest and reaper.ValidatePtr2(0, dest, "MediaTrack*") and lastSent[ck] ~= v then
+          local fx = fxByName(dest, spec.fx)
+          if fx then
+            local pp = paramByName(dest, fx, spec.param)
+            if pp then
+              lastSent[ck] = v
+              reaper.TrackFX_SetParamNormalized(dest, fx, pp, math.max(0, math.min(1, v / 127)))
             end
           end
         end
