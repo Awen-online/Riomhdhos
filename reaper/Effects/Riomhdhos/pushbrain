@@ -269,6 +269,11 @@ while (midirecv(mpos, m1, m2, m3)) (
     d = m3 < 64 ? m3 : m3 - 128;
     slider32 = max(-1000000, min(1000000, slider32 + d));
     sliderchange(slider32);
+    // Announce it on the display the same way every other control does. No value is
+    // published: this encoder is RELATIVE, so the resulting BPM is REAPER's to know,
+    // and pushled reads it from its own built-in `tempo` instead.
+    // Label ids travel as id+2, so TEMPO (paramtxt id 21) is published as 23.
+    gmem[59] = 0; gmem[60] = 23; gmem[58] += 1;
   ) :
 
   // touch strip: pitch bend -> modulation, using the MSB as the 0-127 value

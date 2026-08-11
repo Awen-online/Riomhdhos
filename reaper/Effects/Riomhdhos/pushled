@@ -76,8 +76,15 @@ slider28:0<0,9999,1>-mute events
 //   dim = available, not engaged
 //   lit = engaged
 slider30:1<0,127,1>Button colour: available/idle
+// COMPILE CANARY. A JSFX that fails to compile still reports its full parameter list
+// through the API - real names, right count, correct title in the chain - so there is
+// no way to tell "loaded" from "running" without one. This plugin had none, which is
+// exactly the gap that cost an hour on 2026-08-09. Read it from the console: 0 means
+// @init never executed and everything below this line is dead.
+slider31:0<0,99,1>-alive
 
 @init
+slider31 = 1; sliderchange(slider31);
 buf = 90000; txt = 91000; sc = 92000;
 lastmood = -1; lastcfg = -1; dirty = 1; curoct = 2; lastpc = -1; phold = 0; lastview = -1; lastnc = -1; lastmc2 = -1;
 
@@ -154,6 +161,7 @@ function paramtxt(id) local(n)(
   id==12 ? ( txt[0]=77;txt[1]=79;txt[2]=68; n=3; ) :
   id==13 ? ( txt[0]=69;txt[1]=88;txt[2]=80;txt[3]=82; n=4; ) :
   id==20 ? ( txt[0]=79;txt[1]=67;txt[2]=84;txt[3]=65;txt[4]=86;txt[5]=69; n=6; ) :   // OCTAVE
+  id==21 ? ( txt[0]=84;txt[1]=69;txt[2]=77;txt[3]=80;txt[4]=79; n=5; ) :             // TEMPO
            ( txt[0]=67;txt[1]=67; n=2; );
   n;
 );
@@ -162,7 +170,8 @@ function paramtxt(id) local(n)(
 function paramline(id, val) local(n, a, b, c)(
   clr(68);
   n = paramtxt(id);
-  val = max(0, min(127, val|0));
+  // 0-999, not 0-127: every MIDI-sourced control fits in 7 bits, but tempo does not.
+  val = max(0, min(999, val|0));
   a = (val/100)|0; b = ((val/10)|0)%10; c = val%10;
   n = 10;
   a > 0 ? ( txt[n] = 48+a; n += 1; );
@@ -379,7 +388,15 @@ mc2 != lastmc2 ? (
 pc = gmem[58];
 pc != lastpc ? (
   lastpc = pc;
-  gmem[60] > 0 ? ( paramline(gmem[60] - 2, gmem[59]); phold = srate * slider16; );
+  // TEMPO (id 21) is the one readout whose value does NOT travel through gmem. The
+  // Push encoder is relative, so pushbrain only knows "it moved", not the resulting
+  // BPM - that lives in REAPER. JSFX gets it for free as the built-in `tempo`, so read
+  // it here and show what the project ACTUALLY is rather than an accumulated guess.
+  gmem[60] > 0 ? (
+    pid = gmem[60] - 2;
+    paramline(pid, pid == 21 ? tempo : gmem[59]);
+    phold = srate * slider16;
+  );
 );
 // clear the readout once it has been sitting there long enough - a stale value is
 // worse than a blank line, because it looks like the current state
