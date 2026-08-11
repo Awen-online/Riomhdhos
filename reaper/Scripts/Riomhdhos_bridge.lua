@@ -32,6 +32,9 @@ local RESCAN     = 1.0
 ------------------------------------------------------------------
 
 local pushTr, pushFx, btnParam, cntParam, mstParam, mixColP, mixValP, mixCntP
+local metP, tapP, tmpEncP                    -- clock section, published by pushbrain
+local lastMet, lastTap, lastTmpEnc           -- nil until the first poll sees them
+local taps = {}                              -- tap-tempo timestamps, newest last
 local lastMixCount = -1
 -- Kontakt exposes no per-instrument mute to the host, only each slot's volume. So a
 -- "mute" is: drive that instrument's volume to silence and remember where it was.
@@ -217,6 +220,9 @@ local function findPush()
             if norm(pn) == "MIXERCOLUMNTOUCHED" then mixColP = pp end
             if norm(pn) == "MIXERVALUE" then mixValP = pp end
             if norm(pn) == "MIXEREVENTS" then mixCntP = pp end
+            if norm(pn) == "METRONOMEPRESSES" then metP = pp end
+            if norm(pn) == "TAPPRESSES" then tapP = pp end
+            if norm(pn) == "TEMPOENCODERACCUMULATED" then tmpEncP = pp end
           end
         end
         if b and c then return tr, fx, b, c end
@@ -419,6 +425,50 @@ local function body()
           local f = v / 127
           reaper.SetMediaTrackInfo_Value(reaper.GetMasterTrack(0), "D_VOL", f * f)
         end
+      end
+
+      ------------------------------------------------------------------ clock
+      -- METRONOME (CC9). Toggle REAPER's own metronome rather than tracking a state
+      -- here: 40364 is a real toggle action, so REAPER stays the single source of
+      -- truth and the LED can be driven from GetToggleCommandState, not from what we
+      -- believe we asked for. Same reasoning as instrument mute.
+      if metP then
+        local m = reaper.TrackFX_GetParam(pushTr, pushFx, metP)
+        if lastMet and m ~= lastMet then reaper.Main_OnCommand(40364, 0) end
+        lastMet = m
+      end
+
+      -- TAP TEMPO (CC3). Implemented here rather than via a native action because the
+      -- averaging is the useful part: REAPER's own tap is per-tap and jittery.
+      -- Averaging the last few intervals settles far faster by hand.
+      if tapP then
+        local t = reaper.TrackFX_GetParam(pushTr, pushFx, tapP)
+        if lastTap and t ~= lastTap then
+          -- A gap this long is a new count-in, not a slow tempo: 2.5 s is 24 BPM, well
+          -- below anything playable, so treat it as the first tap of a fresh series.
+          if #taps > 0 and (now - taps[#taps]) > 2.5 then taps = {} end
+          taps[#taps+1] = now
+          while #taps > 5 do table.remove(taps, 1) end
+          if #taps >= 2 then
+            local span = taps[#taps] - taps[1]
+            local bpm  = 60 * (#taps - 1) / span
+            if bpm >= 40 and bpm <= 240 then
+              reaper.SetCurrentBPM(0, bpm, false)
+            end
+          end
+        end
+        lastTap = t
+      end
+
+      -- TEMPO encoder (CC14). Differenced, not read as an absolute, so a poll missed
+      -- while REAPER is busy costs nothing. One detent = 1 BPM.
+      if tmpEncP then
+        local e = reaper.TrackFX_GetParam(pushTr, pushFx, tmpEncP)
+        if lastTmpEnc and e ~= lastTmpEnc then
+          local bpm = reaper.Master_GetTempo() + (e - lastTmpEnc)
+          reaper.SetCurrentBPM(0, math.max(40, math.min(240, bpm)), false)
+        end
+        lastTmpEnc = e
       end
 
       -- MIXER VIEW: a pad press or encoder move sets that column's track volume.

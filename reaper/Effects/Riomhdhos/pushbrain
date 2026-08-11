@@ -78,6 +78,22 @@ slider8:0<0,9999,1>-button presses
 // Riomhdhos_bridge.lua and applied to the master track. Starts at 127 = unity so the
 // first turn goes DOWN from where the master already is, rather than jumping.
 slider9:127<0,127,1>-master encoder
+// ---------------------------------------------------------------- clock section
+// ⚠️ These are numbered ABOVE every existing slider ON PURPOSE. REAPER assigns JSFX
+// parameter indices by ASCENDING SLIDER NUMBER, not by declaration order, so inserting
+// a low-numbered slider renumbers every higher one. Riomhdhos_bridge.lua survives that
+// because it resolves parameters BY NAME - which is exactly why it does. Anything
+// reading these by index would break silently. Append, never insert.
+//
+// A JSFX cannot toggle REAPER's metronome or set the tempo, so none of this can be
+// acted on here. Each control publishes a COUNTER, and Riomhdhos_bridge.lua does the
+// work - counters rather than states because Lua polls at ~30 ms and a momentary press
+// would otherwise be missed between polls.
+slider30:0<0,9999,1>-metronome presses
+slider31:0<0,9999,1>-tap presses
+// Accumulated, signed; the bridge applies the DIFFERENCE since its last poll, so a
+// missed poll costs nothing and the two never drift.
+slider32:0<-1000000,1000000,1>-tempo encoder accumulated
 // Octave Down = CC54, Octave Up = CC55. The octave is published to gmem[62] so
 // `pushled` follows it directly - previously both plugins carried their own copy of
 // the octave and had to be kept matching by hand, which meant the lit "root" pads
@@ -236,6 +252,23 @@ while (midirecv(mpos, m1, m2, m3)) (
       midisend(mpos, 0xB0 | ch, 64, 0);
       ch += 1;
     );
+  ) :
+
+  // METRONOME (CC9) and TAP TEMPO (CC3): published for the bridge, which owns the
+  // REAPER side. Only the press edge counts - m3 > 0 - or the release doubles it.
+  (st == 0xB0 && m2 == 9 && m3 > 0) ? (
+    slider30 = (slider30 + 1) % 10000; sliderchange(slider30);
+  ) :
+  (st == 0xB0 && m2 == 3 && m3 > 0) ? (
+    slider31 = (slider31 + 1) % 10000; sliderchange(slider31);
+  ) :
+
+  // TEMPO encoder (CC14). Relative, like every Push encoder: 1..63 clockwise,
+  // 127..65 anticlockwise. Accumulated here, differenced by the bridge.
+  (st == 0xB0 && m2 == 14) ? (
+    d = m3 < 64 ? m3 : m3 - 128;
+    slider32 = max(-1000000, min(1000000, slider32 + d));
+    sliderchange(slider32);
   ) :
 
   // touch strip: pitch bend -> modulation, using the MSB as the 0-127 value
