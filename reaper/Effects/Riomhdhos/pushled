@@ -355,10 +355,14 @@ function redraw(m) local(p, n, rootpc)(
   // temporarily run out of travel.
   midisend(0, 0xB0, 54, curoct > 0 ? slider14 : slider30);
   midisend(0, 0xB0, 55, curoct < 7 ? slider14 : slider30);
-  // PLAY = panic, always available. RECORD stays dark: it is deliberately unmapped
-  // rather than lit and inert, which would invite pressing it mid-set.
+  // PLAY = panic, always available.
+  // RECORD selects SEQ view, so it is DIM here - available, not engaged. It was dark
+  // while it was genuinely unmapped, and that was right then; leaving it dark once it
+  // did something made the sequencer unreachable, because this panel's whole convention
+  // is that dark means "does nothing here". A button that acts must never be painted
+  // as unassigned.
   midisend(0, 0xB0, 85, slider14);
-  midisend(0, 0xB0, 86, slider15);
+  midisend(0, 0xB0, 86, slider30);
   // REPEAT lit while notes are latched - whether a drone is being held is the last
   // thing you want to be guessing about mid-piece
   midisend(0, 0xB0, 56, gmem[53] > 0.5 ? slider14 : slider30);
