@@ -162,6 +162,8 @@ function paramtxt(id) local(n)(
   id==13 ? ( txt[0]=69;txt[1]=88;txt[2]=80;txt[3]=82; n=4; ) :
   id==20 ? ( txt[0]=79;txt[1]=67;txt[2]=84;txt[3]=65;txt[4]=86;txt[5]=69; n=6; ) :   // OCTAVE
   id==21 ? ( txt[0]=84;txt[1]=69;txt[2]=77;txt[3]=80;txt[4]=79; n=5; ) :             // TEMPO
+  id==22 ? ( txt[0]=77;txt[1]=65;txt[2]=83;txt[3]=84;txt[4]=69;txt[5]=82; n=6; ) :   // MASTER
+  id==23 ? ( txt[0]=83;txt[1]=87;txt[2]=73;txt[3]=78;txt[4]=71; n=5; ) :             // SWING
            ( txt[0]=67;txt[1]=67; n=2; );
   n;
 );

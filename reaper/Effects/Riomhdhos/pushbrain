@@ -94,6 +94,9 @@ slider31:0<0,9999,1>-tap presses
 // Accumulated, signed; the bridge applies the DIFFERENCE since its last poll, so a
 // missed poll costs nothing and the two never drift.
 slider32:0<-1000000,1000000,1>-tempo encoder accumulated
+// Swing is absolute 0-127 here, not a delta: nothing outside this plugin owns the
+// value yet, so there is no second copy for it to drift from.
+slider33:0<0,127,1>Swing
 // Octave Down = CC54, Octave Up = CC55. The octave is published to gmem[62] so
 // `pushled` follows it directly - previously both plugins carried their own copy of
 // the octave and had to be kept matching by hand, which meant the lit "root" pads
@@ -309,6 +312,23 @@ while (midirecv(mpos, m1, m2, m3)) (
       d = m3 < 64 ? m3 : m3 - 128;
       menc = max(0, min(127, menc + d));
       slider9 = menc; sliderchange(slider9);
+      // The master used to be the ONE control that acted without announcing itself.
+      // The eight display encoders get their readout for free - they re-emit MiniLab
+      // CCs, which travel on to the CTRL track where minilab-brain flashes the label.
+      // This one is consumed here and never leaves the track, so it has to publish the
+      // readout itself. Label id 22 = MASTER, published as id+2.
+      gmem[59] = menc; gmem[60] = 24; gmem[58] += 1;
+    ) :
+
+    // SWING (CC15), the encoder beside Tempo. Relative like every Push encoder.
+    // Published to gmem[52] as value+1, the rig's standard sentinel: a stored 0 means
+    // "never touched" rather than "set to zero".
+    m2 == 15 ? (
+      d = m3 < 64 ? m3 : m3 - 128;
+      swng = max(0, min(127, swng + d));
+      slider33 = swng; sliderchange(slider33);
+      gmem[52] = swng + 1;
+      gmem[59] = swng; gmem[60] = 25; gmem[58] += 1;   // label id 23 = SWING
     ) :
     (m2 >= 71 && m2 <= 78) ? (
       e = m2 - 71;
