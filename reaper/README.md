@@ -28,7 +28,9 @@ channel. Only the selected mood is audible.
 `__startup.lua` runs `mood_mute` (exclusive mood muting), `arm_inputs`, `bridge`
 (K4–K7 → the active mood's Kontakt macros) and `remote` (a Lua console driven over
 SSH). `riomhdhos_lib.lua` is the helper library that console loads. The `add_*` /
-`learn_*` scripts are one-shot installers.
+`learn_*` scripts are one-shot installers, as is `build_moods.lua` — it creates one
+Kontakt child track per instrument under each mood bus and carries the intended
+instrument list for all four moods.
 
 ## Three things that are not obvious
 
@@ -51,6 +53,14 @@ lighting from there would play notes on COSMOS. Two tracks, two destinations.
 `NOTE` (CC50) and `SESSION` (CC51) select a view directly; they are not a toggle.
 The mode lives in `gmem[61]` so the two plugins cannot disagree about what is on
 screen.
+
+The grid defaults to **D major** — the rig's home key, where most of the repertoire sits
+and what the pipes are pitched in. It used to default to C minor, which put the grid in
+the wrong key on every fresh instance and left the low B off the bottom row entirely.
+
+⚠️ A JSFX slider default applies only to instances added **afterwards**. The live
+project stores its own values in the `.rpp`, so changing the default never moves a grid
+that is already running — that takes writing the parameter itself.
 
 ```
 NOTE view      all 64 pads play a scale-locked grid. Nothing else lit.

@@ -26,8 +26,15 @@ desc:Riomhdhos Push brain (mood select + scale-locked grid)
 
 options:gmem=riomhdhos
 
-slider1:0<0,11,1{C,C#,D,D#,E,F,F#,G,G#,A,A#,B}>Root
-slider2:0<0,3,1{minor (aeolian),dorian,major,minor pentatonic}>Scale
+// D is the rig's home key - most of the trad repertoire sits there, and it is what the
+// pipes are pitched in. Defaulting to C meant the grid came up in the wrong key every
+// time a fresh instance was added, and the B a whistle player reaches for was missing
+// from the bottom row.
+// ⚠️ A default only applies to instances added AFTER this edit. The running project has
+// its own values saved in the .rpp, so changing this does NOT move a live grid - that
+// takes setting the parameter itself.
+slider1:2<0,11,1{C,C#,D,D#,E,F,F#,G,G#,A,A#,B}>Root
+slider2:2<0,3,1{minor (aeolian),dorian,major,minor pentatonic}>Scale
 slider3:3<1,8,1>Row step (scale degrees per row)
 slider4:2<0,7,1>Octave offset  (CC54 down / CC55 up)
 slider5:1<0,1,1{off,on}>Grid sends notes
