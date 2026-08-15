@@ -81,20 +81,26 @@ end)
 -- so presence proves nothing. The -alive slider is set to 1 in @init; only a running
 -- effect can have done that. 0 means loaded-but-dead, which looks identical from
 -- REAPER's FX list and is the failure mode worth flying a flag for.
-local ctrl = track("CTRL")
-if not ctrl then
-  kv("ctrl_track", "ABSENT")
-else
-  kv("ctrl_track", "ok")
-  for _, nm in ipairs({ "pushbrain", "pushled" }) do
-    try(nm, function()
-      local fx = fxi(ctrl, nm)
-      if not fx then return "absent" end
-      local p = pidx(ctrl, fx, "alive")
-      if not p then return "no-canary" end
-      return R.TrackFX_GetParam(ctrl, fx, p)
-    end)
+-- Searched across every track rather than looked for on a named one. The first version
+-- of this probe assumed both lived on CTRL and reported them ABSENT; they are actually
+-- on their own PUSH and PUSH LED tracks. A health check that hardcodes the layout will
+-- lie the next time the layout moves, and it moved once already.
+local function findfx(frag)
+  for i = 0, R.CountTracks(0) - 1 do
+    local tr = R.GetTrack(0, i)
+    local fx = fxi(tr, frag)
+    if fx then return tr, fx end
   end
+end
+
+for key, frag in pairs({ pushbrain = "pushbrain", pushled = "pushled" }) do
+  try(key, function()
+    local tr, fx = findfx(frag)
+    if not tr then return "absent" end
+    local p = pidx(tr, fx, "alive")
+    if not p then return "no-canary on " .. tname(tr) end
+    return R.TrackFX_GetParam(tr, fx, p) .. " (" .. tname(tr) .. ")"
+  end)
 end
 
 ------------------------------------------------------------------ moods

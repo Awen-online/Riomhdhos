@@ -92,15 +92,29 @@ All `/api/*` routes need `Authorization: Bearer <token>` (or `?token=`).
 
 ## What has and has not been tested
 
-Verified on CUCHULAINN against a harness that fakes REAPER and the remote console:
-static serving, 401 without a token, 404 on unknown routes, path traversal rejected, the
-full nonce handshake and report parse (18 keys), the "not responding" and "Remote Audio"
-warnings, and both UI states.
+**Verified on the rig, 2026-08-14.** `health.lua` runs correctly inside REAPER; every
+`GetAudioDeviceInfo` attribute name was right first time. The agent is installed, answers
+over the network, and reports the real ASIO device, both JSFX canaries, all four moods,
+the drum chain and tempo.
 
-**Not yet verified on the rig**, because it was powered down when this was written:
+One bug found and fixed in the process: the first version looked for `pushbrain` and
+`pushled` on the CTRL track and reported them **absent**. They actually live on their own
+`PUSH` and `PUSH LED` tracks. The probe now searches every track by FX name instead of
+assuming a layout — a health check that hardcodes the layout will lie the next time the
+layout moves, and it had moved already.
 
-- `health.lua` has never run inside REAPER. The `GetAudioDeviceInfo` attribute names
-  (`MODE`, `IDENT_OUT`, `IDENT_IN`, `SRATE`, `BSIZE`) and the `pidx(..., "alive")` canary
-  lookup both need confirming against the real API.
-- The REAPER launch task name is unknown, so Start/Restart REAPER is unwired.
-- No smart plug exists yet, so power-on is untested end to end.
+The REAPER launch task did not exist at all; REAPER had been started by hand from
+Explorer. `install-reaper-task.ps1` now creates it, and an Interactive-principal task was
+confirmed to land in **session 1 as the console user** — the property that decides whether
+REAPER comes up on the real ASIO device or comes up deaf.
+
+Verified earlier on CUCHULAINN against a harness faking REAPER and the console: static
+serving, 401 without a token, 404 on unknown routes, path traversal rejected, the full
+nonce handshake and report parse, and the "not responding" and "Remote Audio" warnings.
+
+**Still untested:**
+
+- **Start / Restart REAPER end to end.** The launch mechanism is proven, but the buttons
+  themselves have not been fired: the project was dirty at the time and a restart would
+  have discarded unsaved changes. Press Restart once with a saved project to close this out.
+- **Power-on.** No smart plug exists yet.
