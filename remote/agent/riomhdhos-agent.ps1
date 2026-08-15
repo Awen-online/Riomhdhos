@@ -85,6 +85,272 @@ function Get-ConsoleHeartbeat {
   }
 }
 
+$script:AudioCache     = $null
+$script:AudioCacheTime = [datetime]::MinValue
+
+function Get-AudioInventory {
+  # OS-level audio picture, gathered from Windows rather than from REAPER. This is the
+  # half REAPER cannot tell you: an ASIO driver can be installed and registered while the
+  # interface it drives is unplugged, and REAPER will simply report no device without
+  # ever explaining why.
+  #
+  # Cached for 30s. Get-PnpDevice is slow enough that running it on every poll would make
+  # the phone's ten-second refresh a measurable load on a machine whose whole job is to
+  # not glitch. Hardware does not appear and disappear faster than this anyway - and when
+  # it does, that is the one case worth waiting half a minute to be sure about.
+  if ($script:AudioCache -and ((Get-Date) - $script:AudioCacheTime).TotalSeconds -lt 30) {
+    return $script:AudioCache
+  }
+
+  $inv = @{ asioDrivers = @(); devices = @(); errors = @() }
+
+  # ASIO drivers are a plain registry list. Both views are read because a 32-bit driver
+  # registers under WOW6432Node and would otherwise be invisible to a 64-bit host.
+  foreach ($root in 'HKLM:\SOFTWARE\ASIO', 'HKLM:\SOFTWARE\WOW6432Node\ASIO') {
+    try {
+      if (Test-Path $root) {
+        foreach ($k in Get-ChildItem $root -ErrorAction Stop) {
+          $desc = (Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue).Description
+          $inv.asioDrivers += @{
+            name = $k.PSChildName
+            description = if ($desc) { $desc } else { $k.PSChildName }
+            bits = if ($root -like '*WOW6432Node*') { 32 } else { 64 }
+          }
+        }
+      }
+    } catch { $inv.errors += "asio registry ${root}: $($_.Exception.Message)" }
+  }
+
+  # Physical sound hardware and, critically, whether Windows thinks it is healthy. A
+  # device in Error state is the difference between "REAPER is misconfigured" and
+  # "the interface fell off the USB bus", which are fixed in completely different ways.
+  # Deduplicated by name: Windows lists a multi-interface USB device once per interface,
+  # so the Zoom shows up twice and would otherwise read as two separate faults. Best
+  # status wins, because "present on one interface" means the hardware is there.
+  try {
+    $seen = @{}
+    foreach ($d in (Get-PnpDevice -Class Media -ErrorAction Stop)) {
+      $n = $d.FriendlyName
+      if ($seen.ContainsKey($n) -and $seen[$n] -eq 'OK') { continue }
+      $seen[$n] = $d.Status
+    }
+    foreach ($n in $seen.Keys) {
+      $inv.devices += @{
+        name    = $n
+        # OK = connected and working. Unknown = driver installed but the hardware is not
+        # currently attached. Error/Degraded = attached and broken. These are three
+        # different situations with three different fixes; collapsing them loses the fix.
+        status  = $seen[$n]
+        present = ($seen[$n] -eq 'OK')
+      }
+    }
+  } catch { $inv.errors += "pnp media: $($_.Exception.Message)" }
+
+  $script:AudioCache     = $inv
+  $script:AudioCacheTime = Get-Date
+  return $inv
+}
+
+function Get-AudioChecks {
+  # Each check is a plain statement with a fix attached. The point is that the phone
+  # should tell you what to DO, not make you infer it from a field you have to remember
+  # the correct value of.
+  param($Deep, $Inventory, $Reaper)
+
+  $checks = @()
+  function chk($label, $state, $detail, $fix) {
+    @{ label = $label; state = $state; detail = $detail; fix = $fix }
+  }
+
+  # 1. is the hardware attached, and is it healthy? Three states, not two.
+  $broken = @($Inventory.devices | Where-Object { $_.status -eq 'Error' -or $_.status -eq 'Degraded' })
+  $absent = @($Inventory.devices | Where-Object { $_.status -ne 'OK' -and $_.status -ne 'Error' -and $_.status -ne 'Degraded' })
+  $live   = @($Inventory.devices | Where-Object { $_.status -eq 'OK' })
+
+  if ($Inventory.devices.Count -eq 0) {
+    $checks += chk 'Sound hardware' 'warn' 'Windows reported no media devices' 'Could not enumerate; check the agent log.'
+  } elseif ($broken.Count -gt 0) {
+    $checks += chk 'Sound hardware' 'bad' (($broken | ForEach-Object { "$($_.name) [$($_.status)]" }) -join '; ') `
+                  'Attached but faulted. Reseat the USB cable, then reboot the rig.'
+  } elseif ($absent.Count -gt 0) {
+    $checks += chk 'Sound hardware' 'warn' `
+                  ("$($live.Count) connected; not connected: " + (($absent | ForEach-Object { $_.name }) -join ', ')) `
+                  'Driver installed but the hardware is not plugged in. Fine unless you need that device.'
+  } else {
+    $checks += chk 'Sound hardware' 'ok' "$($live.Count) device(s) connected" ''
+  }
+
+  # 2. is an ASIO driver even installed. Deduplicated by name: a driver registers under
+  # both the 64- and 32-bit hives and listing both reads as four drivers, not two.
+  $asioNames = @($Inventory.asioDrivers | ForEach-Object { $_.description } | Select-Object -Unique)
+  if ($asioNames.Count -eq 0) {
+    $checks += chk 'ASIO driver' 'bad' 'No ASIO driver registered' 'Install the interface driver; REAPER cannot use ASIO without one.'
+  } else {
+    $checks += chk 'ASIO driver' 'ok' ($asioNames -join '; ') ''
+  }
+
+  if (-not $Reaper.running) {
+    $checks += chk 'REAPER' 'warn' 'not running' 'Press Start REAPER.'
+    return $checks
+  }
+
+  # 3. did REAPER actually open a device
+  $out = if ($Deep) { $Deep['audio_out'] } else { $null }
+  if (-not $out -or $out -eq '?' -or $out -eq '') {
+    $checks += chk 'Audio device' 'bad' 'REAPER has no audio device open' `
+                  'The driver failed to open - usually the interface is unplugged, or another app grabbed it exclusively.'
+  } elseif ($out -match 'Remote Audio|RDP') {
+    $checks += chk 'Audio device' 'bad' $out `
+                  'REAPER was started inside an RDP session. Disconnect RDP, then Restart REAPER.'
+  } else {
+    $checks += chk 'Audio device' 'ok' $out ''
+  }
+
+  # 4. ASIO vs anything else
+  $mode = if ($Deep) { $Deep['audio_mode'] } else { $null }
+  if ($mode -and $mode -ne 'ASIO') {
+    $checks += chk 'Driver mode' 'warn' $mode 'Not ASIO. Latency will be poor; switch in REAPER audio preferences.'
+  } elseif ($mode) {
+    $checks += chk 'Driver mode' 'ok' $mode ''
+  }
+
+  # 5. buffer size - large buffers are audible as lag when playing live
+  $bsize = if ($Deep) { [int]($Deep['audio_bsize']) } else { 0 }
+  if ($bsize -gt 512) {
+    $checks += chk 'Buffer' 'warn' "$bsize samples" 'Large enough to feel as lag when playing. Reduce it in the driver panel.'
+  } elseif ($bsize -gt 0) {
+    $checks += chk 'Buffer' 'ok' "$bsize samples" ''
+  }
+
+  return $checks
+}
+
+$script:ReaperIni = Join-Path $env:APPDATA 'REAPER\reaper.ini'
+
+function Get-ReaperIniPath {
+  # The agent runs as SYSTEM, so $env:APPDATA is SYSTEM's own profile and never the one
+  # REAPER reads. Finding the right file is done by evidence, in descending order of how
+  # much the evidence proves:
+  #
+  #   1. the running REAPER's own process owner  - proof, if REAPER is up
+  #   2. any reaper.ini on disk, newest first    - works with REAPER stopped
+  #   3. SYSTEM's own APPDATA                    - last resort, almost certainly wrong
+  #
+  # Win32_ComputerSystem.UserName was tried first and abandoned: it reports the CONSOLE
+  # user specifically, and returns empty the moment an RDP session displaces the console -
+  # which is exactly when someone is likely to be fiddling with audio settings.
+  if ($script:ReaperIni -and (Test-Path $script:ReaperIni)) { return $script:ReaperIni }
+
+  $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -eq 'reaper.exe' } | Select-Object -First 1
+  if ($proc) {
+    try {
+      $owner = Invoke-CimMethod -InputObject $proc -MethodName GetOwner -ErrorAction Stop
+      if ($owner.User) {
+        $p = "C:\Users\$($owner.User)\AppData\Roaming\REAPER\reaper.ini"
+        if (Test-Path $p) { $script:ReaperIni = $p; return $p }
+      }
+    } catch { }
+  }
+
+  $found = Get-ChildItem 'C:\Users\*\AppData\Roaming\REAPER\reaper.ini' -ErrorAction SilentlyContinue |
+           Sort-Object LastWriteTime -Descending | Select-Object -First 1
+  if ($found) { $script:ReaperIni = $found.FullName; return $found.FullName }
+
+  if (Test-Path $script:ReaperIni) { return $script:ReaperIni }
+  return $null
+}
+
+function Get-AudioDevices {
+  # What REAPER could be pointed at, which one it is pointed at, and whether the hardware
+  # is actually attached. The last part is the one that saves a trip to the rig: selecting
+  # a driver whose interface is unplugged leaves REAPER with no audio at all.
+  $ini = Get-ReaperIniPath
+  $current = $null
+  if ($ini) {
+    $line = Select-String -Path $ini -Pattern '^\s*asio_driver_name\s*=' -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    if ($line -and $line.Line -match '=\s*"?([^"]+)"?\s*$') { $current = $Matches[1].Trim() }
+  }
+
+  $inv = Get-AudioInventory
+  $names = @($inv.asioDrivers | ForEach-Object { $_.description } | Select-Object -Unique)
+
+  $devices = @()
+  foreach ($n in $names) {
+    # Heuristic, and deliberately loose: match the driver's first word against the
+    # hardware list ("UMC ASIO Driver" -> "BEHRINGER UMC 202HD 192k"). Vendors do not
+    # use the same string in both places, so an exact match would report everything absent.
+    $keyword = ($n -split '\s+')[0]
+    $hw = @($inv.devices | Where-Object { $_.name -like "*$keyword*" })
+    $devices += @{
+      name    = $n
+      current = ($n -eq $current)
+      present = [bool](@($hw | Where-Object { $_.status -eq 'OK' }).Count)
+      hardware = (($hw | ForEach-Object { $_.name }) -join '; ')
+    }
+  }
+  return @{ current = $current; devices = $devices; ini = $ini }
+}
+
+function Set-AudioDevice {
+  # Switching ASIO drivers is a restart-level change: REAPER holds its audio config in
+  # memory and rewrites reaper.ini on exit, so editing the file under a running REAPER
+  # would simply be overwritten. The order here is what makes it safe -
+  #   save -> kill -> edit -> relaunch
+  # Killing before editing matters twice over: a force-killed REAPER does not write the
+  # ini back, so our edit survives, and the save beforehand is what stops that costing
+  # you unsaved work.
+  param([string]$Name)
+
+  $ini = Get-ReaperIniPath
+  if (-not $ini) { return @{ ok = $false; message = 'reaper.ini not found' } }
+
+  $avail = (Get-AudioDevices).devices
+  $match = @($avail | Where-Object { $_.name -eq $Name })
+  if (-not $match.Count) {
+    return @{ ok = $false; message = "unknown driver '$Name'"; available = @($avail | ForEach-Object { $_.name }) }
+  }
+
+  $steps = @()
+
+  # 1. save, so the kill in step 2 cannot lose work
+  $proc = Get-ReaperProcess
+  if ($proc -and (Get-ConsoleHeartbeat).alive) {
+    $saved = Invoke-RigLua -Source "say(`"NONCE=@@NONCE@@`")`nR.Main_OnCommand(40026, 0)`nsay(`"saved=`" .. tostring(R.IsProjectDirty(0)))`nsay(`"END=@@NONCE@@`")" -TimeoutSec 10
+    $steps += if ($saved) { 'project saved' } else { 'save did not confirm' }
+  }
+
+  # 2. stop
+  if ($proc) { $steps += (Stop-Reaper).message }
+
+  # 3. edit
+  try {
+    $lines = Get-Content $ini
+    $hit = $false
+    $out = foreach ($l in $lines) {
+      if ($l -match '^\s*asio_driver_name\s*=') { $hit = $true; "asio_driver_name=`"$Name`"" }
+      else { $l }
+    }
+    if (-not $hit) { return @{ ok = $false; message = 'asio_driver_name not present in reaper.ini'; steps = $steps } }
+    Set-Content -Path $ini -Value $out -Encoding ascii
+    $steps += "reaper.ini -> $Name"
+  } catch {
+    return @{ ok = $false; message = "ini write failed: $($_.Exception.Message)"; steps = $steps }
+  }
+
+  # 4. relaunch
+  $started = Start-Reaper
+  $steps += $started.message
+
+  return @{
+    ok = $started.ok
+    message = "switched to $Name"
+    warning = if (-not $match[0].present) { "$Name selected but its hardware is not connected - REAPER will come up with no audio device." } else { $null }
+    steps = $steps
+  }
+}
+
 function Invoke-RigLua {
   # Drop a snippet for Riomhdhos_remote.lua and wait for the matching answer.
   param([string]$Source, [int]$TimeoutSec = 6)
@@ -130,7 +396,11 @@ function ConvertFrom-KvReport {
 function Get-Health {
   param([bool]$Deep = $true)
 
-  $os   = Get-CimInstance Win32_OperatingSystem
+  # CIM can come back empty in the seconds after the agent starts at boot. Every field
+  # derived from it is guarded, because a health endpoint that throws is worse than one
+  # reporting an unknown uptime - the phone shows "rig unreachable" and you go looking
+  # for a network fault that isn't there.
+  $os   = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
   $proc = Get-ReaperProcess
   $hb   = Get-ConsoleHeartbeat
 
@@ -150,9 +420,9 @@ function Get-Health {
     }
     host = @{
       name      = $env:COMPUTERNAME
-      bootedAt  = $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss')
-      uptimeMin = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalMinutes)
-      freeMemMB = [math]::Round($os.FreePhysicalMemory / 1024)
+      bootedAt  = if ($os) { $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
+      uptimeMin = if ($os) { [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalMinutes) } else { $null }
+      freeMemMB = if ($os) { [math]::Round($os.FreePhysicalMemory / 1024) } else { $null }
       networks  = $nets
     }
     reaper = @{
@@ -163,6 +433,8 @@ function Get-Health {
     }
     console = $hb
     deep    = $null
+    audio   = Get-AudioInventory
+    checks  = @()
     notes   = @()
   }
 
@@ -189,6 +461,8 @@ function Get-Health {
   } elseif ($Deep -and $proc -and -not $hb.alive) {
     $health.notes += 'REAPER is up but the remote console is not running; no deep health available.'
   }
+
+  $health.checks = @(Get-AudioChecks -Deep $health.deep -Inventory $health.audio -Reaper $health.reaper)
 
   return $health
 }
@@ -343,9 +617,30 @@ while ($listener.IsListening) {
       }
 
       switch -Regex ($path) {
+        '^/api/whoami$' {
+          # Deliberately trivial: this is what the phone's "Find rig" scan hits, once per
+          # candidate address across a whole subnet. Anything that touches PnP, REAPER or
+          # the console here would turn a discovery sweep into a denial of service against
+          # the machine we are trying to find.
+          Send-Json -Response $res -Object @{
+            rig     = $env:COMPUTERNAME
+            agent   = $AGENT_VERSION
+            port    = $Port
+          }
+        }
         '^/api/health$' {
           $deep = -not ($req.QueryString['deep'] -eq '0')
           Send-Json -Response $res -Object (Get-Health -Deep $deep)
+        }
+        '^/api/audio/devices$' {
+          Send-Json -Response $res -Object (Get-AudioDevices)
+        }
+        '^/api/audio/device$' {
+          if ($verb -ne 'POST') { Send-Json -Response $res -Object @{ error = 'POST only' } -Status 405; break }
+          $name = $req.QueryString['name']
+          if (-not $name) { Send-Json -Response $res -Object @{ error = 'name required' } -Status 400; break }
+          Write-Log "audio device -> $name (from $($req.RemoteEndPoint.Address))"
+          Send-Json -Response $res -Object (Set-AudioDevice -Name $name)
         }
         '^/api/reaper/restart$' {
           if ($verb -ne 'POST') { Send-Json -Response $res -Object @{ error = 'POST only' } -Status 405; break }

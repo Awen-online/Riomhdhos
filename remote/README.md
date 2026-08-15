@@ -83,12 +83,58 @@ All `/api/*` routes need `Authorization: Bearer <token>` (or `?token=`).
 
 | Route | Method | Does |
 |---|---|---|
+| `/api/whoami` | GET | Rig name and agent version, nothing else. Exists for discovery sweeps. |
 | `/api/health` | GET | Full report. `?deep=0` skips the REAPER round trip. |
 | `/api/reaper/restart` | POST | Kill, then relaunch via the scheduled task |
 | `/api/reaper/stop` | POST | Force kill |
 | `/api/reaper/start` | POST | Launch via the scheduled task |
 | `/api/system/shutdown` | POST | Kill REAPER, then shut down |
 | `/api/system/reboot` | POST | Kill REAPER, then reboot |
+| `/api/audio/devices` | GET | ASIO drivers, which is selected, whether its hardware is attached |
+| `/api/audio/device?name=…` | POST | Switch interface: save, kill REAPER, edit `reaper.ini`, relaunch |
+
+## Switching audio interface
+
+The rig has two: the **UMC 202HD** (2 in) for normal use and the **Zoom H6essential**
+(6 in) for shows with more instruments to record. ASIO drives one interface at a time, so
+this is a toggle, not a mix.
+
+REAPER keeps the choice in `reaper.ini` under `[audioconfig]`:
+
+```ini
+asio_driver_name="UMC ASIO Driver"
+```
+
+with per-driver channel ranges remembered separately in `[asiochan]`, so REAPER restores
+the right channel count on its own when the driver changes.
+
+The switch is restart-level and the ordering is what makes it safe: **save → kill →
+edit → relaunch.** REAPER holds audio config in memory and rewrites `reaper.ini` on exit,
+so an edit under a running REAPER is simply overwritten. Killing first means a force-kill,
+which does *not* write the ini back, so the edit survives — and the save beforehand is
+what stops that costing unsaved work.
+
+Finding `reaper.ini` is harder than it looks, because the agent runs as SYSTEM and
+`$env:APPDATA` is SYSTEM's own profile. It resolves by evidence instead: the running
+REAPER's process owner first, then any `reaper.ini` on disk newest-first, then SYSTEM's
+APPDATA as a last resort. `Win32_ComputerSystem.UserName` was tried and abandoned — it
+reports the *console* user and returns empty the moment RDP displaces it, which is exactly
+when someone is likely to be changing audio settings.
+
+## Finding the rig on a phone hotspot
+
+**MAC addresses cannot help with this.** They are link-layer, they do not route, and a
+browser cannot see them. On the home LAN the rig is at a known address; on a hotspot
+Android hands it a fresh lease on a different subnet and nothing in the page can know which.
+
+So the app asks. **Find rig on this network** sweeps candidate subnets — the common
+Android and Windows hotspot ranges first, then the usual home ranges — hitting
+`/api/whoami` on each address and saving the first that answers. That endpoint exists
+purely for this: a sweep is up to 254 requests per subnet, and pointing that at the full
+health endpoint would hammer the machine it is trying to find.
+
+Known addresses are tried before any sweep, and the result is saved, so the scan is a
+one-time cost per network rather than something you wait for on every launch.
 
 ## What has and has not been tested
 

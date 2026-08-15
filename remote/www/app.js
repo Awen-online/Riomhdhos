@@ -59,27 +59,131 @@ function rows(container, items) {
   }
 }
 
-const MOODS = ['COSMOS', 'CAIRN', 'EIRE', 'DEEP'];
-
-function renderMoods(deep) {
-  const grid = $('moodGrid');
-  grid.innerHTML = '';
-  // "moods" comes back as "COSMOS:muted | CAIRN:ACTIVE | ..." — parsed here rather than
-  // trusting mood_active alone, so an absent track shows as absent instead of silently
-  // reading as "not the active one".
-  const raw = (deep && deep.moods) || '';
-  const state = {};
-  raw.split('|').forEach(part => {
-    const [name, st] = part.trim().split(':');
-    if (name) state[name] = st;
-  });
-  for (const m of MOODS) {
-    const el = document.createElement('div');
-    const st = state[m];
-    el.className = 'mood' + (st === 'ACTIVE' ? ' active' : st === 'absent' ? ' absent' : '');
-    el.textContent = st === 'absent' ? m + ' ?' : m;
-    grid.append(el);
+/* Moods are gone on purpose. This is an OS and audio-config tool; the Push is the
+   instrument's controller. What replaced them is diagnostics — each check states a
+   verdict and, when something is wrong, what to do about it. A status line you have to
+   remember the correct value of is not a diagnostic. */
+function renderChecks(checks) {
+  const box = $('checks');
+  box.innerHTML = '';
+  if (!checks || !checks.length) {
+    box.innerHTML = '<div class="check"><div class="stripe"></div>' +
+                    '<div class="body"><div class="detail">no checks reported</div></div></div>';
+    return;
   }
+  for (const c of checks) {
+    const el = document.createElement('div');
+    el.className = 'check ' + (c.state || '');
+    const stripe = document.createElement('div');
+    stripe.className = 'stripe ' + (c.state || '');
+    const body = document.createElement('div');
+    body.className = 'body';
+    const label = document.createElement('div');
+    label.className = 'label'; label.textContent = c.label;
+    const detail = document.createElement('div');
+    detail.className = 'detail'; detail.textContent = c.detail || '—';
+    body.append(label, detail);
+    if (c.fix) {
+      const fix = document.createElement('div');
+      fix.className = 'fix'; fix.textContent = c.fix;
+      body.append(fix);
+    }
+    el.append(stripe, body);
+    box.append(el);
+  }
+}
+
+/* Driver picker. Switching restarts REAPER, so it arms before it fires — the same
+   two-tap rule as shutdown, for the same reason: this is not something to do by accident
+   with the phone in your hand between tunes. */
+let driversCache = null;
+
+async function loadDrivers() {
+  try {
+    driversCache = await api('/api/audio/devices');
+    renderDrivers(driversCache);
+  } catch (e) {
+    $('drivers').innerHTML = '';
+  }
+}
+
+function renderDrivers(info) {
+  const box = $('drivers');
+  box.innerHTML = '';
+  const list = (info && info.devices) || [];
+  if (!list.length) {
+    box.innerHTML = '<div class="cardnote">No ASIO drivers registered.</div>';
+    return;
+  }
+  for (const d of list) {
+    const btn = document.createElement('button');
+    btn.className = 'drv' + (d.current ? ' current' : '') + (d.present ? '' : ' absent');
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    // Trim the boilerplate: "UMC ASIO Driver" reads better as "UMC" on a phone.
+    nm.textContent = d.name.replace(/\s*ASIO Driver\s*$/i, '');
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = d.current ? 'in use' : (d.present ? 'connected' : 'not plugged in');
+    btn.append(nm, tag);
+
+    if (d.current) {
+      btn.disabled = true;
+    } else {
+      let armed = false, timer = null;
+      btn.addEventListener('click', () => {
+        if (!armed) {
+          armed = true;
+          btn.classList.add('armed');
+          tag.textContent = d.present ? 'tap again to switch' : 'not plugged in — tap again anyway';
+          timer = setTimeout(() => {
+            armed = false; btn.classList.remove('armed');
+            tag.textContent = d.present ? 'connected' : 'not plugged in';
+          }, 4000);
+          return;
+        }
+        clearTimeout(timer);
+        armed = false;
+        btn.classList.remove('armed');
+        switchDriver(d.name);
+      });
+    }
+    box.append(btn);
+  }
+}
+
+async function switchDriver(name) {
+  setBusy(true);
+  log(`Switching to ${name} — saving and restarting REAPER…`);
+  try {
+    const r = await api('/api/audio/device?name=' + encodeURIComponent(name), { method: 'POST' });
+    (r.steps || []).forEach(s => log('  ' + s));
+    if (r.warning) log('WARNING: ' + r.warning);
+    log(r.message || (r.ok ? 'done' : 'failed'));
+  } catch (e) {
+    log('Switch FAILED: ' + e.message);
+  } finally {
+    setBusy(false);
+    // REAPER takes a while to come back with Kontakt loaded; look again once it should be up.
+    setTimeout(() => { refresh(); loadDrivers(); }, 12000);
+  }
+}
+
+function renderHardware(audio) {
+  const items = [];
+  const drivers = (audio && audio.asioDrivers) || [];
+  if (drivers.length) {
+    for (const d of drivers) items.push([`ASIO ${d.bits}-bit`, d.description, 'ok']);
+  } else {
+    items.push(['ASIO', 'none registered', 'bad']);
+  }
+  const devs = (audio && audio.devices) || [];
+  for (const d of devs) {
+    items.push([d.status === 'OK' ? 'Device' : 'Device !', d.name, d.status === 'OK' ? 'ok' : 'bad']);
+  }
+  if (!devs.length) items.push(['Devices', 'none enumerated', 'warn']);
+  for (const e of ((audio && audio.errors) || [])) items.push(['Error', e, 'bad']);
+  rows($('hwRows'), items);
 }
 
 function setBanner(kind, title, sub) {
@@ -100,7 +204,8 @@ function render(h) {
   else if (!reaperUp) setBanner('warn', 'Rig is up, REAPER is not', 'The box is reachable but REAPER is not running.');
   else if (audioBad) setBanner('bad',  'Wrong audio device', `Bound to "${audioOut}" — started inside RDP. Restart after disconnecting.`);
   else if (h.notes && h.notes.length) setBanner('warn', 'Running with warnings', h.notes[0]);
-  else               setBanner('ok',   'Rig is healthy', `${deep.mood_active || '—'} · ${deep.audio_srate || '?'} Hz · ${deep.tempo || '?'} BPM`);
+  else               setBanner('ok',   'Rig is healthy',
+                       `${deep.audio_mode || '?'} · ${deep.audio_srate || '?'} Hz · ${deep.audio_bsize || '?'} samples`);
 
   rows($('audioRows'), [
     ['Device',  deep.audio_out,   audioBad ? 'bad' : (deep.audio_out ? 'ok' : '')],
@@ -132,15 +237,90 @@ function render(h) {
     ['Address',   h.host && h.host.networks ? h.host.networks.map(n => n.address).join(', ') : ''],
   ]);
 
-  renderMoods(deep);
+  renderChecks(h.checks);
+  renderHardware(h.audio);
   (h.notes || []).forEach(n => log(n));
 }
 
 function renderOffline(err) {
   setBanner('bad', 'Rig unreachable', 'Powered off, on a different network, or the agent is not running.');
   rows($('audioRows'), [['Device', 'no answer', 'bad']]);
+  rows($('hwRows'),    [['Hardware', 'no answer', 'bad']]);
   rows($('rigRows'),   [['Agent', String(err.message || err), 'bad'], ['Address', cfg.host]]);
-  renderMoods(null);
+  renderChecks([{
+    label: 'Connection', state: 'bad', detail: String(err.message || err),
+    fix: 'If the rig is on a different network — a phone hotspot, say — tap "Find rig on this network".'
+  }]);
+}
+
+/* ------------------------------------------------------------------ discovery
+ *
+ * WHY THIS EXISTS
+ * On the home LAN the rig is at a known address. On a phone hotspot Android hands it a
+ * fresh lease on a different subnet, and nothing in a browser can tell you which. MAC
+ * addresses are no help: they are link-layer, they do not route, and a page cannot see
+ * them. So the app finds the rig the only way it can — by asking every address on the
+ * candidate subnets whether it is the rig.
+ *
+ * /api/whoami exists precisely for this: sweeping a /24 means up to 254 requests, and
+ * pointing that at the full health endpoint would hammer the machine we are looking for.
+ *
+ * The candidate list is hotspot subnets first, because that is the case this solves.
+ */
+const HOTSPOT_SUBNETS = [
+  '192.168.43', '192.168.42', '192.168.44', '192.168.137',  // common Android/Windows hotspot ranges
+  '192.168.49', '192.168.1', '192.168.0', '10.0.0'
+];
+
+async function probeHost(base, timeoutMs = 900) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${base}/api/whoami`, {
+      headers: { Authorization: 'Bearer ' + cfg.token },
+      signal: ctl.signal, cache: 'no-store'
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    return j && j.rig ? { base, rig: j.rig } : null;
+  } catch { return null; }
+  finally { clearTimeout(timer); }
+}
+
+async function findRig() {
+  if (!cfg.token) { log('Set the token in Settings first — discovery needs it.'); return; }
+  setBusy(true);
+  log('Searching for the rig…');
+  try {
+    // Try the addresses we already know before sweeping anything.
+    const known = [cfg.host, 'http://192.168.1.232:8765', 'http://100.98.84.34:8765'];
+    for (const b of known) {
+      const hit = await probeHost(b, 1500);
+      if (hit) { log(`Found ${hit.rig} at ${hit.base}`); cfg.set('host', hit.base); refresh(); return; }
+    }
+
+    for (const net of HOTSPOT_SUBNETS) {
+      log(`scanning ${net}.0/24 …`);
+      // Batched rather than all 254 at once: a phone will happily queue hundreds of
+      // sockets and then time every one of them out together.
+      for (let start = 1; start < 255; start += 32) {
+        const batch = [];
+        for (let i = start; i < Math.min(start + 32, 255); i++) {
+          batch.push(probeHost(`http://${net}.${i}:8765`));
+        }
+        const hit = (await Promise.all(batch)).find(Boolean);
+        if (hit) {
+          log(`Found ${hit.rig} at ${hit.base}`);
+          cfg.set('host', hit.base);
+          refresh();
+          return;
+        }
+      }
+    }
+    log('No rig found. Is it powered on and on this network?');
+  } finally {
+    setBusy(false);
+  }
 }
 
 /* ------------------------------------------------------------------ actions */
@@ -157,6 +337,9 @@ async function refresh() {
   try {
     const h = await api('/api/health');
     render(h);
+    // Driver list is polled far less often than health: it only changes when hardware is
+    // plugged in or a switch happens, and it costs a PnP enumeration on the rig.
+    if (!driversCache) loadDrivers();
   } catch (e) {
     renderOffline(e);
   } finally {
@@ -201,6 +384,7 @@ function arm(btn, label, run) {
 }
 
 $('btnRefresh').addEventListener('click', refresh);
+$('btnFind').addEventListener('click', findRig);
 $('btnRestart').addEventListener('click', () => post('/api/reaper/restart', 'Restart REAPER'));
 $('btnStartReaper').addEventListener('click', () => post('/api/reaper/start', 'Start REAPER'));
 $('btnStopReaper').addEventListener('click', () => post('/api/reaper/stop', 'Stop REAPER'));

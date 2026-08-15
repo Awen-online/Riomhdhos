@@ -103,27 +103,9 @@ for key, frag in pairs({ pushbrain = "pushbrain", pushled = "pushled" }) do
   end)
 end
 
------------------------------------------------------------------- moods
--- The active mood is derived from mute state rather than read from a slider, because
--- Riomhdhos_mood_mute.lua keeps exactly one mood audible. That makes the answer a fact
--- about what you can actually hear, not a claim about what some control thinks.
--- moods() returns them in brain order and matches "IRE" so the accent in EIRE can't bite.
-try("moods", function()
-  local names = { "COSMOS", "CAIRN", "EIRE", "DEEP" }
-  local out, active = {}, "?"
-  local ms = moods()
-  for i, tr in ipairs(ms) do
-    if not tr then
-      out[#out+1] = names[i] .. ":absent"
-    else
-      local muted = R.GetMediaTrackInfo_Value(tr, "B_MUTE") > 0.5
-      if not muted then active = names[i] end
-      out[#out+1] = names[i] .. (muted and ":muted" or ":ACTIVE")
-    end
-  end
-  kv("mood_active", active)
-  return table.concat(out, " | ")
-end)
+-- Moods are deliberately not reported. This is an OS and audio-configuration tool, not
+-- a performance surface - the Push is the instrument's controller and this is the thing
+-- you reach for when the machine, not the music, is misbehaving.
 
 ------------------------------------------------------------------ drums
 -- drumseq must sit FIRST, ahead of the instrument, because it generates the notes it
