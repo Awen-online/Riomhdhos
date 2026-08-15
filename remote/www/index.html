@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0e0d0c">
+<link rel="manifest" href="/manifest.webmanifest">
+<title>Ríomhdhos</title>
+<style>
+/* Single-theme dark, deliberately. This gets used on a dark stage at night; a light
+   mode would blind you and there is no scenario where the phone is the bright object
+   in the room. Every colour is stated explicitly so nothing inherits from the host. */
+:root{
+  --bg:#0e0d0c; --panel:#1a1714; --panel2:#221d19; --line:#2f2822;
+  --text:#ece7df; --dim:#9a9187;
+  --ember:#e0873a;                 /* turf-fire accent, used sparingly */
+  --ok:#7fae5f; --warn:#d9a441; --bad:#cf5a4a;
+  --radius:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--text);
+  font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  -webkit-tap-highlight-color:transparent;
+}
+.wrap{max-width:620px;margin:0 auto;padding:16px 16px 40px;display:flex;flex-direction:column;gap:16px}
+
+header{display:flex;align-items:center;gap:12px}
+h1{margin:0;font-size:20px;letter-spacing:.14em;text-transform:uppercase;font-weight:600}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--dim);flex:none;transition:background .2s}
+.dot.ok{background:var(--ok);box-shadow:0 0 10px rgba(127,174,95,.6)}
+.dot.warn{background:var(--warn);box-shadow:0 0 10px rgba(217,164,65,.6)}
+.dot.bad{background:var(--bad);box-shadow:0 0 10px rgba(207,90,74,.6)}
+header .spacer{flex:1}
+.iconbtn{background:none;border:1px solid var(--line);color:var(--dim);border-radius:var(--radius);
+  padding:8px 12px;font-size:13px;cursor:pointer}
+
+/* Banner states what is true right now in one line, because that is the only thing
+   you can read at a glance between tunes. */
+.banner{border-radius:var(--radius);padding:14px 16px;font-size:15px;border:1px solid var(--line);background:var(--panel)}
+.banner.ok  {border-color:rgba(127,174,95,.45)}
+.banner.warn{border-color:rgba(217,164,65,.5)}
+.banner.bad {border-color:rgba(207,90,74,.5)}
+.banner b{display:block;font-size:17px;margin-bottom:2px}
+.banner .sub{color:var(--dim);font-size:14px}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.card h2{margin:0;padding:12px 16px;font-size:12px;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--dim);font-weight:600;border-bottom:1px solid var(--line);background:var(--panel2)}
+.rows{display:flex;flex-direction:column}
+.row{display:flex;gap:12px;padding:10px 16px;border-bottom:1px solid rgba(47,40,34,.6);align-items:baseline}
+.row:last-child{border-bottom:none}
+.row .k{color:var(--dim);font-size:13px;flex:none;width:104px}
+.row .v{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+  word-break:break-word}
+.v.ok{color:var(--ok)} .v.warn{color:var(--warn)} .v.bad{color:var(--bad)}
+
+.moods{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:12px 16px}
+.mood{border:1px solid var(--line);border-radius:8px;padding:10px 4px;text-align:center;
+  font-size:11px;letter-spacing:.08em;color:var(--dim);background:var(--panel2)}
+.mood.active{color:var(--bg);background:var(--ember);border-color:var(--ember);font-weight:700}
+.mood.absent{color:var(--bad);border-color:rgba(207,90,74,.4)}
+
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button.act{min-height:56px;border-radius:var(--radius);border:1px solid var(--line);
+  background:var(--panel);color:var(--text);font-size:15px;font-weight:600;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 10px;text-align:center}
+button.act:active{background:var(--panel2)}
+button.act[disabled]{opacity:.4}
+button.act.primary{border-color:var(--ember);color:var(--ember)}
+button.act.danger{border-color:rgba(207,90,74,.5);color:var(--bad)}
+button.act.wide{grid-column:1 / -1}
+button.act.armed{background:var(--bad);border-color:var(--bad);color:#fff}
+
+dialog{border:1px solid var(--line);background:var(--panel);color:var(--text);
+  border-radius:var(--radius);padding:0;width:min(92vw,420px)}
+dialog::backdrop{background:rgba(0,0,0,.72)}
+.dlg{padding:16px;display:flex;flex-direction:column;gap:12px}
+label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--dim)}
+input{background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:8px;
+  padding:12px;font-size:15px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.hint{font-size:12px;color:var(--dim);line-height:1.4}
+.log{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;color:var(--dim);
+  white-space:pre-wrap;padding:10px 16px;max-height:140px;overflow:auto}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <span class="dot" id="dot"></span>
+    <h1>Ríomhdhos</h1>
+    <span class="spacer"></span>
+    <button class="iconbtn" id="btnSettings">Settings</button>
+  </header>
+
+  <div class="banner" id="banner">
+    <b id="bannerTitle">Checking…</b>
+    <span class="sub" id="bannerSub">Contacting the rig</span>
+  </div>
+
+  <div class="card">
+    <h2>Audio</h2>
+    <div class="rows" id="audioRows"></div>
+  </div>
+
+  <div class="card">
+    <h2>Moods</h2>
+    <div class="moods" id="moodGrid"></div>
+  </div>
+
+  <div class="card">
+    <h2>Rig</h2>
+    <div class="rows" id="rigRows"></div>
+  </div>
+
+  <div class="actions">
+    <button class="act primary" id="btnRestart">Restart REAPER</button>
+    <button class="act" id="btnStartReaper">Start REAPER</button>
+    <button class="act" id="btnStopReaper">Stop REAPER</button>
+    <button class="act" id="btnRefresh">Refresh</button>
+    <button class="act danger" id="btnReboot">Reboot rig</button>
+    <button class="act danger" id="btnShutdown">Shut down rig</button>
+    <button class="act primary wide" id="btnPowerOn">Power on (smart plug)</button>
+  </div>
+
+  <div class="card">
+    <h2>Log</h2>
+    <div class="log" id="log">ready</div>
+  </div>
+</div>
+
+<dialog id="settings">
+  <form method="dialog" class="dlg">
+    <label>Rig address
+      <input id="cfgHost" placeholder="http://192.168.1.232:8765" inputmode="url">
+    </label>
+    <p class="hint">Leave blank to use whatever address this page was loaded from. Set it only
+      when the rig moves — for example onto the phone hotspot, where it gets a different address.</p>
+    <label>Token
+      <input id="cfgToken" placeholder="paste from rig\remote\agent.token">
+    </label>
+    <label>Smart plug ON url
+      <input id="cfgPlugOn" placeholder="http://192.168.1.50/relay/0?turn=on" inputmode="url">
+    </label>
+    <p class="hint">The plug is called directly, because when the rig is off it cannot answer for
+      itself. Needs a plug with a local HTTP API — Shelly or Tasmota. Cloud-only plugs will not
+      work on a hotspot with no internet.</p>
+    <div class="actions">
+      <button class="act wide primary" value="save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/app.js"></script>
+</body>
+</html>
