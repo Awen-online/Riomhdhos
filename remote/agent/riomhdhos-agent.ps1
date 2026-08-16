@@ -261,6 +261,99 @@ function Get-ReaperIniPath {
   return $null
 }
 
+function Get-Latency {
+  # Summarises the rolling log written by latency-sampler.ps1. The agent does NOT sample
+  # here: Get-Counter needs a real interval to produce a meaningful rate, so sampling
+  # inside a request would block every health poll for seconds.
+  #
+  # WHY THIS MATTERS ON THIS BOX: at 128 samples / 44100 Hz the whole REAPER graph has to
+  # finish inside 2.9 ms, every 2.9 ms. A single DPC that blocks for 3 ms is an audible
+  # click in the PA. Average CPU tells you nothing about that - a machine at 10% average
+  # can still miss a deadline every few minutes. What matters is the TAIL.
+  param([int]$Minutes = 30)
+
+  $csv = 'C:\Users\mccul\rig\latency.csv'
+  if (-not (Test-Path $csv)) {
+    return @{ available = $false; note = 'sampler not running - no latency log on disk' }
+  }
+
+  try { $rows = Import-Csv $csv -ErrorAction Stop } catch {
+    return @{ available = $false; note = "could not read latency log: $($_.Exception.Message)" }
+  }
+
+  $cut = (Get-Date).AddMinutes(-$Minutes)
+  # -as rather than [datetime]::TryParse: TryParse needs a TYPED [ref] target, and
+  # passing [ref] to an untyped $null makes PowerShell unable to resolve the overload.
+  # -as yields $null on a bad parse, which is the same test with none of that.
+  $win = @($rows | Where-Object {
+    $ts = $_.time -as [datetime]
+    $ts -and $ts -ge $cut
+  })
+  if ($win.Count -lt 3) {
+    return @{ available = $false; note = "only $($win.Count) samples in the last $Minutes min - let it run longer" }
+  }
+
+  # p95 rather than mean. The mean of a latency distribution hides exactly the events
+  # that cause dropouts; the tail is the entire story.
+  $stat = {
+    param($field)
+    $v = @($win | ForEach-Object { $_.$field } | Where-Object { $_ -ne '' -and $null -ne $_ } | ForEach-Object { [double]$_ })
+    if ($v.Count -lt 2) { return $null }
+    $sorted = $v | Sort-Object
+    [pscustomobject]@{
+      avg = [math]::Round(($v | Measure-Object -Average).Average, 3)
+      p95 = [math]::Round($sorted[[int][math]::Floor($sorted.Count * 0.95)], 3)
+      max = [math]::Round(($v | Measure-Object -Maximum).Maximum, 3)
+    }
+  }
+
+  $dpc    = & $stat 'dpc_pct'
+  $isr    = & $stat 'isr_pct'
+  $cpu    = & $stat 'cpu_pct'
+  $queue  = & $stat 'queue_len'
+  $reaper = & $stat 'reaper_cpu_pct'
+
+  # Thresholds are deliberately about the PEAK, not the average, for the reason above.
+  $checks = @()
+  if ($dpc) {
+    $checks += if ($dpc.max -ge 10) {
+      @{ label='DPC time'; state='bad';  detail="peak $($dpc.max)% (avg $($dpc.avg)%)"; fix='A driver is holding the CPU long enough to miss the audio deadline. Run LatencyMon at the console to name it - the usual offenders are network, GPU and power management.' }
+    } elseif ($dpc.max -ge 4) {
+      @{ label='DPC time'; state='warn'; detail="peak $($dpc.max)% (avg $($dpc.avg)%)"; fix='Headroom is thinner than ideal at 128 samples. Fine now, worth watching if you add load.' }
+    } else {
+      @{ label='DPC time'; state='ok';   detail="peak $($dpc.max)% (avg $($dpc.avg)%)"; fix='' }
+    }
+  }
+  if ($queue) {
+    $checks += if ($queue.max -ge 4) {
+      @{ label='CPU queue'; state='warn'; detail="peak $($queue.max) threads waiting"; fix='Threads are queueing for CPU. Something is competing with the audio thread.' }
+    } else {
+      @{ label='CPU queue'; state='ok';   detail="peak $($queue.max)"; fix='' }
+    }
+  }
+  if ($reaper) {
+    $checks += if ($reaper.p95 -ge 85) {
+      @{ label='REAPER CPU'; state='warn'; detail="p95 $($reaper.p95)% of one core"; fix='The audio thread is close to saturating its core. Raise the buffer or thin the plugin chain before adding anything.' }
+    } else {
+      @{ label='REAPER CPU'; state='ok';   detail="p95 $($reaper.p95)% of one core"; fix='' }
+    }
+  }
+
+  @{
+    available   = $true
+    windowMin   = $Minutes
+    samples     = $win.Count
+    firstSample = $win[0].time
+    lastSample  = $win[-1].time
+    dpc         = $dpc
+    isr         = $isr
+    cpu         = $cpu
+    queue       = $queue
+    reaper      = $reaper
+    checks      = $checks
+  }
+}
+
 function Get-AudioDevices {
   # What REAPER could be pointed at, which one it is pointed at, and whether the hardware
   # is actually attached. The last part is the one that saves a trip to the rig: selecting
@@ -631,6 +724,12 @@ while ($listener.IsListening) {
         '^/api/health$' {
           $deep = -not ($req.QueryString['deep'] -eq '0')
           Send-Json -Response $res -Object (Get-Health -Deep $deep)
+        }
+        '^/api/latency$' {
+          $mins = 30
+          if ($req.QueryString['min']) { [int]::TryParse($req.QueryString['min'], [ref]$mins) | Out-Null }
+          if ($mins -lt 1 -or $mins -gt 1440) { $mins = 30 }
+          Send-Json -Response $res -Object (Get-Latency -Minutes $mins)
         }
         '^/api/audio/devices$' {
           Send-Json -Response $res -Object (Get-AudioDevices)

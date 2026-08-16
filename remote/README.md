@@ -92,6 +92,40 @@ All `/api/*` routes need `Authorization: Bearer <token>` (or `?token=`).
 | `/api/system/reboot` | POST | Kill REAPER, then reboot |
 | `/api/audio/devices` | GET | ASIO drivers, which is selected, whether its hardware is attached |
 | `/api/audio/device?name=…` | POST | Switch interface: save, kill REAPER, edit `reaper.ini`, relaunch |
+| `/api/latency?min=30` | GET | DPC/ISR summary over the last N minutes, with verdicts |
+
+## Realtime audio health
+
+At 128 samples / 44100 Hz the whole REAPER graph must finish inside **2.9 ms**, every 2.9 ms.
+A single driver DPC that blocks for 3 ms is an audible click in the PA. Average CPU says
+nothing about that — a machine sitting at 10% can still miss a deadline every few minutes —
+so `/api/latency` reports **p95 and max, not just the mean**. The tail is the whole story.
+
+`latency-sampler.ps1` runs as a scheduled task and writes a rolling CSV; the agent only
+reads and summarises it. Sampling is deliberately **not** done inside the request:
+`Get-Counter` needs a real interval to produce a meaningful rate, so sampling per-request
+would block every health poll for seconds.
+
+It runs **at startup, as SYSTEM, restarting itself if it dies** — because the fault worth
+catching is an intermittent DPC spike, and an intermittent fault is never happening at the
+moment you decide to start measuring. A first attempt launched from an SSH session logged
+three samples and stopped: a process started that way is a child of the session and dies
+with it.
+
+⚠️ **LatencyMon was the obvious tool and is the wrong one here.** It is a GUI app and this
+box is headless, so running it means RDP — and RDP is itself a heavy DPC source *and*
+hijacks the audio device. It would characterise the RDP session, not the rig. These
+counters are lower fidelity (no per-driver attribution) but they measure the machine as it
+actually runs. If they show a problem, *then* attach a monitor and run LatencyMon at the
+console.
+
+Measured on 2026-08-16, REAPER loaded and idling at 128 samples: DPC avg 0.7%, peak 2.3%,
+processor queue never above 0. Two transports were then compared at ~1.4 MB/s into the rig:
+Ethernet added **+12%** DPC, USB tethering (NCM) added **+107%**. Ethernet has interrupt
+moderation and offload; a USB network gadget has no equivalent, so every packet costs the
+CPU. That is the measurement behind the rule that **video never gets received on this
+machine** — the link quality goes the other way (USB tether: 0% loss, 2 ms p99; WiFi: 3%
+loss, 108 ms p99) but a fat receive buffer is cheap and an audio dropout is not.
 
 ## Switching audio interface
 
