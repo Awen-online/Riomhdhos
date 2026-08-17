@@ -79,10 +79,22 @@ function Get-ConsoleHeartbeat {
   # a snippet rather than making the phone wait six seconds to learn nothing.
   if (-not (Test-Path $StatusFile)) { return @{ alive = $false; text = 'no status file' } }
   $age = (Get-Date) - (Get-Item $StatusFile).LastWriteTime
+
+  # ⚠️ RACE. The Lua console rewrites this file TEN TIMES A SECOND. Read it during the
+  # rewrite and it is momentarily zero bytes, so -Raw returns $null and .Trim() throws
+  # "You cannot call a method on a null-valued expression" - which 500s the whole health
+  # endpoint about one call in five.
+  #
+  # That failure is nastier than it looks: it is intermittent, the message names no
+  # location, and the phone renders it as "rig unreachable" - so it reads as a network
+  # fault on a machine that is perfectly healthy. It also cannot be fixed by locking or
+  # retrying at the writer, because the writer is REAPER's defer loop and must stay cheap.
+  # Read defensively instead; a missed heartbeat sample costs nothing.
+  $raw = Get-Content $StatusFile -Raw -ErrorAction SilentlyContinue
   return @{
     alive   = ($age.TotalSeconds -lt 5)
     ageSec  = [math]::Round($age.TotalSeconds, 1)
-    text    = (Get-Content $StatusFile -Raw).Trim()
+    text    = if ($raw) { $raw.Trim() } else { '' }
   }
 }
 
@@ -587,8 +599,13 @@ function Get-Health {
     }
     host = @{
       name      = $env:COMPUTERNAME
-      bootedAt  = if ($os) { $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
-      uptimeMin = if ($os) { [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalMinutes) } else { $null }
+      # ⚠️ Guard the PROPERTY, not just the object. `if ($os)` only proves CIM returned
+      # something - it can hand back a partially populated instance whose LastBootUpTime
+      # is null, and .ToString() on that throws "You cannot call a method on a null-valued
+      # expression", which 500s the whole health endpoint. Intermittent, so it reads as
+      # "the rig is unreachable" and sends you hunting a network fault that is not there.
+      bootedAt  = if ($os -and $os.LastBootUpTime) { $os.LastBootUpTime.ToString('yyyy-MM-dd HH:mm:ss') } else { $null }
+      uptimeMin = if ($os -and $os.LastBootUpTime) { [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalMinutes) } else { $null }
       freeMemMB = if ($os) { [math]::Round($os.FreePhysicalMemory / 1024) } else { $null }
       networks  = $nets
     }
@@ -849,8 +866,16 @@ while ($listener.IsListening) {
       Send-Static -Response $res -RelPath $path
     }
   } catch {
-    Write-Log "ERROR $verb $path : $($_.Exception.Message)"
-    try { Send-Json -Response $res -Object @{ error = $_.Exception.Message } -Status 500 } catch {}
+    # Log WHERE, not just what. "You cannot call a method on a null-valued expression" is
+    # the same message wherever it comes from, so without a line number an intermittent
+    # fault is undiagnosable - you can only guess at candidates and redeploy. The line and
+    # the offending statement turn a guessing game into a lookup.
+    $ii = $_.InvocationInfo
+    $where = if ($ii) { "line $($ii.ScriptLineNumber): $($ii.Line.Trim())" } else { 'unknown' }
+    Write-Log "ERROR $verb $path : $($_.Exception.Message) [$where]"
+    try {
+      Send-Json -Response $res -Object @{ error = $_.Exception.Message; at = $where } -Status 500
+    } catch {}
   }
 }
 
