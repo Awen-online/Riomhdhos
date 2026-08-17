@@ -72,6 +72,12 @@
   .presets{display:flex;flex-wrap:wrap;gap:6px}
   .presets button{flex:1 1 30%;padding:13px 6px;font-size:13px}
   .mini{padding:9px 12px;font-size:12px;font-weight:500}
+  svg{display:block;width:100%;height:100%}
+  .ic{width:20px;height:20px;margin:0 auto 4px;color:inherit;opacity:.85}
+  .g4 button .ic,.g3 button .ic{width:22px;height:22px}
+  #perform .g2 button .ic{width:24px;height:24px;margin-bottom:6px}
+  .tabs button{display:flex;align-items:center;justify-content:center;gap:7px}
+  .tabs .ic{width:15px;height:15px;margin:0}
 </style>
 
 <div class="bar">
@@ -80,9 +86,9 @@
 </div>
 
 <div class="tabs">
-  <button id="t_perform" class="sel">Perform</button>
-  <button id="t_look">Look</button>
-  <button id="t_rig">Rig</button>
+  <button id="t_perform" class="sel"></button>
+  <button id="t_look"></button>
+  <button id="t_rig"></button>
 </div>
 
 <section id="perform" class="on">
@@ -175,8 +181,66 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+
+/* ---- icons -------------------------------------------------------------
+   Icons ONLY where they encode something the label cannot say faster.
+
+   The pattern glyphs are the point: they are miniatures of the actual figure, so you
+   pick by SHAPE rather than by reading "lissajous" against "chladni" at 11px in a dim
+   room while holding a guitar. A decorative icon would be worse than none - it would
+   add a thing to scan past.
+
+   Blend glyphs show two overlapping discs behaving the way that mode behaves, which is
+   the one thing the word does not convey to anyone who has not used them.
+
+   Everything monochrome on currentColor, so selection state recolours the glyph with the
+   label and nothing needs a second palette. */
+const SVG = (body, sw) =>
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="' + (sw||1.4) +
+  '" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + body + '</svg>';
+
+const PATTERN_ICON = {
+  // nodal lobes of a plate
+  chladni:   SVG('<path d="M12 3c0 3-3 3-3 6s3 3 3 6-3 3-3 6"/><path d="M3 12c3 0 3-3 6-3s3 3 6 3 3-3 6-3"/>'),
+  // two gratings at an angle - the beat between them IS the pattern
+  moire:     SVG('<path d="M4 4v16M9 4v16M14 4v16M19 4v16"/><path d="M3 8l18 3M3 13l18 3"/>'),
+  rings:     SVG('<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="10.5"/>'),
+  lissajous: SVG('<path d="M5 12c0-4 3.5-6 7-6s7 2 7 6-3.5 6-7 6-7-2-7-6z"/><path d="M12 5c-4 2-6 5-6 7s2 5 6 7c4-2 6-5 6-7s-2-5-6-7z"/>'),
+  // contour lines, no repeat
+  flow:      SVG('<path d="M3 7c4-3 8 3 12 0s5-2 6-1"/><path d="M3 13c4-3 8 3 12 0s5-2 6-1"/><path d="M3 19c4-3 8 3 12 0s5-2 6-1"/>'),
+  cells:     SVG('<path d="M12 3l7 4v6l-7 4-7-4V7z"/><path d="M12 3v4M5 7l7 4M19 7l-7 4M12 11v6"/>'),
+  grid:      SVG('<path d="M4 4h16v16H4z"/><path d="M4 10h16M4 15h16M10 4v16M15 4v16"/>'),
+  spiral:    SVG('<path d="M12 12a2 2 0 1 1 2 2 4 4 0 1 1-4-4 6 6 0 1 1 6 6 8.5 8.5 0 1 1-8.5-8.5"/>'),
+};
+
+const MOOD_ICON = {
+  // Marks drawn from each mood's own character, not from a symbol set.
+  "COSMOS":    SVG('<circle cx="12" cy="12" r="2"/><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.5 6.5l2 2M15.5 15.5l2 2M17.5 6.5l-2 2M8.5 15.5l-2 2"/>'),
+  "THE CAIRN": SVG('<path d="M7 20h10"/><path d="M8.5 20l1-4h5l1 4"/><path d="M10 16l.8-3.5h2.4L14 16"/><path d="M11 12.5l.6-2.5h.8l.6 2.5"/>'),
+  "ÉIRE":      SVG('<path d="M12 21c0-6 3-9 6-10-4-1-6 1-6 4"/><path d="M12 21c0-6-3-9-6-10 4-1 6 1 6 4"/><path d="M12 21V9"/>'),
+  "THE DEEP":  SVG('<path d="M3 9c3-2 6 2 9 0s6 2 9 0"/><path d="M3 14c3-2 6 2 9 0s6 2 9 0"/><path d="M3 19c3-2 6 2 9 0s6 2 9 0"/>'),
+};
+
+// Two discs behaving as the mode behaves.
+const BLEND_ICON = {
+  OBS_BLEND_NORMAL:   SVG('<circle cx="9.5" cy="12" r="5.5"/><circle cx="14.5" cy="12" r="5.5" fill="currentColor" fill-opacity=".9" stroke="none"/>'),
+  OBS_BLEND_SCREEN:   SVG('<circle cx="9.5" cy="12" r="5.5" fill="currentColor" fill-opacity=".22"/><circle cx="14.5" cy="12" r="5.5" fill="currentColor" fill-opacity=".22"/>'),
+  OBS_BLEND_ADDITIVE: SVG('<circle cx="9.5" cy="12" r="5.5" fill="currentColor" fill-opacity=".45"/><circle cx="14.5" cy="12" r="5.5" fill="currentColor" fill-opacity=".45"/>'),
+  OBS_BLEND_MULTIPLY: SVG('<circle cx="9.5" cy="12" r="5.5"/><circle cx="14.5" cy="12" r="5.5"/><path d="M12 7.2a5.5 5.5 0 0 0 0 9.6 5.5 5.5 0 0 0 0-9.6z" fill="currentColor" stroke="none"/>'),
+  OBS_BLEND_LIGHTEN:  SVG('<circle cx="12" cy="12" r="5.5" fill="currentColor" fill-opacity=".3"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/>'),
+  OBS_BLEND_DARKEN:   SVG('<circle cx="12" cy="12" r="5.5" fill="currentColor" fill-opacity=".85" stroke="none"/><circle cx="12" cy="12" r="5.5"/>'),
+};
+
+const TAB_ICON = {
+  perform: SVG('<path d="M8 5v14M16 5v14"/><path d="M8 9h8M8 15h8"/>', 1.6),
+  look:    SVG('<circle cx="12" cy="12" r="3.2"/><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/>'),
+  rig:     SVG('<path d="M4 18V9M9 18V5M14 18v-7M19 18v-4"/>', 1.8),
+};
+
 const TABS = [['t_perform','perform'], ['t_look','look'], ['t_rig','rig']];
 for (const [btn, sec] of TABS){
+  $(btn).innerHTML = '<span class="ic">' + TAB_ICON[sec] + '</span>' +
+                     sec.charAt(0).toUpperCase() + sec.slice(1);
   $(btn).onclick = () => {
     for (const [b,s] of TABS){
       $(b).classList.toggle('sel', b === btn);
@@ -216,7 +280,7 @@ function renderMoods(){
   const box = $('moods'); box.innerHTML='';
   for (const m of MOODS){
     const b = document.createElement('button');
-    b.textContent = m;
+    b.innerHTML = '<span class="ic">' + (MOOD_ICON[m] || '') + '</span>' + esc(m);
     if (m === curMood) b.className = 'sel';
     b.onclick = () => post('/api/mood', {mood:m})
       .then(() => { curMood = m; renderMoods(); })
@@ -273,7 +337,7 @@ function renderDecks(){
     const box = $(boxId); box.innerHTML='';
     PATTERNS.forEach((nm, i) => {
       const b = document.createElement('button');
-      b.textContent = nm;
+      b.innerHTML = '<span class="ic">' + (PATTERN_ICON[nm] || '') + '</span>' + esc(nm);
       if (VIS[deck] === i) b.className = 'sel';
       b.onclick = () => { pushVis({[deck]: i}).catch(e => $('err').textContent = e.message);
                           renderDecks(); };
@@ -285,7 +349,8 @@ function renderBlend(cur){
   const box = $('blend'); box.innerHTML='';
   for (const m of BLENDS){
     const b = document.createElement('button');
-    b.textContent = m.replace('OBS_BLEND_','').toLowerCase();
+    b.innerHTML = '<span class="ic">' + (BLEND_ICON[m] || '') + '</span>' +
+                  m.replace('OBS_BLEND_','').toLowerCase();
     if (m === cur) b.className = 'sel';
     b.onclick = () => post('/api/blend', {mode:m}).then(j => renderBlend(j.blend))
                         .catch(e => $('err').textContent = e.message);
