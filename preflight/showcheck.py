@@ -363,16 +363,22 @@ def check_phone():
         return next((l.split(":")[1].strip() for l in bat.splitlines()
                      if l.strip().startswith(n)), "")
     lvl, stat = field("level") or "?", field("status")
-    # 2 = charging, 5 = full. 4 = DISCHARGING, and that is the one that matters here:
-    # measured on this rig the phone DISCHARGES while acting as a webcam, because capture
-    # plus encode plus radio outruns what the port supplies. Over a 90-minute set that is
-    # a dead camera, and nothing else in the setup would warn you.
-    charging = stat in ("2", "5")
-    check(g, "battery", OK if charging else WARN,
-          f"{lvl}%, {'charging' if charging else 'DISCHARGING'}",
-          "" if charging else "It is losing charge while serving video. A bare USB-A port "
-                              "gives 4.5 W against a 3-5 W draw, so it barely breaks even. "
-                              "Use a powered hub or USB-C for anything longer than a song.")
+    # 1 unknown, 2 charging, 3 discharging, 4 not-charging, 5 full. 3 and 4 are DIFFERENT
+    # and the difference is diagnostic: 3 means unplugged and draining, 4 means plugged in
+    # and stalled - taking everything the port offers and still not gaining.
+    words = {"1": "unknown", "2": "charging", "3": "DISCHARGING",
+             "4": "NOT CHARGING (plugged, stalled)", "5": "full"}
+    # The root cause when it is 4: measured 500 mA max charge current on this port - USB
+    # 2.0 default power, 2.5 W - against a 3-5 W draw for capture plus encode plus USB.
+    # It cannot win, so it treads water and tips either side of break-even with load.
+    # Over a set that means starting full and hoping, rather than knowing.
+    ma = field("Max charging current")
+    ma_txt = f", {int(ma)//1000} mA supply" if ma.isdigit() else ""
+    state = OK if stat in ("2", "5") else WARN
+    check(g, "battery", state, f"{lvl}%, {words.get(stat, stat)}{ma_txt}",
+          "" if state == OK else
+          "Plugged in but not gaining. A 500 mA port is USB 2.0 default power (2.5 W) "
+          "against a 3-5 W draw. Use a powered hub or a USB-C port that negotiates more.")
 
 
 def _host_usb_roles():
