@@ -50,6 +50,21 @@ from server import Analyser, BANDS             # noqa: E402  the analyser is alr
 SOURCE = "Webcam"
 MOODS = ["COSMOS", "THE CAIRN", "ÉIRE", "THE DEEP"]
 
+# Index order MUST match PATTERN_NAMES in visuals/index.html - the wire format is the
+# integer, so a mismatch silently plays the wrong pattern rather than erroring.
+PATTERNS = ["chladni", "moire", "rings", "lissajous", "flow", "cells", "grid", "spiral"]
+
+# OBS composites the overlay against the video on the GPU. This is the whole reason the
+# shader does not need the camera as a texture: a DirectShow device has one consumer, and
+# blend modes get the same result without taking it from OBS.
+#   SCREEN    lines brighten the video, never darken it - the safe default over faces
+#   ADDITIVE  hotter, blows out over bright areas
+#   MULTIPLY  lines darken - reads as ink or shadow on the image
+#   LIGHTEN/DARKEN  per-channel max/min, harder edged
+BLEND_MODES = ["OBS_BLEND_NORMAL", "OBS_BLEND_SCREEN", "OBS_BLEND_ADDITIVE",
+               "OBS_BLEND_MULTIPLY", "OBS_BLEND_LIGHTEN", "OBS_BLEND_DARKEN"]
+OVERLAY_SOURCE = "Chladni"
+
 # Per filter KIND, the parameters that may be written and their ranges. Anything not here
 # is silently dropped - notably model_select, which is what makes a filter reload its
 # model and is the operation that took OBS down.
@@ -70,7 +85,12 @@ STATE = {k: 0.0 for k in BANDS}
 # lives in a colour-correction filter - adding or removing filters is the operation that
 # crashes the render thread. A number the page already receives costs nothing.
 STATE.update({"rms": 0.0, "centroid": 0.0, "peak": 0.0, "mood": "COSMOS",
-              "intensity": 1.0, "t": 0.0})
+              "intensity": 1.0, "t": 0.0,
+              # Two decks and a crossfader, as a DJ would expect. Mixing happens in FIELD
+              # space inside the shader, so the figure bends from one pattern into the
+              # other rather than dissolving - a transition, not a cut.
+              "patternA": 0, "patternB": 1, "xfade": 0.0,
+              "kaleido": 0.0, "complexity": 1.0})
 _subs, _lock = [], threading.Lock()
 _cl = None
 _clock = threading.Lock()
@@ -111,6 +131,19 @@ def audio_thread(device, samplerate, blocksize, channels):
                         blocksize=blocksize, dtype="float32", callback=cb):
         while True:
             time.sleep(1)
+
+
+def _current_blend(cl, scene):
+    """Blend mode is a property of the scene ITEM, not the source - the same overlay can
+    screen in one scene and multiply in another, which is a feature worth not flattening."""
+    try:
+        item = next((i for i in cl.get_scene_item_list(scene).scene_items
+                     if i["sourceName"] == OVERLAY_SOURCE), None)
+        if not item:
+            return None
+        return cl.get_scene_item_blend_mode(scene, item["sceneItemId"]).scene_item_blend_mode
+    except Exception:
+        return None
 
 
 def filter_state():
@@ -196,6 +229,9 @@ class Handler(BaseHTTPRequestHandler):
                     "moods": MOODS, "source": SOURCE,
                     "scenes": [s["sceneName"] for s in sl.scenes],
                     "currentScene": sl.current_program_scene_name,
+                    "patterns": PATTERNS,
+                    "blendModes": BLEND_MODES,
+                    "blend": _current_blend(cl, sl.current_program_scene_name),
                     "health": {
                         "fps": round(fps, 2),
                         "budgetMs": round(1000.0 / fps, 2),
@@ -235,11 +271,33 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             if p == "/api/visuals":
+                # Clamped on the way in. These reach a shader running in the live output;
+                # a stray value out of range is a visible fault on a projector.
+                lim = {"intensity": (0.0, 1.0), "xfade": (0.0, 1.0),
+                       "kaleido": (0.0, 16.0), "complexity": (0.25, 3.0)}
                 with _lock:
-                    if "intensity" in body:
-                        STATE["intensity"] = max(0.0, min(1.0, float(body["intensity"])))
-                    out = {"intensity": STATE["intensity"]}
+                    for k, (lo, hi) in lim.items():
+                        if k in body:
+                            STATE[k] = max(lo, min(hi, float(body[k])))
+                    for k in ("patternA", "patternB"):
+                        if k in body:
+                            STATE[k] = max(0, min(len(PATTERNS) - 1, int(body[k])))
+                    out = {k: STATE[k] for k in
+                           ("intensity", "xfade", "kaleido", "complexity",
+                            "patternA", "patternB")}
                 self._json(out); return
+
+            if p == "/api/blend":
+                mode = body.get("mode")
+                if mode not in BLEND_MODES:
+                    self._json({"error": "unknown blend mode"}, 400); return
+                scene = cl.get_scene_list().current_program_scene_name
+                item = next((i for i in cl.get_scene_item_list(scene).scene_items
+                             if i["sourceName"] == OVERLAY_SOURCE), None)
+                if not item:
+                    self._json({"error": f"{OVERLAY_SOURCE} not in {scene}"}, 404); return
+                cl.set_scene_item_blend_mode(scene, item["sceneItemId"], mode)
+                self._json({"blend": mode, "scene": scene}); return
 
             if p == "/api/toggle":
                 name = body.get("filter")

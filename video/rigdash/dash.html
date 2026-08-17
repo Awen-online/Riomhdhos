@@ -27,6 +27,10 @@
   .pill{min-width:74px}
   .pill.on{background:var(--ok);border-color:var(--ok);color:#06210f}
   .moods{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:2px 0 8px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:2px 0 2px}
+  .grid4 button,.grid3 button{padding:10px 4px;font-size:12px;font-weight:500}
+  .grid4 button.sel,.grid3 button.sel{background:var(--accent);border-color:var(--accent);color:#241503}
   .moods button.sel{background:var(--accent);border-color:var(--accent);color:#241503}
   /* Meters exist so a dead input is visible instantly. A silent picture and a broken
      cable look identical on the projector; here they do not. */
@@ -42,6 +46,27 @@
 
 <h2>Mood</h2>
 <div class="card"><div class="moods" id="moods"></div></div>
+
+<h2>Decks</h2>
+<div class="card">
+  <div class="row"><span class="k">A</span><span class="v" id="v_pa">&mdash;</span></div>
+  <div class="grid4" id="pa"></div>
+  <div class="row"><span class="k">B</span><span class="v" id="v_pb">&mdash;</span></div>
+  <div class="grid4" id="pb"></div>
+  <div class="row"><span class="k">Crossfade</span><span class="v" id="v_x">0.00</span></div>
+  <input type="range" id="r_x" min="0" max="1" step="0.01" value="0">
+  <div class="sub">Mixed in field space &mdash; the figure bends from A into B rather than dissolving.</div>
+</div>
+
+<h2>Effects</h2>
+<div class="card">
+  <div class="row"><span class="k">Kaleidoscope</span><span class="v" id="v_kal">off</span></div>
+  <input type="range" id="r_kal" min="0" max="16" step="1" value="0">
+  <div class="row"><span class="k">Complexity</span><span class="v" id="v_cx">1.00</span></div>
+  <input type="range" id="r_cx" min="0.25" max="3" step="0.05" value="1">
+  <div class="row"><span class="k">Blend over video</span><span class="v" id="v_bl">&mdash;</span></div>
+  <div class="grid3" id="blend"></div>
+</div>
 
 <h2>Overlay</h2>
 <div class="card" id="overlay">
@@ -133,6 +158,50 @@ async function flush(){
   }
 }
 
+/* ---- decks + effects --------------------------------------------------- */
+let VIS = {patternA:0, patternB:1, xfade:0, kaleido:0, complexity:1};
+
+function pushVis(patch){
+  Object.assign(VIS, patch);
+  clearTimeout(window._vt);
+  window._vt = setTimeout(() => fetch('/api/visuals', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(patch)}), 90);
+}
+
+function renderDecks(patterns){
+  for (const [deck, boxId, lblId] of [['patternA','pa','v_pa'], ['patternB','pb','v_pb']]){
+    const box = $(boxId); box.innerHTML='';
+    patterns.forEach((nm, i) => {
+      const b = document.createElement('button');
+      b.textContent = nm;
+      if (VIS[deck] === i) b.className = 'sel';
+      b.onclick = () => { pushVis({[deck]: i}); renderDecks(patterns); };
+      box.append(b);
+    });
+    $(lblId).textContent = patterns[VIS[deck]] || '—';
+  }
+}
+
+function renderBlend(modes, cur){
+  const box = $('blend'); box.innerHTML='';
+  for (const m of modes){
+    const b = document.createElement('button');
+    b.textContent = m.replace('OBS_BLEND_','').toLowerCase();
+    if (m === cur) b.className = 'sel';
+    b.onclick = async () => {
+      try{
+        const r = await fetch('/api/blend', {method:'POST',
+          headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode:m})});
+        const j = await r.json();
+        if (j.error) throw new Error(j.error);
+        renderBlend(modes, j.blend); $('v_bl') && ($('v_bl').textContent = b.textContent);
+      }catch(e){ $('err').textContent = e.message; }
+    };
+    box.append(b);
+  }
+  $('v_bl').textContent = cur ? cur.replace('OBS_BLEND_','').toLowerCase() : '—';
+}
+
 /* ---- scenes ----------------------------------------------------------- */
 function renderScenes(scenes, cur){
   const box = $('scenes'); box.innerHTML='';
@@ -216,6 +285,21 @@ setInterval(() => {
   $('feedState').style.color = alive ? 'var(--dim)' : 'var(--bad)';
 }, 700);
 
+$('r_x').oninput = () => {
+  const v = parseFloat($('r_x').value);
+  $('v_x').textContent = v.toFixed(2); pushVis({xfade:v});
+};
+$('r_kal').oninput = () => {
+  const v = parseInt($('r_kal').value, 10);
+  // 1 sector is meaningless - the fold needs at least 2 to mirror anything.
+  $('v_kal').textContent = v < 2 ? 'off' : v + ' fold';
+  pushVis({kaleido: v < 2 ? 0 : v});
+};
+$('r_cx').oninput = () => {
+  const v = parseFloat($('r_cx').value);
+  $('v_cx').textContent = v.toFixed(2); pushVis({complexity:v});
+};
+
 $('r_int').oninput = () => {
   const v = parseFloat($('r_int').value);
   $('v_int').textContent = v.toFixed(2);
@@ -234,6 +318,15 @@ let MOODS = [];
     renderMoods(MOODS, current);
     renderFilters(s.filters);
     renderHealth(s.health);
+    VIS = {patternA:s.audio.patternA|0, patternB:s.audio.patternB|0,
+           xfade:s.audio.xfade||0, kaleido:s.audio.kaleido||0,
+           complexity:s.audio.complexity??1};
+    renderDecks(s.patterns);
+    renderBlend(s.blendModes, s.blend);
+    $('r_x').value = VIS.xfade;   $('v_x').textContent = Number(VIS.xfade).toFixed(2);
+    $('r_kal').value = VIS.kaleido;
+    $('v_kal').textContent = VIS.kaleido < 2 ? 'off' : VIS.kaleido + ' fold';
+    $('r_cx').value = VIS.complexity; $('v_cx').textContent = Number(VIS.complexity).toFixed(2);
     $('r_int').value = s.audio.intensity ?? 1;
     $('v_int').textContent = Number(s.audio.intensity ?? 1).toFixed(2);
     // Health is polled, not streamed: it changes slowly and putting it on the 40 Hz audio

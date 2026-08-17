@@ -2,30 +2,28 @@
 <meta charset="utf-8">
 <title>Ríomhdhos visuals</title>
 <!--
-  RENDER layer. WebGL in an OBS Browser source.
+  RENDER layer - a small VJ instrument. WebGL in an OBS Browser source.
 
-  WHY A BROWSER SOURCE AND NOT A SHADER PLUGIN: a browser source runs in a separate CEF
-  process, so if this page dies the source goes blank and OBS keeps running. A filter
-  plugin runs inside the render thread - which is exactly how OBS was crashed tonight,
-  with an access violation in obs_source_skip_video_filter. Crash isolation for free, and
-  no plugin to install.
+  WHY A BROWSER SOURCE: it runs in a separate CEF process, so if this page dies the source
+  goes blank and OBS keeps running. A filter plugin runs inside the render thread, which is
+  how OBS was crashed once already.
 
-  THE MATHS: Chladni figures. On a square plate driven at a resonant frequency, sand
-  gathers along the nodal lines where the plate is still:
+  WHY THE VIDEO IS NOT SAMPLED IN HERE: a DirectShow device has exactly ONE consumer. If
+  this page grabbed the camera, OBS would lose it. So the video never enters the shader -
+  it is composited underneath by OBS, using GPU BLEND MODES set from the dashboard. Same
+  result, no fight over the device.
 
-      s(x,y) = cos(n·pi·x)·cos(m·pi·y) - cos(m·pi·x)·cos(n·pi·y),  bright where s ~ 0
-
-  n and m are the mode numbers, and they come from the SPECTRAL CENTROID of what is
-  actually being played - because on a real plate a higher driving frequency produces a
-  more complex figure. The picture is not decorated by the sound; it is what the sound
-  does to a surface. For a drone rig built on sustained tones, that is the honest visual.
+  ⚠️ THE SHADER LIVES INSIDE A JS TEMPLATE LITERAL. A BACKTICK ANYWHERE IN IT - INCLUDING
+  IN A COMMENT - terminates the string and the rest is parsed as JavaScript. That has
+  already happened once: two variable names quoted in backticks produced "Uncaught
+  SyntaxError" and a source that rendered nothing, which over a camera is indistinguishable
+  from a working transparent overlay. If this page ever goes blank, read OBS's log first -
+  it captures browser console errors, and it is the only window in.
 -->
 <style>
   html,body{margin:0;height:100%;background:transparent;overflow:hidden}
   body.opaque{background:#000}
   canvas{display:block;width:100vw;height:100vh}
-  /* Diagnostics, off by default. A browser source has no console you can reach, so
-     ?debug=1 is the only way to see whether features are arriving. */
   #hud{position:fixed;left:10px;top:10px;font:11px ui-monospace,Consolas,monospace;
        color:#7d8894;background:#0009;padding:8px 10px;border-radius:6px;display:none;
        white-space:pre;line-height:1.5}
@@ -35,39 +33,32 @@
 
 <script>
 const PALETTES = {
-  // Two or three hues each, never more. A limited palette is most of what separates
-  // "atmosphere" from "screensaver", and each is drawn from the mood's own character
-  // rather than from a colour wheel.
+  // Two hues each, never more. A limited palette is most of what separates atmosphere
+  // from screensaver.
   "COSMOS":    { bg:[0.02,0.01,0.05], line:[0.62,0.48,0.95], glow:[0.25,0.15,0.55] },
   "THE CAIRN": { bg:[0.02,0.03,0.04], line:[0.55,0.72,0.86], glow:[0.12,0.24,0.34] },
-  "ÉIRE":      { bg:[0.01,0.04,0.02], line:[0.45,0.85,0.55] , glow:[0.10,0.32,0.18] },
+  "ÉIRE":      { bg:[0.01,0.04,0.02], line:[0.45,0.85,0.55], glow:[0.10,0.32,0.18] },
   "THE DEEP":  { bg:[0.01,0.03,0.04], line:[0.35,0.80,0.76], glow:[0.06,0.26,0.28] },
 };
+// Index order must match PATTERNS in dash.py.
+const PATTERN_NAMES = ["chladni","moire","rings","lissajous","flow","cells","grid","spiral"];
 
-const VERT = `attribute vec2 p; void main(){ gl_Position = vec4(p,0.0,1.0); }`;
+const VERT = "attribute vec2 p; void main(){ gl_Position = vec4(p,0.0,1.0); }";
 
 const FRAG = `
 precision highp float;
 uniform vec2  iRes;
 uniform float iTime;
-uniform float uN, uM;        // Chladni mode numbers - from the spectral centroid
-uniform float uWidth;        // nodal line thickness
-uniform float uOpaque;       // 1 = paint the plate, 0 = transparent overlay
-uniform float uIntensity;    // overlay strength, from the dashboard
-uniform float uGlow;
-uniform float uWarp;
-uniform float uRot;
+uniform float uA, uB;          // pattern ids for the two decks
+uniform float uX;              // crossfader, 0 = A, 1 = B
+uniform float uN, uM;          // complexity - from the spectral centroid
+uniform float uWidth, uGlow, uWarp, uRot;
+uniform float uKaleido;        // 0 = off, else sector count
+uniform float uOpaque, uIntensity;
 uniform vec3  uBg, uLine, uGlowC;
 
 #define PI 3.14159265359
 
-float chladni(vec2 p, float n, float m){
-  return cos(n*PI*p.x)*cos(m*PI*p.y) - cos(m*PI*p.x)*cos(n*PI*p.y);
-}
-
-// Cheap value noise, only used to bend the plate slightly. Straight Chladni on a perfect
-// square is too clean to look like a real object - a little warp reads as a physical
-// surface rather than a plot.
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
 float noise(vec2 p){
   vec2 i = floor(p), f = fract(p);
@@ -75,66 +66,129 @@ float noise(vec2 p){
   return mix(mix(hash(i), hash(i+vec2(1,0)), u.x),
              mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), u.x), u.y);
 }
+float fbm(vec2 p){
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++){ v += a*noise(p); p *= 2.02; a *= 0.5; }
+  return v;
+}
+
+// ---------------------------------------------------------------- the library
+// Every pattern returns a SIGNED FIELD, and zero crossings become the lines. Sharing that
+// one contract is what lets any two patterns crossfade into each other and still look
+// like one instrument rather than two effects fighting - and it means adding a pattern is
+// writing a function, not a renderer.
+
+// Chladni: nodal lines of a driven square plate. The physically honest one for a rig
+// built on sustained tones.
+float pChladni(vec2 p, float n, float m){
+  return cos(n*PI*p.x)*cos(m*PI*p.y) - cos(m*PI*p.x)*cos(n*PI*p.y);
+}
+// Two rotated gratings. The BEAT between them is the moire, and it moves far more than
+// either grating does - a small parameter change sweeps the whole field.
+float pMoire(vec2 p, float n, float m, float t){
+  float a = sin(p.x*n*2.0)*sin(p.y*n*2.0);
+  float c = cos(t*0.05), s = sin(t*0.05);
+  vec2 q = mat2(c,-s,s,c) * p;
+  return a - sin(q.x*m*2.0)*sin(q.y*m*2.0);
+}
+float pRings(vec2 p, float n, float t){
+  return sin(length(p - 0.5) * n * 6.0 - t*0.3);
+}
+float pLissajous(vec2 p, float n, float m, float t){
+  return sin(p.x*n*3.0 + t*0.11) * cos(p.y*m*3.0 - t*0.07)
+       - 0.35*sin((p.x+p.y)*n*1.5);
+}
+// Ridged fbm: organic and cloth-like, the least geometric of the set. Good as a resting
+// pattern precisely because it has no visible repeat.
+float pFlow(vec2 p, float n, float t){
+  vec2 q = p*n*0.4 + vec2(t*0.02, -t*0.015);
+  return fbm(q + fbm(q*1.7)) - 0.5;
+}
+float pCells(vec2 p, float n){
+  vec2 g = p*n*0.8;
+  vec2 i = floor(g), f = fract(g);
+  float d = 1.0;
+  for (int y=-1; y<=1; y++) for (int x=-1; x<=1; x++){
+    vec2 o = vec2(float(x), float(y));
+    vec2 r = o + vec2(hash(i+o), hash(i+o+7.3)) - f;
+    d = min(d, length(r));
+  }
+  return d - 0.45;
+}
+float pGrid(vec2 p, float n, float m){
+  return sin(p.x*n*PI) * 0.5 + sin(p.y*m*PI) * 0.5;
+}
+float pSpiral(vec2 p, float n, float t){
+  vec2 q = p - 0.5;
+  return sin(atan(q.y, q.x)*n + length(q)*n*4.0 - t*0.25);
+}
+
+float field(float id, vec2 p, float t){
+  if (id < 0.5) return pChladni(p, uN, uM);
+  if (id < 1.5) return pMoire(p, uN, uM, t);
+  if (id < 2.5) return pRings(p, uN, t);
+  if (id < 3.5) return pLissajous(p, uN, uM, t);
+  if (id < 4.5) return pFlow(p, uN, t);
+  if (id < 5.5) return pCells(p, uN);
+  if (id < 6.5) return pGrid(p, uN, uM);
+  return pSpiral(p, uN, t);
+}
 
 void main(){
-  // 1.35 zooms OUT. Framed tight, a 16:9 crop of the plate shows only a couple of cells
-  // and the figure stops reading as a figure - you see arcs, not a pattern.
   vec2 uv = 1.35 * (gl_FragCoord.xy - 0.5*iRes) / min(iRes.x, iRes.y);
 
   float ca = cos(uRot), sa = sin(uRot);
   uv = mat2(ca,-sa,sa,ca) * uv;
 
+  // Kaleidoscope as a GLOBAL fold rather than a pattern of its own, so it multiplies the
+  // library instead of adding one entry to it. Any pattern can be mirrored.
+  if (uKaleido > 1.5){
+    float ang = atan(uv.y, uv.x), rad = length(uv);
+    float sect = PI * 2.0 / uKaleido;
+    ang = abs(mod(ang, sect) - sect*0.5);
+    uv = vec2(cos(ang), sin(ang)) * rad;
+  }
+
   uv += uWarp * vec2(noise(uv*2.0 + iTime*0.03) - 0.5,
                      noise(uv*2.0 - iTime*0.025) - 0.5);
 
   vec2 p = uv + 0.5;
-  float s = chladni(p, uN, uM);
 
-  // Distance-corrected line so thickness stays even as the figure gets denser. Without
-  // the gradient term the lines thin out and alias badly at high mode numbers.
+  // CROSSFADE IN FIELD SPACE, not in colour. Mixing two rendered images dissolves one
+  // into the other; mixing the FIELDS makes the lines themselves bend from one figure
+  // into the next. That is the difference between a cut and a transition.
+  float s = mix(field(uA, p, iTime), field(uB, p, iTime), uX);
+
+  // Distance-corrected so line weight stays even as the field gets denser. Without the
+  // gradient term lines thin out and alias badly at high complexity.
   float g = length(vec2(dFdx(s), dFdy(s))) + 1e-5;
   float d = abs(s) / g;
   float line = 1.0 - smoothstep(0.0, uWidth, d);
   float halo = exp(-d * 0.75) * uGlow;
 
   vec3 col = uGlowC * halo + uLine * line;
-
   float r = length(uv);
   float vig = 1.0 - 0.5*r*r;
   col *= vig;
 
-  // TRANSPARENCY. uOpaque = 0 keeps only the figure and lets everything else through, so
-  // this can sit OVER the camera instead of replacing it. Alpha is the figure's own
-  // energy - lines solid, glow soft, plate empty - and the vignette rides on alpha too,
-  // so the overlay fades at the edges instead of ending on a hard rectangle.
-  //
-  // The canvas is premultiplied (WebGL's default), which happens to suit this exactly:
-  // col is already built by scaling the palette by the same line and halo terms that
-  // alpha is made from, so it is premultiplied by construction.
-  //
-  // NOTE TO ANYONE EDITING THIS SHADER: it lives inside a JS template literal, so a
-  // BACKTICK ANYWHERE IN HERE - even in a comment - terminates the string and the rest
-  // of the shader is parsed as JavaScript. That is exactly how this broke: quoting two
-  // variable names in backticks produced 'Uncaught SyntaxError: Unexpected identifier'
-  // and a source that rendered nothing at all.
+  // Alpha is the figure's own energy, so the plate is empty and the camera shows through.
+  // The vignette rides on alpha too - the overlay fades at the edges instead of ending on
+  // a hard rectangle.
   float a = clamp(line + halo * 0.7, 0.0, 1.0) * vig;
 
-  // Grain scaled by alpha - unscaled it would speckle the transparent plate with noise
-  // that has nothing behind it to blend into.
   float grain = (hash(gl_FragCoord.xy + iTime) - 0.5) * 0.012;
   col += grain * max(a, uOpaque);
 
-  col = mix(col, col + uBg * vig, uOpaque);
   a *= uIntensity;
   col *= mix(uIntensity, 1.0, uOpaque);
+  col = mix(col, col + uBg * vig, uOpaque);
   gl_FragColor = vec4(col, mix(a, 1.0, uOpaque));
 }`;
 
 const cv = document.getElementById('c');
 const OPAQUE = new URLSearchParams(location.search).has('opaque');
-const gl = cv.getContext('webgl', {alpha:true, antialias:false,
-                                   preserveDrawingBuffer:false});
-gl.getExtension('OES_standard_derivatives');   // dFdx/dFdy in WebGL1
+const gl = cv.getContext('webgl', {alpha:true, antialias:false, preserveDrawingBuffer:false});
+gl.getExtension('OES_standard_derivatives');
 
 function build(){
   const sh = (t, src) => { const s = gl.createShader(t); gl.shaderSource(s, src);
@@ -143,7 +197,8 @@ function build(){
     return s; };
   const p = gl.createProgram();
   gl.attachShader(p, sh(gl.VERTEX_SHADER, VERT));
-  gl.attachShader(p, sh(gl.FRAGMENT_SHADER, '#extension GL_OES_standard_derivatives : enable\n' + FRAG));
+  gl.attachShader(p, sh(gl.FRAGMENT_SHADER,
+    '#extension GL_OES_standard_derivatives : enable\n' + FRAG));
   gl.linkProgram(p);
   if(!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
   gl.useProgram(p);
@@ -158,64 +213,62 @@ function build(){
 const prog = build();
 const U = n => gl.getUniformLocation(prog, n);
 
-let F = {sub:0, low:0, mid:0, high:0, rms:0, centroid:0, mood:'COSMOS', intensity:1};
+let F = {sub:0, low:0, mid:0, high:0, rms:0, centroid:0, mood:'COSMOS',
+         intensity:1, patternA:0, patternB:0, xfade:0, kaleido:0, complexity:1};
 let live = false, lastMsg = 0;
 
 const es = new EventSource('/feed');
-es.onmessage = e => { F = JSON.parse(e.data); live = true; lastMsg = performance.now(); };
+es.onmessage = e => { F = Object.assign(F, JSON.parse(e.data)); live = true; lastMsg = performance.now(); };
 es.onerror = () => { live = false; };
 
-// Display-side smoothing on TOP of the server's. Two stages because they do different
-// jobs: the server smooths the measurement, this smooths the *motion*, so a dropped
-// frame or a reconnect does not show as a jolt.
-const S = {n:4, m:3, width:1.6, glow:0.25, warp:0.02, rot:0};
-const ease = (cur, tgt, k) => cur + (tgt - cur) * k;
+// Display-side smoothing on top of the server's: the server smooths the MEASUREMENT,
+// this smooths the MOTION, so a dropped frame or a reconnect never shows as a jolt.
+const S = {n:6, m:4.5, width:2.4, glow:0.42, warp:0.02, rot:0, x:0, kal:0};
+const ease = (c,t,k) => c + (t-c)*k;
 
 function frame(t){
   const time = t * 0.001;
   const dpr = Math.min(devicePixelRatio || 1, 2);
-  const w = Math.floor(cv.clientWidth * dpr), h = Math.floor(cv.clientHeight * dpr);
+  const w = Math.floor(cv.clientWidth*dpr), h = Math.floor(cv.clientHeight*dpr);
   if (cv.width !== w || cv.height !== h){ cv.width = w; cv.height = h; gl.viewport(0,0,w,h); }
 
-  // If the feed dies the picture must NOT freeze mid-gesture - it settles to a calm
-  // resting state and keeps drifting, so a dropped connection looks like a quiet passage
-  // instead of a crash on a projector in front of an audience.
+  // A dead feed must not freeze the picture mid-gesture: it settles to a calm resting
+  // state and keeps drifting, so a dropped connection looks like a quiet passage rather
+  // than a crash on a projector.
   const alive = live && (performance.now() - lastMsg) < 2000;
-  const f = alive ? F : {sub:0, low:0, mid:0, high:0, rms:0, centroid:0.25,
-                        mood:F.mood, intensity:F.intensity};
+  const f = alive ? F : Object.assign({}, F, {sub:0, low:0, mid:0, high:0, rms:0, centroid:0.25});
 
-  // MODE NUMBERS FROM THE SPECTRUM. Kept non-integer and slewed slowly so the figure
-  // MORPHS between modes rather than snapping - snapping is the tacky version, and a
-  // real plate transitions through unstable states too.
-  // Resting complexity matters more than the reactive range. The first pass started at
-  // n=2, m=1, which on silence drew three or four lines across the whole frame - that
-  // reads as empty rather than calm. A resting figure should be present and quiet, with
-  // enough structure to be worth looking at before anything is played.
-  const targetN = 6.0 + f.centroid * 9.0 + f.low * 2.0;
-  const targetM = 4.5 + f.centroid * 7.0 + f.mid * 2.5;
-  S.n = ease(S.n, targetN, 0.012);
-  S.m = ease(S.m, targetM, 0.010);
+  const cx = f.complexity === undefined ? 1 : f.complexity;
+  S.n = ease(S.n, (6.0 + f.centroid*9.0 + f.low*2.0) * cx, 0.012);
+  S.m = ease(S.m, (4.5 + f.centroid*7.0 + f.mid*2.5) * cx, 0.010);
 
-  // ⚠️ MODULATION DEPTH IS CAPPED HERE. Everything below moves within a narrow band
-  // around a calm baseline - roughly 10-25%, never 0-100%. That restraint is the whole
+  // Modulation stays within roughly 10-25% of a calm baseline. That restraint is the
   // difference between atmosphere and a fruit machine, and it is also the hard limit that
   // keeps luminance changes slow enough to be safe for photosensitive viewers.
-  S.width = ease(S.width, 2.4 + f.rms * 1.6, 0.06);
-  S.glow  = ease(S.glow,  0.42 + f.sub * 0.45, 0.05);
-  S.warp  = ease(S.warp,  0.020 + f.high * 0.050, 0.04);
-  S.rot  += 0.00035 + f.low * 0.0009;          // always drifting, never still
+  S.width = ease(S.width, 2.4 + f.rms*1.6, 0.06);
+  S.glow  = ease(S.glow,  0.42 + f.sub*0.45, 0.05);
+  S.warp  = ease(S.warp,  0.020 + f.high*0.050, 0.04);
+  S.rot  += 0.00035 + f.low*0.0009;
+  // The crossfader is eased too. A hard cut between patterns is a jump cut, and the whole
+  // point of mixing in field space is that the figure BENDS across.
+  S.x   = ease(S.x, f.xfade || 0, 0.03);
+  S.kal = ease(S.kal, f.kaleido || 0, 0.05);
 
   const pal = PALETTES[f.mood] || PALETTES.COSMOS;
   gl.uniform2f(U('iRes'), cv.width, cv.height);
   gl.uniform1f(U('iTime'), time);
+  gl.uniform1f(U('uA'), f.patternA || 0);
+  gl.uniform1f(U('uB'), f.patternB || 0);
+  gl.uniform1f(U('uX'), S.x);
   gl.uniform1f(U('uN'), S.n);
   gl.uniform1f(U('uM'), S.m);
   gl.uniform1f(U('uWidth'), S.width);
-  gl.uniform1f(U('uOpaque'), OPAQUE ? 1.0 : 0.0);
-  gl.uniform1f(U('uIntensity'), f.intensity === undefined ? 1.0 : f.intensity);
   gl.uniform1f(U('uGlow'), S.glow);
   gl.uniform1f(U('uWarp'), S.warp);
   gl.uniform1f(U('uRot'), S.rot);
+  gl.uniform1f(U('uKaleido'), S.kal);
+  gl.uniform1f(U('uOpaque'), OPAQUE ? 1.0 : 0.0);
+  gl.uniform1f(U('uIntensity'), f.intensity === undefined ? 1 : f.intensity);
   gl.uniform3fv(U('uBg'), pal.bg);
   gl.uniform3fv(U('uLine'), pal.line);
   gl.uniform3fv(U('uGlowC'), pal.glow);
@@ -225,11 +278,14 @@ function frame(t){
 
   if (hud.style.display === 'block'){
     hud.textContent =
-      `mood   ${f.mood}\nfeed   ${alive ? 'live' : 'STALE'}\n` +
-      `n,m    ${S.n.toFixed(2)}, ${S.m.toFixed(2)}\n` +
-      `sub    ${f.sub.toFixed(2)}   low ${f.low.toFixed(2)}\n` +
-      `mid    ${f.mid.toFixed(2)}   high ${f.high.toFixed(2)}\n` +
-      `rms    ${f.rms.toFixed(2)}   cen ${f.centroid.toFixed(2)}`;
+      'mood   ' + f.mood + '\nfeed   ' + (alive ? 'live' : 'STALE') + '\n' +
+      'deck   ' + PATTERN_NAMES[f.patternA|0] + ' -> ' + PATTERN_NAMES[f.patternB|0] +
+        '  x=' + S.x.toFixed(2) + '\n' +
+      'kaleid ' + S.kal.toFixed(1) + '\n' +
+      'n,m    ' + S.n.toFixed(2) + ', ' + S.m.toFixed(2) + '\n' +
+      'sub ' + f.sub.toFixed(2) + '  low ' + f.low.toFixed(2) +
+        '  mid ' + f.mid.toFixed(2) + '  hi ' + f.high.toFixed(2) + '\n' +
+      'rms ' + f.rms.toFixed(2) + '  cen ' + f.centroid.toFixed(2);
   }
   requestAnimationFrame(frame);
 }
