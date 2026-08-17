@@ -2,385 +2,413 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Ríomhdhos video</title>
+<!--
+  Organised by WHEN a control is touched, not by which subsystem it belongs to.
+
+    PERFORM  during a set, standing, one hand, glancing     few choices, big targets
+    LOOK     between songs or in rehearsal                  many parameters
+    RIG      when something is wrong                        diagnostics, never touched live
+
+  The previous version was nine equal-weight sections in one scroll, so finding the mood
+  buttons mid-song meant scrolling past the low-light blend. Tabs here are not decoration -
+  they are the difference between a control surface and a settings page.
+
+  The status strip is sticky because the three things worth interrupting a performance for
+  - which scene is live, whether audio is arriving, and whether the frame budget is blown -
+  should never require scrolling to see.
+-->
 <style>
   :root{--bg:#0b0d10;--panel:#14181d;--line:#232a32;--fg:#e8edf2;--dim:#7d8894;
         --accent:#e0a458;--ok:#5fb87a;--bad:#e0645f;color-scheme:dark}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);
        font:15px/1.4 ui-sans-serif,system-ui,-apple-system,sans-serif;
-       padding:14px;padding-bottom:max(14px,env(safe-area-inset-bottom))}
+       padding:0 12px max(14px,env(safe-area-inset-bottom))}
+
+  .bar{position:sticky;top:0;z-index:10;background:var(--bg);
+       padding:10px 2px 8px;border-bottom:1px solid var(--line);
+       display:flex;gap:10px;align-items:center;justify-content:space-between}
+  .bar .scene{font-weight:700;font-size:15px}
+  .bar .stats{font:11px ui-monospace,Consolas,monospace;color:var(--dim);text-align:right}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);
+       margin-right:6px;vertical-align:middle}
+  .dot.bad{background:var(--bad)}
+
+  .tabs{position:sticky;top:47px;z-index:9;background:var(--bg);display:grid;
+        grid-template-columns:repeat(3,1fr);gap:6px;padding:8px 0 10px}
+  .tabs button{padding:11px;font-size:12px;letter-spacing:.12em;text-transform:uppercase}
+  .tabs button.sel{background:var(--fg);border-color:var(--fg);color:#0b0d10}
+  section{display:none} section.on{display:block}
+
   h2{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);
-     margin:18px 2px 8px;font-weight:600}
-  h2:first-child{margin-top:0}
+     margin:16px 2px 7px;font-weight:600}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-        padding:13px 15px;margin-bottom:10px}
-  .hdr{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px}
+        padding:12px 14px;margin-bottom:9px}
+  .hdr{display:flex;justify-content:space-between;align-items:center;gap:10px}
   .nm{font-weight:600}
   .sub{color:var(--dim);font-size:11px;font-family:ui-monospace,Consolas,monospace}
-  .row{display:flex;justify-content:space-between;align-items:baseline;margin:10px 0 2px}
+  .note{color:var(--dim);font-size:11px;line-height:1.55;margin-top:8px}
+  .row{display:flex;justify-content:space-between;align-items:baseline;margin:9px 0 1px}
   .k{color:var(--dim);font-size:13px}
   .v{font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;font-size:13px}
-  input[type=range]{width:100%;height:34px;accent-color:var(--accent);margin:0}
-  /* Big targets - used standing, one-handed, in a dim room. */
-  button{padding:13px;font-size:15px;border-radius:10px;border:1px solid var(--line);
+  input[type=range]{width:100%;height:36px;accent-color:var(--accent);margin:0}
+  button{padding:12px;font-size:14px;border-radius:10px;border:1px solid var(--line);
          background:#1b2129;color:var(--fg);font-weight:600}
-  .pill{min-width:74px}
+  button:active{transform:scale(.98)}
+  .pill{min-width:70px;padding:11px}
   .pill.on{background:var(--ok);border-color:var(--ok);color:#06210f}
-  .moods{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:2px 0 8px}
-  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:2px 0 2px}
-  .grid4 button,.grid3 button{padding:10px 4px;font-size:12px;font-weight:500}
-  .grid4 button.sel,.grid3 button.sel{background:var(--accent);border-color:var(--accent);color:#241503}
-  .moods button.sel{background:var(--accent);border-color:var(--accent);color:#241503}
-  /* Meters exist so a dead input is visible instantly. A silent picture and a broken
-     cable look identical on the projector; here they do not. */
-  .meter{height:9px;background:#0d1116;border-radius:5px;overflow:hidden;margin:3px 0 9px}
+  .g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+  .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+  .g3 button,.g4 button{padding:10px 3px;font-size:11.5px;font-weight:500}
+  .g2 button.sel,.g3 button.sel,.g4 button.sel{background:var(--accent);
+       border-color:var(--accent);color:#241503}
+  /* Performance controls are taller: they are hit while holding an instrument. */
+  #perform .g2 button{padding:17px 8px;font-size:15px}
+  .meter{height:8px;background:#0d1116;border-radius:4px;overflow:hidden;margin:2px 0 8px}
   .meter>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#3d6d8c,#7fd0c8);
            transition:width .06s linear}
-  .err{color:var(--bad);font-size:12px;min-height:1.2em;margin:4px 2px}
-  .foot{color:var(--dim);font-size:11px;line-height:1.6;margin:14px 2px}
+  .err{color:var(--bad);font-size:12px;min-height:1.1em;margin:6px 2px}
+  .presets{display:flex;flex-wrap:wrap;gap:6px}
+  .presets button{flex:1 1 30%;padding:13px 6px;font-size:13px}
+  .mini{padding:9px 12px;font-size:12px;font-weight:500}
 </style>
 
-<h2>Scene</h2>
-<div class="card"><div class="moods" id="scenes"></div></div>
-
-<h2>Mood</h2>
-<div class="card"><div class="moods" id="moods"></div></div>
-
-<h2>Decks</h2>
-<div class="card">
-  <div class="row"><span class="k">A</span><span class="v" id="v_pa">&mdash;</span></div>
-  <div class="grid4" id="pa"></div>
-  <div class="row"><span class="k">B</span><span class="v" id="v_pb">&mdash;</span></div>
-  <div class="grid4" id="pb"></div>
-  <div class="row"><span class="k">Crossfade</span><span class="v" id="v_x">0.00</span></div>
-  <input type="range" id="r_x" min="0" max="1" step="0.01" value="0">
-  <div class="sub">Mixed in field space &mdash; the figure bends from A into B rather than dissolving.</div>
+<div class="bar">
+  <div><span class="dot" id="dot"></span><span class="scene" id="b_scene">—</span></div>
+  <div class="stats" id="b_stats">—</div>
 </div>
 
-<h2>Effects</h2>
-<div class="card">
-  <div class="row"><span class="k">Kaleidoscope</span><span class="v" id="v_kal">off</span></div>
-  <input type="range" id="r_kal" min="0" max="16" step="1" value="0">
-  <div class="row"><span class="k">Complexity</span><span class="v" id="v_cx">1.00</span></div>
-  <input type="range" id="r_cx" min="0.25" max="3" step="0.05" value="1">
-  <div class="row"><span class="k">Blend over video</span><span class="v" id="v_bl">&mdash;</span></div>
-  <div class="grid3" id="blend"></div>
-  <div class="row"><span class="k">React to camera</span><span class="v" id="v_vr">0.00</span></div>
-  <input type="range" id="r_vr" min="0" max="1" step="0.01" value="0">
-  <div class="sub">Motion in frame bends the figure; a busy shot thins the lines so the
-  overlay stops competing with it. Frames come from OBS, never from the device.</div>
-  <div class="row"><span class="k">Camera</span><span class="v" id="v_vid">&mdash;</span></div>
+<div class="tabs">
+  <button id="t_perform" class="sel">Perform</button>
+  <button id="t_look">Look</button>
+  <button id="t_rig">Rig</button>
 </div>
 
-<h2>Echo</h2>
-<div class="card">
-  <div class="row"><span class="k">Trail amount</span><span class="v" id="v_echo">0.00</span></div>
-  <input type="range" id="r_echo" min="0" max="1" step="0.01" value="0">
-  <div class="row"><span class="k">Trail length</span><span class="v" id="v_et">1.00&times;</span></div>
-  <input type="range" id="r_et" min="0.25" max="3" step="0.05" value="1">
-  <div class="sub">Delayed copies of the camera, screen-blended and scaled slightly larger.
-  At zero they are switched off, not just faded &mdash; a transparent layer still costs a
-  delayed frame buffer.</div>
-</div>
+<section id="perform" class="on">
+  <h2>Mood</h2>
+  <div class="card"><div class="g2" id="moods"></div></div>
 
-<h2>Overlay</h2>
-<div class="card" id="overlay">
-  <div class="row"><span class="k">Chladni strength</span><span class="v" id="v_int">1.00</span></div>
-  <input type="range" id="r_int" min="0" max="1" step="0.01" value="1">
-  <div class="sub">0 hides the figure without touching OBS &mdash; the camera stays untouched underneath.</div>
-</div>
+  <h2>Scene</h2>
+  <div class="card"><div class="g2" id="scenes"></div></div>
 
-<h2>Render health</h2>
-<div class="card" id="health"><span class="sub">&mdash;</span></div>
+  <h2>Looks</h2>
+  <div class="card">
+    <div class="presets" id="presets"></div>
+    <div class="note" id="noPresets">No saved looks yet — build one on the Look tab, then
+      save it here.</div>
+    <div class="g2" style="margin-top:9px">
+      <button class="mini" id="p_save">Save current</button>
+      <button class="mini" id="p_del">Delete…</button>
+    </div>
+  </div>
 
-<h2>Audio <span class="sub" id="feedState"></span></h2>
-<div class="card" id="meters"></div>
+  <h2>Levels</h2>
+  <div class="card">
+    <div class="row"><span class="k">Overlay</span><span class="v" id="v_int">1.00</span></div>
+    <input type="range" id="r_int" min="0" max="1" step="0.01" value="1">
+    <div class="row"><span class="k">Echo trails</span><span class="v" id="v_echo">0.00</span></div>
+    <input type="range" id="r_echo" min="0" max="1" step="0.01" value="0">
+  </div>
+</section>
 
-<h2>Camera filters</h2>
-<div id="filters"></div>
+<section id="look">
+  <h2>Deck A</h2>
+  <div class="card"><div class="g4" id="pa"></div></div>
+  <h2>Deck B</h2>
+  <div class="card"><div class="g4" id="pb"></div></div>
+
+  <h2>Mix</h2>
+  <div class="card">
+    <div class="row"><span class="k">Crossfade A→B</span><span class="v" id="v_x">0.00</span></div>
+    <input type="range" id="r_x" min="0" max="1" step="0.01" value="0">
+    <div class="note">Mixed in field space — the figure bends from A into B rather than
+      dissolving.</div>
+  </div>
+
+  <h2>Shape</h2>
+  <div class="card">
+    <div class="row"><span class="k">Kaleidoscope</span><span class="v" id="v_kal">off</span></div>
+    <input type="range" id="r_kal" min="0" max="16" step="1" value="0">
+    <div class="row"><span class="k">Complexity</span><span class="v" id="v_cx">1.00</span></div>
+    <input type="range" id="r_cx" min="0.25" max="3" step="0.05" value="1">
+    <div class="row"><span class="k">Trail length</span><span class="v" id="v_et">1.00×</span></div>
+    <input type="range" id="r_et" min="0.25" max="3" step="0.05" value="1">
+  </div>
+
+  <h2>Over the video</h2>
+  <div class="card">
+    <div class="row"><span class="k">Blend</span><span class="v" id="v_bl">—</span></div>
+    <div class="g3" id="blend"></div>
+    <div class="row"><span class="k">React to camera</span><span class="v" id="v_vr">0.00</span></div>
+    <input type="range" id="r_vr" min="0" max="1" step="0.01" value="0">
+    <div class="note">Motion bends the figure; a busy shot thins the lines so the overlay
+      stops competing with it.</div>
+  </div>
+</section>
+
+<section id="rig">
+  <h2>Audio in <span class="sub" id="feedState"></span></h2>
+  <div class="card" id="meters"></div>
+
+  <h2>Camera</h2>
+  <div class="card">
+    <div class="row"><span class="k">Frame</span><span class="v" id="v_vid">—</span></div>
+    <div class="note">Shown even at zero reactivity — it is how you tell “the camera is
+      dark” from “the camera is dead”, which look identical in a preview.</div>
+  </div>
+
+  <h2>Render</h2>
+  <div class="card" id="health"><span class="sub">—</span></div>
+
+  <h2>Camera filters</h2>
+  <div id="filters"></div>
+  <p class="note">Parameters and on/off only. Adding, removing or re-modelling a filter
+  crashes OBS's render thread — do those before a show, from OBS itself.<br><br>
+  OBS browser source → <code>/visuals</code> on this port.</p>
+</section>
 
 <div class="err" id="err"></div>
-<p class="foot">Parameters and on/off only. Adding, removing or re-modelling a filter
-crashes OBS's render thread — do those before a show, from OBS itself.<br>
-OBS browser source &rarr; <code>/visuals</code> on this same port.</p>
 
 <script>
 const $ = id => document.getElementById(id);
-let pending = {}, timer = null, current = null;
+const esc = s => String(s).replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-function esc(s){ return String(s).replace(/[&<>"]/g, c =>
-  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+const TABS = [['t_perform','perform'], ['t_look','look'], ['t_rig','rig']];
+for (const [btn, sec] of TABS){
+  $(btn).onclick = () => {
+    for (const [b,s] of TABS){
+      $(b).classList.toggle('sel', b === btn);
+      $(s).classList.toggle('on', s === sec);
+    }
+    window.scrollTo(0,0);
+  };
+}
 
-/* ---- filters ---------------------------------------------------------- */
+async function post(path, body){
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
+                               body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+  $('err').textContent = '';
+  return j;
+}
+function debounced(key, ms, fn){
+  clearTimeout(window['_d_'+key]);
+  window['_d_'+key] = setTimeout(fn, ms);
+}
+function slider(id, valId, fmt, onChange, ms){
+  $(id).oninput = () => {
+    const v = parseFloat($(id).value);
+    $(valId).textContent = fmt(v);
+    // Debounced: a drag fires continuously, and dozens of round-trips a second buys
+    // nothing visible while giving the render thread more to contend with.
+    debounced(id, ms || 110, () => onChange(v).catch(e => $('err').textContent = e.message));
+  };
+}
+
+let MOODS = [], PATTERNS = [], BLENDS = [], SCENES = [], curMood = null, curScene = null;
+let VIS = {patternA:0, patternB:1, xfade:0, kaleido:0, complexity:1};
+const pushVis = patch => { Object.assign(VIS, patch); return post('/api/visuals', patch); };
+
+function renderMoods(){
+  const box = $('moods'); box.innerHTML='';
+  for (const m of MOODS){
+    const b = document.createElement('button');
+    b.textContent = m;
+    if (m === curMood) b.className = 'sel';
+    b.onclick = () => post('/api/mood', {mood:m})
+      .then(() => { curMood = m; renderMoods(); })
+      .catch(e => $('err').textContent = e.message);
+    box.append(b);
+  }
+}
+function renderScenes(){
+  const box = $('scenes'); box.innerHTML='';
+  // Only scenes worth switching to live. CAM / ECHO n exist purely to carry filters -
+  // listing them would invite switching to a scene that is half a picture.
+  for (const sc of SCENES.filter(s => !/^(CAM|ECHO \d+)$/.test(s))){
+    const b = document.createElement('button');
+    b.textContent = sc;
+    if (sc === curScene) b.className = 'sel';
+    b.onclick = () => post('/api/scene', {scene:sc})
+      .then(j => { curScene = j.currentScene; renderScenes();
+                   $('b_scene').textContent = curScene; })
+      .catch(e => $('err').textContent = e.message);
+    box.append(b);
+  }
+}
+function renderPresets(names){
+  const box = $('presets'); box.innerHTML='';
+  $('noPresets').style.display = names.length ? 'none' : 'block';
+  for (const n of names){
+    const b = document.createElement('button');
+    b.textContent = n;
+    b.onclick = async () => {
+      try{ await post('/api/preset', {name:n, action:'recall'}); await refresh(); }
+      catch(e){ $('err').textContent = e.message; }
+    };
+    box.append(b);
+  }
+}
+$('p_save').onclick = async () => {
+  const n = prompt('Name this look');
+  if (!n) return;
+  try{ renderPresets((await post('/api/preset', {name:n, action:'save'})).presets); }
+  catch(e){ $('err').textContent = e.message; }
+};
+$('p_del').onclick = async () => {
+  const n = prompt('Delete which look?');
+  if (!n) return;
+  try{ renderPresets((await post('/api/preset', {name:n, action:'delete'})).presets); }
+  catch(e){ $('err').textContent = e.message; }
+};
+
+slider('r_int','v_int', v => v.toFixed(2), v => pushVis({intensity:v}));
+slider('r_echo','v_echo', v => v.toFixed(2), v => post('/api/echo', {echo:v}), 140);
+
+function renderDecks(){
+  for (const [deck, boxId] of [['patternA','pa'], ['patternB','pb']]){
+    const box = $(boxId); box.innerHTML='';
+    PATTERNS.forEach((nm, i) => {
+      const b = document.createElement('button');
+      b.textContent = nm;
+      if (VIS[deck] === i) b.className = 'sel';
+      b.onclick = () => { pushVis({[deck]: i}).catch(e => $('err').textContent = e.message);
+                          renderDecks(); };
+      box.append(b);
+    });
+  }
+}
+function renderBlend(cur){
+  const box = $('blend'); box.innerHTML='';
+  for (const m of BLENDS){
+    const b = document.createElement('button');
+    b.textContent = m.replace('OBS_BLEND_','').toLowerCase();
+    if (m === cur) b.className = 'sel';
+    b.onclick = () => post('/api/blend', {mode:m}).then(j => renderBlend(j.blend))
+                        .catch(e => $('err').textContent = e.message);
+    box.append(b);
+  }
+  $('v_bl').textContent = cur ? cur.replace('OBS_BLEND_','').toLowerCase() : '—';
+}
+slider('r_x','v_x', v => v.toFixed(2), v => pushVis({xfade:v}));
+// 1 sector cannot mirror anything - the fold needs at least 2, so 0 and 1 both mean off.
+slider('r_kal','v_kal', v => v < 2 ? 'off' : v + ' fold', v => pushVis({kaleido: v < 2 ? 0 : v}));
+slider('r_cx','v_cx', v => v.toFixed(2), v => pushVis({complexity:v}));
+slider('r_et','v_et', v => v.toFixed(2) + '×', v => post('/api/echo', {echoTime:v}), 140);
+slider('r_vr','v_vr', v => v.toFixed(2), v => pushVis({vReact:v}));
+
 function renderFilters(filters){
-  const box = $('filters');
-  box.innerHTML = '';
+  const box = $('filters'); box.innerHTML='';
   if (!filters.length){
-    box.innerHTML = '<div class="card"><span class="sub">no controllable filters on this source</span></div>';
+    box.innerHTML = '<div class="card"><span class="sub">no controllable filters</span></div>';
     return;
   }
   for (const f of filters){
-    const card = document.createElement('div'); card.className = 'card';
-    const hdr = document.createElement('div'); hdr.className = 'hdr';
+    const card = document.createElement('div'); card.className='card';
+    const hdr = document.createElement('div'); hdr.className='hdr';
     const left = document.createElement('div');
-    left.innerHTML = `<div class="nm">${esc(f.name)}</div>` +
-                     `<div class="sub">${esc(f.model || f.kind)}</div>`;
+    left.innerHTML = '<div class="nm">' + esc(f.name) + '</div>' +
+                     '<div class="sub">' + esc(f.model || f.kind) + '</div>';
     const btn = document.createElement('button');
     btn.className = 'pill' + (f.enabled ? ' on' : '');
     btn.textContent = f.enabled ? 'ON' : 'OFF';
-    btn.onclick = async () => {
-      try{
-        const r = await fetch('/api/toggle', {method:'POST',
-          headers:{'Content-Type':'application/json'}, body:JSON.stringify({filter:f.name})});
-        renderFilters((await r.json()).filters);
-      }catch(e){ $('err').textContent = e.message; }
-    };
+    btn.onclick = () => post('/api/toggle', {filter:f.name})
+                          .then(j => renderFilters(j.filters))
+                          .catch(e => $('err').textContent = e.message);
     hdr.append(left, btn); card.append(hdr);
-
     for (const p of f.params){
-      const row = document.createElement('div'); row.className = 'row';
-      const val = document.createElement('span'); val.className = 'v';
       const fmt = v => p.step >= 1 ? String(Math.round(v)) : Number(v).toFixed(2);
+      const row = document.createElement('div'); row.className='row';
+      row.innerHTML = '<span class="k">' + esc(p.label) + '</span>';
+      const val = document.createElement('span'); val.className='v';
       val.textContent = fmt(p.value);
-      row.innerHTML = `<span class="k">${esc(p.label)}</span>`;
       row.append(val); card.append(row);
-
       const r = document.createElement('input');
       r.type='range'; r.min=p.min; r.max=p.max; r.step=p.step; r.value=p.value;
       r.oninput = () => {
         val.textContent = fmt(parseFloat(r.value));
-        // Debounced: a drag fires continuously and sixty websocket round-trips a second
-        // buys nothing visible while giving the render thread more to contend with.
-        (pending[f.name] ||= {})[p.key] = parseFloat(r.value);
-        clearTimeout(timer); timer = setTimeout(flush, 120);
+        debounced('f'+f.name+p.key, 120,
+          () => post('/api/set', {filter:f.name, params:{[p.key]: parseFloat(r.value)}})
+                  .catch(e => $('err').textContent = e.message));
       };
       card.append(r);
     }
     box.append(card);
   }
 }
-
-async function flush(){
-  const batch = pending; pending = {};
-  for (const [name, params] of Object.entries(batch)){
-    try{
-      const r = await fetch('/api/set', {method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({filter:name, params})});
-      if(!r.ok) throw new Error((await r.json()).error || r.status);
-      $('err').textContent = '';
-    }catch(e){ $('err').textContent = e.message; }
-  }
-}
-
-/* ---- decks + effects --------------------------------------------------- */
-let VIS = {patternA:0, patternB:1, xfade:0, kaleido:0, complexity:1};
-
-function pushVis(patch){
-  Object.assign(VIS, patch);
-  clearTimeout(window._vt);
-  window._vt = setTimeout(() => fetch('/api/visuals', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify(patch)}), 90);
-}
-
-function renderDecks(patterns){
-  for (const [deck, boxId, lblId] of [['patternA','pa','v_pa'], ['patternB','pb','v_pb']]){
-    const box = $(boxId); box.innerHTML='';
-    patterns.forEach((nm, i) => {
-      const b = document.createElement('button');
-      b.textContent = nm;
-      if (VIS[deck] === i) b.className = 'sel';
-      b.onclick = () => { pushVis({[deck]: i}); renderDecks(patterns); };
-      box.append(b);
-    });
-    $(lblId).textContent = patterns[VIS[deck]] || '—';
-  }
-}
-
-function renderBlend(modes, cur){
-  const box = $('blend'); box.innerHTML='';
-  for (const m of modes){
-    const b = document.createElement('button');
-    b.textContent = m.replace('OBS_BLEND_','').toLowerCase();
-    if (m === cur) b.className = 'sel';
-    b.onclick = async () => {
-      try{
-        const r = await fetch('/api/blend', {method:'POST',
-          headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode:m})});
-        const j = await r.json();
-        if (j.error) throw new Error(j.error);
-        renderBlend(modes, j.blend); $('v_bl') && ($('v_bl').textContent = b.textContent);
-      }catch(e){ $('err').textContent = e.message; }
-    };
-    box.append(b);
-  }
-  $('v_bl').textContent = cur ? cur.replace('OBS_BLEND_','').toLowerCase() : '—';
-}
-
-/* ---- scenes ----------------------------------------------------------- */
-function renderScenes(scenes, cur){
-  const box = $('scenes'); box.innerHTML='';
-  for (const sc of scenes){
-    const b = document.createElement('button');
-    b.textContent = sc;
-    if (sc === cur) b.className = 'sel';
-    b.onclick = async () => {
-      try{
-        const r = await fetch('/api/scene', {method:'POST',
-          headers:{'Content-Type':'application/json'}, body: JSON.stringify({scene:sc})});
-        renderScenes(scenes, (await r.json()).currentScene);
-      }catch(e){ $('err').textContent = e.message; }
-    };
-    box.append(b);
-  }
-}
-
-/* ---- render health ----------------------------------------------------- */
 function renderHealth(h){
   const pct = h.budgetMs ? (h.renderMs / h.budgetMs * 100) : 0;
-  // Colour by headroom, because the number only means something against the budget:
+  // Coloured by headroom, because the number only means something against the budget:
   // 16 ms is comfortable at 30 fps and over budget at 60.
   const col = pct > 90 ? 'var(--bad)' : pct > 70 ? 'var(--accent)' : 'var(--ok)';
   $('health').innerHTML =
-    `<div class="row"><span class="k">Frame</span>` +
-    `<span class="v" style="color:${col}">${h.renderMs} / ${h.budgetMs} ms &middot; ${pct.toFixed(0)}%</span></div>` +
-    `<div class="meter"><i style="width:${Math.min(100,pct)}%;background:${col}"></i></div>` +
-    `<div class="row"><span class="k">Output</span><span class="v">${h.fps} fps</span></div>` +
-    `<div class="row"><span class="k">Skipped</span><span class="v">${h.skipped} render &middot; ${h.missed} output</span></div>` +
-    `<div class="row"><span class="k">OBS CPU</span><span class="v">${h.cpu}%</span></div>`;
+    '<div class="row"><span class="k">Frame</span><span class="v" style="color:' + col + '">' +
+      h.renderMs + ' / ' + h.budgetMs + ' ms · ' + pct.toFixed(0) + '%</span></div>' +
+    '<div class="meter"><i style="width:' + Math.min(100,pct) + '%;background:' + col + '"></i></div>' +
+    '<div class="row"><span class="k">Output</span><span class="v">' + h.fps + ' fps</span></div>' +
+    '<div class="row"><span class="k">Skipped</span><span class="v">' + h.skipped +
+      ' render · ' + h.missed + ' output</span></div>' +
+    '<div class="row"><span class="k">OBS CPU</span><span class="v">' + h.cpu + '%</span></div>';
+  $('b_stats').textContent = pct.toFixed(0) + '% frame · ' + h.fps + ' fps';
 }
 
-/* ---- moods ------------------------------------------------------------- */
-function renderMoods(moods, sel){
-  const box = $('moods'); box.innerHTML='';
-  for (const m of moods){
-    const b = document.createElement('button');
-    b.textContent = m;
-    if (m === sel) b.className = 'sel';
-    b.onclick = async () => {
-      try{
-        await fetch('/api/mood', {method:'POST', headers:{'Content-Type':'application/json'},
-                                  body: JSON.stringify({mood:m})});
-        renderMoods(moods, m); current = m;
-      }catch(e){ $('err').textContent = e.message; }
-    };
-    box.append(b);
-  }
-}
-
-/* ---- live audio meters ------------------------------------------------ */
 const BARS = [['sub','Sub'],['low','Low'],['mid','Mid'],['high','High'],['rms','Level']];
-function buildMeters(){
-  const box = $('meters'); box.innerHTML='';
+(function(){
+  const box = $('meters');
   for (const [k,label] of BARS){
     const row = document.createElement('div'); row.className='row';
-    row.innerHTML = `<span class="k">${label}</span><span class="v" id="n_${k}">0.00</span>`;
+    row.innerHTML = '<span class="k">'+label+'</span><span class="v" id="n_'+k+'">0.00</span>';
     box.append(row);
     const m = document.createElement('div'); m.className='meter';
-    m.innerHTML = `<i id="m_${k}"></i>`;
+    m.innerHTML = '<i id="m_'+k+'"></i>';
     box.append(m);
   }
-}
-buildMeters();
+})();
 
 let lastFeed = 0;
-const es = new EventSource('/feed');
-es.onmessage = e => {
+new EventSource('/feed').onmessage = e => {
   const d = JSON.parse(e.data); lastFeed = performance.now();
   for (const [k] of BARS){
     const v = d[k] ?? 0;
     $('m_'+k).style.width = Math.min(100, v*100) + '%';
     $('n_'+k).textContent = Number(v).toFixed(2);
   }
-  if (d.mood && d.mood !== current){ current = d.mood; renderMoods(MOODS, current); }
-  // Raw camera features, always shown even at zero react - they are how you tell "the
-  // camera is dark" from "the camera is dead", which look identical in a preview.
-  const vv = $('v_vid');
-  if (vv) vv.textContent = 'mot ' + (d.vMotion ?? 0).toFixed(2) +
+  $('v_vid').textContent = 'mot ' + (d.vMotion ?? 0).toFixed(2) +
                            '  bri ' + (d.vBright ?? 0).toFixed(2) +
                            '  det ' + (d.vDetail ?? 0).toFixed(2);
+  if (d.mood && d.mood !== curMood){ curMood = d.mood; renderMoods(); }
 };
 setInterval(() => {
   const alive = performance.now() - lastFeed < 2000;
   $('feedState').textContent = alive ? 'live' : 'no signal';
-  $('feedState').style.color = alive ? 'var(--dim)' : 'var(--bad)';
+  $('dot').className = 'dot' + (alive ? '' : ' bad');
 }, 700);
 
-$('r_x').oninput = () => {
-  const v = parseFloat($('r_x').value);
-  $('v_x').textContent = v.toFixed(2); pushVis({xfade:v});
-};
-$('r_kal').oninput = () => {
-  const v = parseInt($('r_kal').value, 10);
-  // 1 sector is meaningless - the fold needs at least 2 to mirror anything.
-  $('v_kal').textContent = v < 2 ? 'off' : v + ' fold';
-  pushVis({kaleido: v < 2 ? 0 : v});
-};
-$('r_cx').oninput = () => {
-  const v = parseFloat($('r_cx').value);
-  $('v_cx').textContent = v.toFixed(2); pushVis({complexity:v});
-};
-
-function pushEcho(patch){
-  clearTimeout(window._et);
-  window._et = setTimeout(() => fetch('/api/echo', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify(patch)}), 130);
+async function refresh(){
+  const s = await (await fetch('/api/state')).json();
+  MOODS = s.moods; PATTERNS = s.patterns; BLENDS = s.blendModes; SCENES = s.scenes;
+  curMood = s.audio.mood; curScene = s.currentScene;
+  VIS = {patternA:s.audio.patternA|0, patternB:s.audio.patternB|0,
+         xfade:s.audio.xfade||0, kaleido:s.audio.kaleido||0,
+         complexity:s.audio.complexity ?? 1};
+  $('b_scene').textContent = curScene;
+  renderMoods(); renderScenes(); renderDecks(); renderBlend(s.blend);
+  renderFilters(s.filters); renderHealth(s.health); renderPresets(s.presets || []);
+  const set = (id, valId, v, fmt) => { $(id).value = v; $(valId).textContent = fmt(v); };
+  set('r_int','v_int', s.audio.intensity ?? 1, v => Number(v).toFixed(2));
+  set('r_echo','v_echo', s.audio.echo ?? 0, v => Number(v).toFixed(2));
+  set('r_x','v_x', VIS.xfade, v => Number(v).toFixed(2));
+  set('r_kal','v_kal', VIS.kaleido, v => v < 2 ? 'off' : v + ' fold');
+  set('r_cx','v_cx', VIS.complexity, v => Number(v).toFixed(2));
+  set('r_et','v_et', s.audio.echoTime ?? 1, v => Number(v).toFixed(2) + '×');
+  set('r_vr','v_vr', s.audio.vReact ?? 0, v => Number(v).toFixed(2));
 }
-$('r_echo').oninput = () => {
-  const v = parseFloat($('r_echo').value);
-  $('v_echo').textContent = v.toFixed(2); pushEcho({echo:v});
-};
-$('r_et').oninput = () => {
-  const v = parseFloat($('r_et').value);
-  $('v_et').textContent = v.toFixed(2) + '×'; pushEcho({echoTime:v});
-};
-
-$('r_vr').oninput = () => {
-  const v = parseFloat($('r_vr').value);
-  $('v_vr').textContent = v.toFixed(2); pushVis({vReact:v});
-};
-
-$('r_int').oninput = () => {
-  const v = parseFloat($('r_int').value);
-  $('v_int').textContent = v.toFixed(2);
-  clearTimeout(window._it);
-  window._it = setTimeout(() => fetch('/api/visuals', {method:'POST',
-    headers:{'Content-Type':'application/json'}, body: JSON.stringify({intensity:v})}), 100);
-};
-
-/* ---- init ------------------------------------------------------------- */
-let MOODS = [];
-(async function(){
-  try{
-    const s = await (await fetch('/api/state')).json();
-    MOODS = s.moods; current = s.audio.mood;
-    renderScenes(s.scenes, s.currentScene);
-    renderMoods(MOODS, current);
-    renderFilters(s.filters);
-    renderHealth(s.health);
-    VIS = {patternA:s.audio.patternA|0, patternB:s.audio.patternB|0,
-           xfade:s.audio.xfade||0, kaleido:s.audio.kaleido||0,
-           complexity:s.audio.complexity??1};
-    renderDecks(s.patterns);
-    renderBlend(s.blendModes, s.blend);
-    $('r_x').value = VIS.xfade;   $('v_x').textContent = Number(VIS.xfade).toFixed(2);
-    $('r_kal').value = VIS.kaleido;
-    $('v_kal').textContent = VIS.kaleido < 2 ? 'off' : VIS.kaleido + ' fold';
-    $('r_cx').value = VIS.complexity; $('v_cx').textContent = Number(VIS.complexity).toFixed(2);
-    $('r_echo').value = s.audio.echo || 0;
-    $('v_echo').textContent = Number(s.audio.echo || 0).toFixed(2);
-    $('r_et').value = s.audio.echoTime ?? 1;
-    $('v_et').textContent = Number(s.audio.echoTime ?? 1).toFixed(2) + '×';
-    $('r_vr').value = s.audio.vReact || 0;
-    $('v_vr').textContent = Number(s.audio.vReact || 0).toFixed(2);
-    $('r_int').value = s.audio.intensity ?? 1;
-    $('v_int').textContent = Number(s.audio.intensity ?? 1).toFixed(2);
-    // Health is polled, not streamed: it changes slowly and putting it on the 40 Hz audio
-    // feed would mean an OBS round-trip per audio block.
-    setInterval(async () => {
-      try{ renderHealth((await (await fetch('/api/state')).json()).health); }catch(e){}
-    }, 4000);
-  }catch(e){ $('err').textContent = 'cannot reach OBS: ' + e.message; }
-})();
+refresh().catch(e => $('err').textContent = 'cannot reach OBS: ' + e.message);
+// Health only. A full refresh would fight whatever slider is under a thumb.
+setInterval(async () => {
+  try{ renderHealth((await (await fetch('/api/state')).json()).health); }catch(e){}
+}, 4000);
 </script>

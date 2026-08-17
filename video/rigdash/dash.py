@@ -76,6 +76,13 @@ ECHO_SCENES = ["ECHO 1", "ECHO 2"]
 ECHO_BASE = {"ECHO 1": (120, 0.55), "ECHO 2": (260, 0.32)}   # (delay ms, opacity at 100%)
 LIVE_SCENE = "LIVE"
 
+# Presets are the one thing a VJ actually needs mid-set: recalling a whole LOOK in one tap
+# rather than dialling six sliders while playing. Stored beside this file as plain JSON so
+# they survive a restart and can be read, edited or version-controlled by hand.
+PRESET_FILE = Path(__file__).parent / "presets.json"
+PRESET_KEYS = ["patternA", "patternB", "xfade", "kaleido", "complexity",
+               "intensity", "echo", "echoTime", "vReact", "mood"]
+
 # Per filter KIND, the parameters that may be written and their ranges. Anything not here
 # is silently dropped - notably model_select, which is what makes a filter reload its
 # model and is the operation that took OBS down.
@@ -191,6 +198,48 @@ def video_thread(source, hz=5.0, w=160, h=90):
         time.sleep(max(0.0, period - (time.time() - t0)))
 
 
+def load_presets():
+    try:
+        return json.loads(PRESET_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_presets(d):
+    PRESET_FILE.write_text(json.dumps(d, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def apply_preset(cl, preset):
+    """Apply a stored look. Echo and blend go through their own paths because they live in
+    OBS rather than in STATE - a preset that only restored the shader would silently leave
+    the trails and blend mode from whatever was on screen before."""
+    with _lock:
+        for k in PRESET_KEYS:
+            if k in preset:
+                STATE[k] = preset[k]
+        amt, tscale = STATE.get("echo", 0.0), STATE.get("echoTime", 1.0)
+    for name in ECHO_SCENES:
+        if name not in [x["sceneName"] for x in cl.get_scene_list().scenes]:
+            continue
+        base_ms, base_op = ECHO_BASE[name]
+        cl.set_source_filter_settings(name, "delay", {"delay_ms": int(base_ms * tscale)}, True)
+        cl.set_source_filter_settings(name, "fade", {"opacity": base_op * amt}, True)
+        try:
+            item = next((i for i in cl.get_scene_item_list(LIVE_SCENE).scene_items
+                         if i["sourceName"] == name), None)
+            if item:
+                cl.set_scene_item_enabled(LIVE_SCENE, item["sceneItemId"], amt > 0.01)
+        except Exception:
+            pass
+    blend = preset.get("blend")
+    if blend in BLEND_MODES:
+        scene = cl.get_scene_list().current_program_scene_name
+        item = next((i for i in cl.get_scene_item_list(scene).scene_items
+                     if i["sourceName"] == OVERLAY_SOURCE), None)
+        if item:
+            cl.set_scene_item_blend_mode(scene, item["sceneItemId"], blend)
+
+
 def _current_blend(cl, scene):
     """Blend mode is a property of the scene ITEM, not the source - the same overlay can
     screen in one scene and multiply in another, which is a feature worth not flattening."""
@@ -288,6 +337,7 @@ class Handler(BaseHTTPRequestHandler):
                     "scenes": [s["sceneName"] for s in sl.scenes],
                     "currentScene": sl.current_program_scene_name,
                     "code": CODE_HASH,
+                    "presets": sorted(load_presets().keys()),
                     "patterns": PATTERNS,
                     "blendModes": BLEND_MODES,
                     "blend": _current_blend(cl, sl.current_program_scene_name),
@@ -347,6 +397,23 @@ class Handler(BaseHTTPRequestHandler):
                            ("intensity", "xfade", "kaleido", "complexity",
                             "patternA", "patternB", "vReact")}
                 self._json(out); return
+
+            if p == "/api/preset":
+                name = str(body.get("name", "")).strip()[:32]
+                act = body.get("action", "recall")
+                ps = load_presets()
+                if act == "save" and name:
+                    with _lock:
+                        snap = {k: STATE.get(k) for k in PRESET_KEYS}
+                    snap["blend"] = _current_blend(cl, cl.get_scene_list().current_program_scene_name)
+                    ps[name] = snap
+                    save_presets(ps)
+                elif act == "delete" and name in ps:
+                    del ps[name]; save_presets(ps)
+                elif act == "recall" and name in ps:
+                    apply_preset(cl, ps[name])
+                self._json({"presets": sorted(ps.keys()), "applied": name if act == "recall" else None})
+                return
 
             if p == "/api/echo":
                 with _lock:
