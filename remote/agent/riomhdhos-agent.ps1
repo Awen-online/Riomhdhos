@@ -37,6 +37,7 @@ $AGENT_VERSION = '1.0.0'
 $Here    = Split-Path -Parent $MyInvocation.MyCommand.Path
 $WwwDir  = Join-Path (Split-Path -Parent $Here) 'www'
 $HealthLua = Join-Path $Here 'health.lua'
+$LevelsLua = Join-Path $Here 'levels.lua'
 
 $InFile     = Join-Path $RemoteDir 'in.lua'
 $ReadyFile  = Join-Path $RemoteDir 'in.ready'
@@ -261,6 +262,76 @@ function Get-ReaperIniPath {
   return $null
 }
 
+function Get-Levels {
+  # "The audio device is open" and "audio is coming out" are different claims. Every
+  # other check in this agent answers the first. This answers the second - the one that
+  # matters thirty seconds before a set starts.
+  $proc = Get-ReaperProcess
+  if (-not $proc)            { return @{ available = $false; note = 'REAPER is not running.' } }
+  if (-not (Get-ConsoleHeartbeat).alive) {
+    return @{ available = $false; note = 'REAPER is up but the remote console is not running - no levels available.' }
+  }
+
+  # Longer timeout than the health probe: levels.lua deliberately spends ~700 ms holding
+  # peaks on the master plus 50 ms per track, so it cannot answer inside health's 6 s on
+  # a project with many tracks.
+  $raw = Invoke-RigLua -Source (Get-Content $LevelsLua -Raw) -TimeoutSec 20
+  if (-not $raw) { return @{ available = $false; note = 'Level probe timed out - the console did not answer.' } }
+
+  $kv = ConvertFrom-KvReport $raw
+  $tracks = @()
+  for ($i = 0; $i -lt [int]($kv['track_count']); $i++) {
+    $row = $kv["track$i"]
+    if (-not $row) { continue }
+    # Split with a cap of 6 so the name - which is LAST and may itself contain '|' -
+    # arrives whole in the final element rather than shifting the fields after it.
+    $p = $row -split '\|', 6
+    if ($p.Count -lt 6) { continue }
+    $tracks += @{
+      l = [double]$p[0]; r = [double]$p[1]
+      muted = ($p[2] -eq '1'); armed = ($p[3] -eq '1'); midi = ($p[4] -eq '1')
+      name = $p[5]
+      # -150 is the floor levels.lua substitutes for -inf, so anything at or below it is
+      # silence. Compared as a number rather than a string: "-inf" does not sort.
+      silent = ([double]$p[0] -le -149 -and [double]$p[1] -le -149)
+    }
+  }
+
+  $mL = [double]$kv['master_l']; $mR = [double]$kv['master_r']
+  $masterSilent = ($mL -le -149 -and $mR -le -149)
+
+  $checks = @()
+  $checks += if ($masterSilent) {
+    @{ label='Master output'; state='warn'; detail='silent'; fix='Nothing is reaching the output. Check the active mood is unmuted and that something is actually being played.' }
+  } elseif ($mL -gt -1 -or $mR -gt -1) {
+    @{ label='Master output'; state='bad'; detail=("peak {0} / {1} dBFS" -f $mL, $mR); fix='Clipping. Pull the master or the mood level down.' }
+  } else {
+    @{ label='Master output'; state='ok'; detail=("peak {0} / {1} dBFS" -f $mL, $mR); fix='' }
+  }
+
+  # An armed AUDIO input at digital silence is a dead cable or a dead interface input, and
+  # it is invisible from every other check the agent makes.
+  #
+  # ⚠️ MIDI-armed tracks are excluded, and this is not a detail. The brain, the Push, the
+  # LED track and DRUMS are all armed for MIDI and carry no audio, so they sit at -inf
+  # permanently and correctly. Warning on them fires on every single read - and a
+  # diagnostic that always warns is one you stop reading, which is worse than none.
+  foreach ($t in ($tracks | Where-Object { $_.armed -and $_.silent -and -not $_.midi })) {
+    $checks += @{ label=('Input: ' + $t.name); state='warn'; detail='armed but silent'
+                  fix='Nothing is arriving on this input. Check the cable, the gain, and that the right physical input is assigned.' }
+  }
+
+  @{
+    available    = $true
+    masterL      = $mL
+    masterR      = $mR
+    masterSilent = $masterSilent
+    playState    = $kv['play_state']
+    tracks       = $tracks
+    checks       = $checks
+  }
+}
+
 function Get-Latency {
   # Summarises the rolling log written by latency-sampler.ps1. The agent does NOT sample
   # here: Get-Counter needs a real interval to produce a meaningful rate, so sampling
@@ -463,7 +534,10 @@ function Invoke-RigLua {
   while ((Get-Date) -lt $deadline) {
     if (Test-Path $OutFile) {
       try {
-        $text = Get-Content $OutFile -Raw -ErrorAction Stop
+        # -Encoding UTF8, because track names are not ASCII: ÉIRE came back as "Ã‰IRE"
+        # when this used the default, which is UTF-8 bytes decoded as Latin-1. REAPER
+        # writes UTF-8; PowerShell 5.1's Get-Content does not assume it.
+        $text = Get-Content $OutFile -Raw -Encoding UTF8 -ErrorAction Stop
         # Require BOTH markers: the trailing one proves we did not read a partially
         # flushed file and lose the tail of the report.
         if ($text -match "NONCE=$nonce" -and $text -match "END=$nonce") { return $text }
@@ -724,6 +798,9 @@ while ($listener.IsListening) {
         '^/api/health$' {
           $deep = -not ($req.QueryString['deep'] -eq '0')
           Send-Json -Response $res -Object (Get-Health -Deep $deep)
+        }
+        '^/api/levels$' {
+          Send-Json -Response $res -Object (Get-Levels)
         }
         '^/api/latency$' {
           $mins = 30

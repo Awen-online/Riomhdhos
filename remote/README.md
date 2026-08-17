@@ -93,6 +93,28 @@ All `/api/*` routes need `Authorization: Bearer <token>` (or `?token=`).
 | `/api/audio/devices` | GET | ASIO drivers, which is selected, whether its hardware is attached |
 | `/api/audio/device?name=…` | POST | Switch interface: save, kill REAPER, edit `reaper.ini`, relaunch |
 | `/api/latency?min=30` | GET | DPC/ISR summary over the last N minutes, with verdicts |
+| `/api/levels` | GET | Peak-held master and per-track levels — is sound actually coming out |
+
+## "Device open" is not "sound coming out"
+
+Every other check answers the first question. `/api/levels` answers the second, and they
+are different claims — the rig can pass everything else and be silent, because the wrong
+mood is active, an input is unarmed, or Kontakt never loaded.
+
+Levels are **peak-held over a window**, not sampled once. `Track_GetPeakInfo` returns the
+level *right now*, and a single read almost always lands between notes — reporting silence
+on a rig that is working perfectly. Holding the maximum is the only honest reading.
+
+⚠️ **MIDI-armed tracks are excluded from the "armed but silent" warning.** The brain, the
+Push, the LED track and DRUMS are armed for MIDI and carry no audio, so they sit at `-inf`
+permanently and correctly. The first version warned on all of them on every read — and a
+diagnostic that always warns is one you stop reading, which is worse than having none.
+Detected from `I_RECINPUT` bit 12, never from track names, for the reason recorded in
+`reaper/README.md`: probes that assume a layout lie the moment the layout moves.
+
+Muted moods render dim rather than red, because `mood_mute` holds three of the four muted
+at all times by design. Red there would mean "normal", which is how a colour stops meaning
+anything.
 
 ## Realtime audio health
 

@@ -169,6 +169,62 @@ async function switchDriver(name) {
   }
 }
 
+/* LEVELS — the one card that answers "is sound coming out", as opposed to "is the audio
+   device open". Deliberately NOT on the auto-refresh poll: the probe blocks REAPER's main
+   thread for ~700 ms holding peaks, which is harmless but pointless to do every 10 s. It
+   is a thing you press before a set, so it is a button. */
+function fmtDb(v) {
+  if (v === undefined || v === null) return '—';
+  return v <= -149 ? 'silent' : v.toFixed(1) + ' dB';
+}
+
+function renderLevels(lv) {
+  const box = $('levelRows');
+  if (!lv || !lv.available) {
+    rows(box, [['levels', (lv && lv.note) || 'unavailable', 'bad']]);
+    return;
+  }
+  const items = [];
+  items.push(['MASTER',
+    `${fmtDb(lv.masterL)}  /  ${fmtDb(lv.masterR)}`,
+    lv.masterSilent ? 'bad' : 'ok']);
+
+  for (const t of (lv.tracks || [])) {
+    // Silence is only worth flagging where it is surprising. MIDI-only tracks (the brain,
+    // the Push, the LED track) are ALWAYS at -inf and always fine, so colouring them red
+    // would train you to ignore the colour — which is the one thing a stage diagnostic
+    // must never do. Muted moods are likewise correct: mood_mute holds three of the four
+    // muted at all times, by design.
+    let cls = '';
+    if (t.muted)            cls = 'dim';
+    else if (t.armed && t.silent) cls = 'bad';
+    else if (!t.silent)     cls = 'ok';
+
+    const tag = t.muted ? ' (muted)' : (t.armed ? ' (armed)' : '');
+    items.push([t.name + tag, `${fmtDb(t.l)}  /  ${fmtDb(t.r)}`, cls]);
+  }
+  rows(box, items);
+}
+
+async function loadLevels() {
+  const btn = $('btnLevels');
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = 'Reading…';
+  try {
+    const lv = await api('/api/levels');
+    renderLevels(lv);
+    if (lv.checks) for (const c of lv.checks) {
+      if (c.state !== 'ok') log(`${c.label}: ${c.detail}${c.fix ? ' — ' + c.fix : ''}`);
+    }
+  } catch (e) {
+    rows($('levelRows'), [['levels', e.message, 'bad']]);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = was;
+  }
+}
+
 function renderHardware(audio) {
   const items = [];
   const drivers = (audio && audio.asioDrivers) || [];
@@ -384,6 +440,7 @@ function arm(btn, label, run) {
 }
 
 $('btnRefresh').addEventListener('click', refresh);
+$('btnLevels').addEventListener('click', loadLevels);
 $('btnFind').addEventListener('click', findRig);
 $('btnRestart').addEventListener('click', () => post('/api/reaper/restart', 'Restart REAPER'));
 $('btnStartReaper').addEventListener('click', () => post('/api/reaper/start', 'Start REAPER'));

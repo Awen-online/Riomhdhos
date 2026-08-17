@@ -56,6 +56,11 @@ header .spacer{flex:1}
 .row .v{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
   word-break:break-word}
 .v.ok{color:var(--ok)} .v.warn{color:var(--warn)} .v.bad{color:var(--bad)}
+/* Muted moods are CORRECT, not a fault - mood_mute holds three of the four muted at all
+   times. They recede rather than alarm, so red keeps meaning "something is wrong". */
+.v.dim{color:var(--dim)}
+/* The level key column carries track names, which are longer than the labels elsewhere. */
+#levelRows .k{width:132px}
 
 /* Driver picker. The current driver is filled, not merely outlined, so which interface
    is live reads at a glance from a metre away. A driver whose hardware is unplugged is
@@ -131,6 +136,15 @@ input{background:var(--bg);border:1px solid var(--line);color:var(--text);border
   <div class="card">
     <h2>Diagnostics</h2>
     <div class="checks" id="checks"></div>
+  </div>
+
+  <div class="card">
+    <h2>Signal</h2>
+    <div class="rows" id="levelRows"></div>
+    <p class="cardnote">Every other check here says the audio device is <em>open</em>. This one
+      says whether sound is actually coming <em>out</em> — a rig can pass everything else and
+      still be silent. Levels are peak-held, so play something while it reads.</p>
+    <button class="act" id="btnLevels">Read levels</button>
   </div>
 
   <div class="card">
