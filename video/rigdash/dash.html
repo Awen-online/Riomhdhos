@@ -1,0 +1,183 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Ríomhdhos video</title>
+<style>
+  :root{--bg:#0b0d10;--panel:#14181d;--line:#232a32;--fg:#e8edf2;--dim:#7d8894;
+        --accent:#e0a458;--ok:#5fb87a;--bad:#e0645f;color-scheme:dark}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.4 ui-sans-serif,system-ui,-apple-system,sans-serif;
+       padding:14px;padding-bottom:max(14px,env(safe-area-inset-bottom))}
+  h2{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);
+     margin:18px 2px 8px;font-weight:600}
+  h2:first-child{margin-top:0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+        padding:13px 15px;margin-bottom:10px}
+  .hdr{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px}
+  .nm{font-weight:600}
+  .sub{color:var(--dim);font-size:11px;font-family:ui-monospace,Consolas,monospace}
+  .row{display:flex;justify-content:space-between;align-items:baseline;margin:10px 0 2px}
+  .k{color:var(--dim);font-size:13px}
+  .v{font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;font-size:13px}
+  input[type=range]{width:100%;height:34px;accent-color:var(--accent);margin:0}
+  /* Big targets - used standing, one-handed, in a dim room. */
+  button{padding:13px;font-size:15px;border-radius:10px;border:1px solid var(--line);
+         background:#1b2129;color:var(--fg);font-weight:600}
+  .pill{min-width:74px}
+  .pill.on{background:var(--ok);border-color:var(--ok);color:#06210f}
+  .moods{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .moods button.sel{background:var(--accent);border-color:var(--accent);color:#241503}
+  /* Meters exist so a dead input is visible instantly. A silent picture and a broken
+     cable look identical on the projector; here they do not. */
+  .meter{height:9px;background:#0d1116;border-radius:5px;overflow:hidden;margin:3px 0 9px}
+  .meter>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#3d6d8c,#7fd0c8);
+           transition:width .06s linear}
+  .err{color:var(--bad);font-size:12px;min-height:1.2em;margin:4px 2px}
+  .foot{color:var(--dim);font-size:11px;line-height:1.6;margin:14px 2px}
+</style>
+
+<h2>Mood</h2>
+<div class="card"><div class="moods" id="moods"></div></div>
+
+<h2>Audio <span class="sub" id="feedState"></span></h2>
+<div class="card" id="meters"></div>
+
+<h2>Camera filters</h2>
+<div id="filters"></div>
+
+<div class="err" id="err"></div>
+<p class="foot">Parameters and on/off only. Adding, removing or re-modelling a filter
+crashes OBS's render thread — do those before a show, from OBS itself.<br>
+OBS browser source &rarr; <code>/visuals</code> on this same port.</p>
+
+<script>
+const $ = id => document.getElementById(id);
+let pending = {}, timer = null, current = null;
+
+function esc(s){ return String(s).replace(/[&<>"]/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ---- filters ---------------------------------------------------------- */
+function renderFilters(filters){
+  const box = $('filters');
+  box.innerHTML = '';
+  if (!filters.length){
+    box.innerHTML = '<div class="card"><span class="sub">no controllable filters on this source</span></div>';
+    return;
+  }
+  for (const f of filters){
+    const card = document.createElement('div'); card.className = 'card';
+    const hdr = document.createElement('div'); hdr.className = 'hdr';
+    const left = document.createElement('div');
+    left.innerHTML = `<div class="nm">${esc(f.name)}</div>` +
+                     `<div class="sub">${esc(f.model || f.kind)}</div>`;
+    const btn = document.createElement('button');
+    btn.className = 'pill' + (f.enabled ? ' on' : '');
+    btn.textContent = f.enabled ? 'ON' : 'OFF';
+    btn.onclick = async () => {
+      try{
+        const r = await fetch('/api/toggle', {method:'POST',
+          headers:{'Content-Type':'application/json'}, body:JSON.stringify({filter:f.name})});
+        renderFilters((await r.json()).filters);
+      }catch(e){ $('err').textContent = e.message; }
+    };
+    hdr.append(left, btn); card.append(hdr);
+
+    for (const p of f.params){
+      const row = document.createElement('div'); row.className = 'row';
+      const val = document.createElement('span'); val.className = 'v';
+      const fmt = v => p.step >= 1 ? String(Math.round(v)) : Number(v).toFixed(2);
+      val.textContent = fmt(p.value);
+      row.innerHTML = `<span class="k">${esc(p.label)}</span>`;
+      row.append(val); card.append(row);
+
+      const r = document.createElement('input');
+      r.type='range'; r.min=p.min; r.max=p.max; r.step=p.step; r.value=p.value;
+      r.oninput = () => {
+        val.textContent = fmt(parseFloat(r.value));
+        // Debounced: a drag fires continuously and sixty websocket round-trips a second
+        // buys nothing visible while giving the render thread more to contend with.
+        (pending[f.name] ||= {})[p.key] = parseFloat(r.value);
+        clearTimeout(timer); timer = setTimeout(flush, 120);
+      };
+      card.append(r);
+    }
+    box.append(card);
+  }
+}
+
+async function flush(){
+  const batch = pending; pending = {};
+  for (const [name, params] of Object.entries(batch)){
+    try{
+      const r = await fetch('/api/set', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({filter:name, params})});
+      if(!r.ok) throw new Error((await r.json()).error || r.status);
+      $('err').textContent = '';
+    }catch(e){ $('err').textContent = e.message; }
+  }
+}
+
+/* ---- moods ------------------------------------------------------------ */
+function renderMoods(moods, sel){
+  const box = $('moods'); box.innerHTML='';
+  for (const m of moods){
+    const b = document.createElement('button');
+    b.textContent = m;
+    if (m === sel) b.className = 'sel';
+    b.onclick = async () => {
+      try{
+        await fetch('/api/mood', {method:'POST', headers:{'Content-Type':'application/json'},
+                                  body: JSON.stringify({mood:m})});
+        renderMoods(moods, m); current = m;
+      }catch(e){ $('err').textContent = e.message; }
+    };
+    box.append(b);
+  }
+}
+
+/* ---- live audio meters ------------------------------------------------ */
+const BARS = [['sub','Sub'],['low','Low'],['mid','Mid'],['high','High'],['rms','Level']];
+function buildMeters(){
+  const box = $('meters'); box.innerHTML='';
+  for (const [k,label] of BARS){
+    const row = document.createElement('div'); row.className='row';
+    row.innerHTML = `<span class="k">${label}</span><span class="v" id="n_${k}">0.00</span>`;
+    box.append(row);
+    const m = document.createElement('div'); m.className='meter';
+    m.innerHTML = `<i id="m_${k}"></i>`;
+    box.append(m);
+  }
+}
+buildMeters();
+
+let lastFeed = 0;
+const es = new EventSource('/feed');
+es.onmessage = e => {
+  const d = JSON.parse(e.data); lastFeed = performance.now();
+  for (const [k] of BARS){
+    const v = d[k] ?? 0;
+    $('m_'+k).style.width = Math.min(100, v*100) + '%';
+    $('n_'+k).textContent = Number(v).toFixed(2);
+  }
+  if (d.mood && d.mood !== current){ current = d.mood; renderMoods(MOODS, current); }
+};
+setInterval(() => {
+  const alive = performance.now() - lastFeed < 2000;
+  $('feedState').textContent = alive ? 'live' : 'no signal';
+  $('feedState').style.color = alive ? 'var(--dim)' : 'var(--bad)';
+}, 700);
+
+/* ---- init ------------------------------------------------------------- */
+let MOODS = [];
+(async function(){
+  try{
+    const s = await (await fetch('/api/state')).json();
+    MOODS = s.moods; current = s.audio.mood;
+    renderMoods(MOODS, current);
+    renderFilters(s.filters);
+  }catch(e){ $('err').textContent = 'cannot reach OBS: ' + e.message; }
+})();
+</script>
