@@ -54,6 +54,7 @@ uniform float uX;              // crossfader, 0 = A, 1 = B
 uniform float uN, uM;          // complexity - from the spectral centroid
 uniform float uWidth, uGlow, uWarp, uRot;
 uniform float uKaleido;        // 0 = off, else sector count
+uniform float uVMotion, uVBright, uVDetail;   // what the CAMERA sees
 uniform float uOpaque, uIntensity;
 uniform vec3  uBg, uLine, uGlowC;
 
@@ -149,8 +150,12 @@ void main(){
     uv = vec2(cos(ang), sin(ang)) * rad;
   }
 
-  uv += uWarp * vec2(noise(uv*2.0 + iTime*0.03) - 0.5,
-                     noise(uv*2.0 - iTime*0.025) - 0.5);
+  // MOTION IN THE ROOM BENDS THE PLATE. Warp is shared with the audio's high band, but
+  // motion pushes it much further - so someone walking through frame visibly disturbs the
+  // figure, and a still room leaves it composed.
+  float warp = uWarp + uVMotion * 0.09;
+  uv += warp * vec2(noise(uv*2.0 + iTime*0.03) - 0.5,
+                    noise(uv*2.0 - iTime*0.025) - 0.5);
 
   vec2 p = uv + 0.5;
 
@@ -163,7 +168,11 @@ void main(){
   // gradient term lines thin out and alias badly at high complexity.
   float g = length(vec2(dFdx(s), dFdy(s))) + 1e-5;
   float d = abs(s) / g;
-  float line = 1.0 - smoothstep(0.0, uWidth, d);
+  // Detail in the frame thins the lines: a busy shot gets a finer figure so the overlay
+  // does not compete with it, and an empty shot gets a bolder one. That is the opposite
+  // of what a naive mapping would do, and it is what keeps the overlay readable.
+  float wid = uWidth * (1.0 - uVDetail * 0.35);
+  float line = 1.0 - smoothstep(0.0, wid, d);
   float halo = exp(-d * 0.75) * uGlow;
 
   vec3 col = uGlowC * halo + uLine * line;
@@ -223,7 +232,8 @@ es.onerror = () => { live = false; };
 
 // Display-side smoothing on top of the server's: the server smooths the MEASUREMENT,
 // this smooths the MOTION, so a dropped frame or a reconnect never shows as a jolt.
-const S = {n:6, m:4.5, width:2.4, glow:0.42, warp:0.02, rot:0, x:0, kal:0};
+const S = {n:6, m:4.5, width:2.4, glow:0.42, warp:0.02, rot:0, x:0, kal:0,
+           vm:0, vb:0, vd:0};
 const ease = (c,t,k) => c + (t-c)*k;
 
 function frame(t){
@@ -253,6 +263,12 @@ function frame(t){
   // point of mixing in field space is that the figure BENDS across.
   S.x   = ease(S.x, f.xfade || 0, 0.03);
   S.kal = ease(S.kal, f.kaleido || 0, 0.05);
+  // Video features arrive at 5 Hz against 60 fps of rendering, so they need much heavier
+  // easing than the audio - stepped straight in they would visibly stair-step.
+  const vr = f.vReact === undefined ? 0 : f.vReact;
+  S.vm = ease(S.vm, (f.vMotion || 0) * vr, 0.05);
+  S.vb = ease(S.vb, (f.vBright || 0) * vr, 0.03);
+  S.vd = ease(S.vd, (f.vDetail || 0) * vr, 0.03);
 
   const pal = PALETTES[f.mood] || PALETTES.COSMOS;
   gl.uniform2f(U('iRes'), cv.width, cv.height);
@@ -267,6 +283,9 @@ function frame(t){
   gl.uniform1f(U('uWarp'), S.warp);
   gl.uniform1f(U('uRot'), S.rot);
   gl.uniform1f(U('uKaleido'), S.kal);
+  gl.uniform1f(U('uVMotion'), S.vm);
+  gl.uniform1f(U('uVBright'), S.vb);
+  gl.uniform1f(U('uVDetail'), S.vd);
   gl.uniform1f(U('uOpaque'), OPAQUE ? 1.0 : 0.0);
   gl.uniform1f(U('uIntensity'), f.intensity === undefined ? 1 : f.intensity);
   gl.uniform3fv(U('uBg'), pal.bg);
@@ -285,7 +304,9 @@ function frame(t){
       'n,m    ' + S.n.toFixed(2) + ', ' + S.m.toFixed(2) + '\n' +
       'sub ' + f.sub.toFixed(2) + '  low ' + f.low.toFixed(2) +
         '  mid ' + f.mid.toFixed(2) + '  hi ' + f.high.toFixed(2) + '\n' +
-      'rms ' + f.rms.toFixed(2) + '  cen ' + f.centroid.toFixed(2);
+      'rms ' + f.rms.toFixed(2) + '  cen ' + f.centroid.toFixed(2) + '
+' +
+      'vid mot ' + S.vm.toFixed(2) + '  bri ' + S.vb.toFixed(2) + '  det ' + S.vd.toFixed(2);
   }
   requestAnimationFrame(frame);
 }

@@ -66,6 +66,11 @@
   <input type="range" id="r_cx" min="0.25" max="3" step="0.05" value="1">
   <div class="row"><span class="k">Blend over video</span><span class="v" id="v_bl">&mdash;</span></div>
   <div class="grid3" id="blend"></div>
+  <div class="row"><span class="k">React to camera</span><span class="v" id="v_vr">0.00</span></div>
+  <input type="range" id="r_vr" min="0" max="1" step="0.01" value="0">
+  <div class="sub">Motion in frame bends the figure; a busy shot thins the lines so the
+  overlay stops competing with it. Frames come from OBS, never from the device.</div>
+  <div class="row"><span class="k">Camera</span><span class="v" id="v_vid">&mdash;</span></div>
 </div>
 
 <h2>Overlay</h2>
@@ -278,6 +283,12 @@ es.onmessage = e => {
     $('n_'+k).textContent = Number(v).toFixed(2);
   }
   if (d.mood && d.mood !== current){ current = d.mood; renderMoods(MOODS, current); }
+  // Raw camera features, always shown even at zero react - they are how you tell "the
+  // camera is dark" from "the camera is dead", which look identical in a preview.
+  const vv = $('v_vid');
+  if (vv) vv.textContent = 'mot ' + (d.vMotion ?? 0).toFixed(2) +
+                           '  bri ' + (d.vBright ?? 0).toFixed(2) +
+                           '  det ' + (d.vDetail ?? 0).toFixed(2);
 };
 setInterval(() => {
   const alive = performance.now() - lastFeed < 2000;
@@ -298,6 +309,11 @@ $('r_kal').oninput = () => {
 $('r_cx').oninput = () => {
   const v = parseFloat($('r_cx').value);
   $('v_cx').textContent = v.toFixed(2); pushVis({complexity:v});
+};
+
+$('r_vr').oninput = () => {
+  const v = parseFloat($('r_vr').value);
+  $('v_vr').textContent = v.toFixed(2); pushVis({vReact:v});
 };
 
 $('r_int').oninput = () => {
@@ -327,6 +343,8 @@ let MOODS = [];
     $('r_kal').value = VIS.kaleido;
     $('v_kal').textContent = VIS.kaleido < 2 ? 'off' : VIS.kaleido + ' fold';
     $('r_cx').value = VIS.complexity; $('v_cx').textContent = Number(VIS.complexity).toFixed(2);
+    $('r_vr').value = s.audio.vReact || 0;
+    $('v_vr').textContent = Number(s.audio.vReact || 0).toFixed(2);
     $('r_int').value = s.audio.intensity ?? 1;
     $('v_int').textContent = Number(s.audio.intensity ?? 1).toFixed(2);
     // Health is polled, not streamed: it changes slowly and putting it on the 40 Hz audio

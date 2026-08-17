@@ -36,6 +36,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+import base64
+import io
+
 import numpy as np
 import sounddevice as sd
 
@@ -48,6 +51,7 @@ import obsctl                                  # noqa: E402  credential handling
 from server import Analyser, BANDS             # noqa: E402  the analyser is already tested
 
 SOURCE = "Webcam"
+CODE_HASH = "?"
 MOODS = ["COSMOS", "THE CAIRN", "ÉIRE", "THE DEEP"]
 
 # Index order MUST match PATTERN_NAMES in visuals/index.html - the wire format is the
@@ -90,7 +94,9 @@ STATE.update({"rms": 0.0, "centroid": 0.0, "peak": 0.0, "mood": "COSMOS",
               # space inside the shader, so the figure bends from one pattern into the
               # other rather than dissolving - a transition, not a cut.
               "patternA": 0, "patternB": 1, "xfade": 0.0,
-              "kaleido": 0.0, "complexity": 1.0})
+              "kaleido": 0.0, "complexity": 1.0,
+              # Video features. The camera itself drives the pattern, not just the audio.
+              "vBright": 0.0, "vMotion": 0.0, "vDetail": 0.0, "vReact": 0.0})
 _subs, _lock = [], threading.Lock()
 _cl = None
 _clock = threading.Lock()
@@ -131,6 +137,50 @@ def audio_thread(device, samplerate, blocksize, channels):
                         blocksize=blocksize, dtype="float32", callback=cb):
         while True:
             time.sleep(1)
+
+
+def video_thread(source, hz=5.0, w=160, h=90):
+    """Read the CAMERA and turn it into drive parameters.
+
+    ⚠️ THE FRAMES COME FROM OBS, NOT FROM THE DEVICE. A DirectShow camera has exactly one
+    consumer; opening it here would take it from OBS and black out the stream. obs-websocket
+    hands back what OBS has already decoded, so this is a free ride on work already done -
+    no second claim on the device, and it keeps working whatever the camera is.
+
+    Deliberately slow and tiny: 5 Hz at 160x90. These features drive slow, wide gestures -
+    how much is moving, how bright the room is - and none of that needs frame rate. A full
+    resolution grab at 30 Hz would cost more than everything else in this process combined.
+    """
+    from PIL import Image
+    prev = None
+    period = 1.0 / hz
+    while True:
+        t0 = time.time()
+        try:
+            r = client().get_source_screenshot(source, "jpg", w, h, 40)
+            raw = r.image_data.split(",", 1)[-1]         # strip the data: URI prefix
+            im = Image.open(io.BytesIO(base64.b64decode(raw))).convert("L")
+            f = np.asarray(im, dtype=np.float32) / 255.0
+
+            bright = float(f.mean())
+            # Local contrast, which tracks how much STRUCTURE is in frame rather than how
+            # light it is - a bright empty wall and a busy dim shelf differ here and not in
+            # brightness.
+            detail = float(f.std())
+            motion = 0.0 if prev is None else float(np.abs(f - prev).mean())
+            prev = f
+
+            with _lock:
+                # Motion is scaled hard because inter-frame difference at 5 Hz is small -
+                # a person moving normally lands around 0.02-0.06 raw.
+                STATE["vBright"] = round(min(1.0, bright * 1.6), 4)
+                STATE["vDetail"] = round(min(1.0, detail * 3.0), 4)
+                STATE["vMotion"] = round(min(1.0, motion * 12.0), 4)
+        except Exception:
+            # A missing source or a mid-restart OBS must not kill the thread - the audio
+            # side keeps working and video features simply stop updating.
+            pass
+        time.sleep(max(0.0, period - (time.time() - t0)))
 
 
 def _current_blend(cl, scene):
@@ -229,6 +279,7 @@ class Handler(BaseHTTPRequestHandler):
                     "moods": MOODS, "source": SOURCE,
                     "scenes": [s["sceneName"] for s in sl.scenes],
                     "currentScene": sl.current_program_scene_name,
+                    "code": CODE_HASH,
                     "patterns": PATTERNS,
                     "blendModes": BLEND_MODES,
                     "blend": _current_blend(cl, sl.current_program_scene_name),
@@ -279,12 +330,14 @@ class Handler(BaseHTTPRequestHandler):
                     for k, (lo, hi) in lim.items():
                         if k in body:
                             STATE[k] = max(lo, min(hi, float(body[k])))
+                    if "vReact" in body:
+                        STATE["vReact"] = max(0.0, min(1.0, float(body["vReact"])))
                     for k in ("patternA", "patternB"):
                         if k in body:
                             STATE[k] = max(0, min(len(PATTERNS) - 1, int(body[k])))
                     out = {k: STATE[k] for k in
                            ("intensity", "xfade", "kaleido", "complexity",
-                            "patternA", "patternB")}
+                            "patternA", "patternB", "vReact")}
                 self._json(out); return
 
             if p == "/api/blend":
@@ -407,7 +460,18 @@ def main():
     # flush=True throughout: redirected to a file Python buffers stdout, and an empty log
     # is indistinguishable from "never started" - which is exactly how three stale servers
     # went unnoticed while every test hit old code.
-    print(f"source: {SOURCE}", flush=True)
+    threading.Thread(target=video_thread, args=(SOURCE,), daemon=True).start()
+    # A CONTENT HASH OF THIS FILE, printed at startup and served at /api/state.
+    #
+    # Stale servers holding the port have now cost real time THREE times in one session:
+    # each time the code on disk was correct, the process was old, and every test silently
+    # exercised the previous version - so correct fixes looked broken and I went hunting
+    # for bugs that were not there. "Is the thing under test the thing I changed" is not a
+    # question you should have to answer by inference. Compare the hash.
+    import hashlib
+    global CODE_HASH
+    CODE_HASH = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:8]
+    print(f"source: {SOURCE}  (video features at 5 Hz)  code {CODE_HASH}", flush=True)
     for label, ip in addresses(args.port):
         print(f"  {label:<6} dashboard http://{ip}:{args.port}/", flush=True)
     print(f"  OBS browser source -> http://localhost:{args.port}/visuals", flush=True)
