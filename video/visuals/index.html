@@ -74,7 +74,9 @@ float noise(vec2 p){
 }
 
 void main(){
-  vec2 uv = (gl_FragCoord.xy - 0.5*iRes) / min(iRes.x, iRes.y);
+  // 1.35 zooms OUT. Framed tight, a 16:9 crop of the plate shows only a couple of cells
+  // and the figure stops reading as a figure - you see arcs, not a pattern.
+  vec2 uv = 1.35 * (gl_FragCoord.xy - 0.5*iRes) / min(iRes.x, iRes.y);
 
   float ca = cos(uRot), sa = sin(uRot);
   uv = mat2(ca,-sa,sa,ca) * uv;
@@ -154,8 +156,12 @@ function frame(t){
   // MODE NUMBERS FROM THE SPECTRUM. Kept non-integer and slewed slowly so the figure
   // MORPHS between modes rather than snapping - snapping is the tacky version, and a
   // real plate transitions through unstable states too.
-  const targetN = 2.0 + f.centroid * 9.0 + f.low * 1.5;
-  const targetM = 1.0 + f.centroid * 7.0 + f.mid * 2.0;
+  // Resting complexity matters more than the reactive range. The first pass started at
+  // n=2, m=1, which on silence drew three or four lines across the whole frame - that
+  // reads as empty rather than calm. A resting figure should be present and quiet, with
+  // enough structure to be worth looking at before anything is played.
+  const targetN = 6.0 + f.centroid * 9.0 + f.low * 2.0;
+  const targetM = 4.5 + f.centroid * 7.0 + f.mid * 2.5;
   S.n = ease(S.n, targetN, 0.012);
   S.m = ease(S.m, targetM, 0.010);
 
@@ -163,9 +169,9 @@ function frame(t){
   // around a calm baseline - roughly 10-25%, never 0-100%. That restraint is the whole
   // difference between atmosphere and a fruit machine, and it is also the hard limit that
   // keeps luminance changes slow enough to be safe for photosensitive viewers.
-  S.width = ease(S.width, 1.2 + f.rms * 0.9, 0.06);
-  S.glow  = ease(S.glow,  0.18 + f.sub * 0.30, 0.05);
-  S.warp  = ease(S.warp,  0.015 + f.high * 0.045, 0.04);
+  S.width = ease(S.width, 2.4 + f.rms * 1.6, 0.06);
+  S.glow  = ease(S.glow,  0.42 + f.sub * 0.45, 0.05);
+  S.warp  = ease(S.warp,  0.020 + f.high * 0.050, 0.04);
   S.rot  += 0.00035 + f.low * 0.0009;          // always drifting, never still
 
   const pal = PALETTES[f.mood] || PALETTES.COSMOS;
