@@ -11,6 +11,14 @@ sfz/
 *_log.txt
 *_out.txt
 
+# Python bytecode from the video tooling
+__pycache__/
+*.pyc
+
+# Measurement output — camera-latency frames are captures of a room, regenerated on
+# demand and not worth versioning.
+video/synctest/sync*.png
+
 # OS cruft
 .DS_Store
 Thumbs.db

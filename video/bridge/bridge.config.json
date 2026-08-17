@@ -1,0 +1,44 @@
+{
+  "osc": {
+    "listen_host": "0.0.0.0",
+    "listen_port": 8000
+  },
+  "options": {
+    "debounce_seconds": 0.25
+  },
+  "moods": {
+    "COSMOS": {
+      "actions": [
+        {
+          "type": "scene",
+          "scene": "COSMOS"
+        }
+      ]
+    },
+    "THE CAIRN": {
+      "actions": [
+        {
+          "type": "scene",
+          "scene": "THE CAIRN"
+        }
+      ]
+    },
+    "ÉIRE": {
+      "actions": [
+        {
+          "type": "scene",
+          "scene": "EIRE"
+        }
+      ]
+    },
+    "THE DEEP": {
+      "actions": [
+        {
+          "type": "scene",
+          "scene": "THE DEEP"
+        }
+      ]
+    }
+  },
+  "addresses": {}
+}

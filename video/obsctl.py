@@ -20,6 +20,7 @@ never lands in shell history.
 
 import argparse
 import json
+import logging
 import os
 import sys
 
@@ -27,6 +28,19 @@ try:
     import obsws_python as obsws
 except ImportError:
     sys.exit("obsws-python is not installed:  python -m pip install obsws-python")
+
+# ⚠️ obsws-python LOGS THE PASSWORD IN PLAINTEXT AT INFO LEVEL. Its connect path emits
+#   "Connecting with parameters: host='localhost' port=4455 password='...'"
+# The whole reason this reads the password out of OBS's own config rather than taking it
+# as an argument is to keep it out of shell history - and the library then prints it to
+# stdout anyway, into scrollback and any redirected log file.
+#
+# Latent rather than active here, because nothing in this file raises the root log level.
+# That is exactly why it is worth pinning: the leak arrives the day some other script
+# imports this and turns on INFO logging, and nothing about that change looks dangerous.
+# Capped at WARNING so genuine library failures still surface.
+for _lg in ("obsws_python", "obsws_python.baseclient", "obsws_python.reqs"):
+    logging.getLogger(_lg).setLevel(logging.WARNING)
 
 CONFIG = os.path.join(
     os.environ.get("APPDATA", ""),

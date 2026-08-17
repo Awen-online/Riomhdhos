@@ -1,0 +1,50 @@
+# Riomhdhos OSC feedback pattern - rig -> desktop, for driving visuals.
+#
+# WHY NOT Default.ReaperOSC: it enables FX parameter feedback, and this rig has a
+# free-running drum sequencer whose "armed mask" slider changes continuously. REAPER
+# faithfully reports every change as the last-touched FX param, which measured at
+# ~300 messages/second, forever, with the transport stopped. That is the entire OSC
+# stream: track and transport feedback never got through.
+#
+# A control link that is 100% noise is worse than no link, because it looks alive.
+#
+# Anything not listed here is simply not sent. That is the point: this file is a
+# whitelist, and the traffic is whatever the visuals actually need.
+
+# Track count covers the rig's 11 tracks with headroom. Feedback is only sent for
+# tracks inside the bank, so a count smaller than the project silently hides the
+# tracks past the end - which looks like "OSC is broken" rather than "bank too small".
+DEVICE_TRACK_COUNT 16
+
+# ⚠️ THE FIX. All four of these must be 0. FX_COUNT alone is not enough - the
+# last-touched-parameter feedback is governed by the param counts, and that is where
+# the flood came from.
+DEVICE_FX_COUNT 0
+DEVICE_FX_PARAM_COUNT 0
+DEVICE_FX_INST_PARAM_COUNT 0
+DEVICE_SEND_COUNT 0
+DEVICE_RECEIVE_COUNT 0
+DEVICE_MARKER_COUNT 0
+DEVICE_REGION_COUNT 0
+
+DEVICE_TRACK_FOLLOWS DEVICE
+DEVICE_TRACK_BANK_FOLLOWS DEVICE
+
+# ---- transport ----------------------------------------------------------------
+PLAY t/play
+STOP t/stop
+TEMPO n/tempo s/tempo/str
+
+# ---- per-track state ------------------------------------------------------------
+# The mood is derived from the MUTES, not from a dedicated message: Riomhdhos_mood_mute
+# owns REAPER's track mutes and re-asserts the active mood every 30 ms, so exactly one
+# mood track is unmuted at any moment. That makes /track/@/mute the authoritative
+# statement of which mood is live, and it needs no new plumbing on the rig.
+#
+# ⚠️ It also means anything that fights mood_mute loses. Setting a mood track's mute
+# from outside is reverted within a frame - and the OSC feedback for the change may
+# never flush, so it looks like OSC is broken when the write is what failed.
+TRACK_NAME s/track/@/name
+TRACK_MUTE b/track/@/mute
+TRACK_SELECT b/track/@/select
+TRACK_VOLUME n/track/@/volume f/track/@/volume/db

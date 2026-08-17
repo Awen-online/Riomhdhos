@@ -1,0 +1,67 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Ríomhdhos camera latency clock</title>
+<!--
+  Measures END-TO-END CAMERA LATENCY, which is the number the OBS audio sync offset is
+  built from.
+
+  METHOD: this page paints the current time, in milliseconds, as fast as the display can
+  show it. Point the camera at the screen, then capture a frame through OBS. The number
+  visible IN that frame is when the photons left the monitor; the moment of capture is
+  now. The difference is everything between: sensor exposure, ISP, encode, USB/UVC
+  transport, decode, and OBS's own buffering.
+
+  WHY NOT A CLAP TEST: a clap measures audio against video in a recording, which is the
+  right final check but tells you nothing about WHICH side is late or by how much. This
+  isolates the video path, so the offset can be computed rather than dialled in blind.
+
+  ⚠️ The reading includes the monitor's own input lag (~5-15 ms), which is part of the
+  loop here but NOT part of the real signal path. Subtract it if you want the camera
+  alone; leave it in if you are matching what the audience sees.
+-->
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; height: 100%;
+    background: #000; color: #fff;
+    font-family: ui-monospace, Consolas, monospace;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 2vh; overflow: hidden;
+  }
+  /* Huge, high contrast, and tabular: this has to survive being photographed by a phone
+     at an angle, in a dim room, through a lossy MJPEG encode. */
+  #t {
+    font-size: 14vw; font-weight: 700; letter-spacing: .02em;
+    font-variant-numeric: tabular-nums; line-height: 1;
+  }
+  #ms { color: #ffe066; }
+  /* A moving band gives a coarse reading even when the digits motion-blur - at 30fps a
+     phone exposure can smear four digits into a grey bar, and then the bar position is
+     the only thing left to read. */
+  #bar { width: 90vw; height: 8vh; background: #111; position: relative; }
+  #dot { position: absolute; top: 0; bottom: 0; width: 2vw; background: #ffe066; }
+  #hint { font-size: 1.6vh; color: #888; letter-spacing: .2em; text-transform: uppercase; }
+</style>
+
+<div id="t">--:--<span id="ms">.---</span></div>
+<div id="bar"><div id="dot"></div></div>
+<div id="hint">point the camera here &middot; one sweep = 1 second</div>
+
+<script>
+  const t = document.getElementById('t');
+  const ms = document.getElementById('ms');
+  const dot = document.getElementById('dot');
+
+  function frame() {
+    const d = new Date();
+    const p = (n, w) => String(n).padStart(w, '0');
+    // Wall-clock, not a stopwatch: the capturing side compares against ITS OWN clock,
+    // and both machines are the same machine here, so no sync is needed.
+    t.firstChild.nodeValue = `${p(d.getMinutes(), 2)}:${p(d.getSeconds(), 2)}`;
+    ms.textContent = '.' + p(d.getMilliseconds(), 3);
+    dot.style.left = (d.getMilliseconds() / 1000 * 88) + 'vw';
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+</script>
