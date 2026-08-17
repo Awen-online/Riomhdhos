@@ -69,6 +69,13 @@ BLEND_MODES = ["OBS_BLEND_NORMAL", "OBS_BLEND_SCREEN", "OBS_BLEND_ADDITIVE",
                "OBS_BLEND_MULTIPLY", "OBS_BLEND_LIGHTEN", "OBS_BLEND_DARKEN"]
 OVERLAY_SOURCE = "Chladni"
 
+# The echo rig, built by build_scenes.py. Each entry is a nested scene that exists purely
+# so it can carry its own delay - filters attach to sources, so three copies of the camera
+# in one scene would share one filter chain and therefore one delay, which is none.
+ECHO_SCENES = ["ECHO 1", "ECHO 2"]
+ECHO_BASE = {"ECHO 1": (120, 0.55), "ECHO 2": (260, 0.32)}   # (delay ms, opacity at 100%)
+LIVE_SCENE = "LIVE"
+
 # Per filter KIND, the parameters that may be written and their ranges. Anything not here
 # is silently dropped - notably model_select, which is what makes a filter reload its
 # model and is the operation that took OBS down.
@@ -96,7 +103,8 @@ STATE.update({"rms": 0.0, "centroid": 0.0, "peak": 0.0, "mood": "COSMOS",
               "patternA": 0, "patternB": 1, "xfade": 0.0,
               "kaleido": 0.0, "complexity": 1.0,
               # Video features. The camera itself drives the pattern, not just the audio.
-              "vBright": 0.0, "vMotion": 0.0, "vDetail": 0.0, "vReact": 0.0})
+              "vBright": 0.0, "vMotion": 0.0, "vDetail": 0.0, "vReact": 0.0,
+              "echo": 0.0, "echoTime": 1.0})
 _subs, _lock = [], threading.Lock()
 _cl = None
 _clock = threading.Lock()
@@ -339,6 +347,33 @@ class Handler(BaseHTTPRequestHandler):
                            ("intensity", "xfade", "kaleido", "complexity",
                             "patternA", "patternB", "vReact")}
                 self._json(out); return
+
+            if p == "/api/echo":
+                with _lock:
+                    if "echo" in body:
+                        STATE["echo"] = max(0.0, min(1.0, float(body["echo"])))
+                    if "echoTime" in body:
+                        STATE["echoTime"] = max(0.25, min(3.0, float(body["echoTime"])))
+                    amt, tscale = STATE["echo"], STATE["echoTime"]
+                for name in ECHO_SCENES:
+                    if name not in [x["sceneName"] for x in cl.get_scene_list().scenes]:
+                        continue
+                    base_ms, base_op = ECHO_BASE[name]
+                    cl.set_source_filter_settings(name, "delay",
+                                                  {"delay_ms": int(base_ms * tscale)}, True)
+                    cl.set_source_filter_settings(name, "fade",
+                                                  {"opacity": base_op * amt}, True)
+                    # Disable outright at zero. An opacity-0 layer still costs a full
+                    # delayed copy of the camera in VRAM and a composite pass; switching
+                    # it off actually reclaims that.
+                    try:
+                        item = next((i for i in cl.get_scene_item_list(LIVE_SCENE).scene_items
+                                     if i["sourceName"] == name), None)
+                        if item:
+                            cl.set_scene_item_enabled(LIVE_SCENE, item["sceneItemId"], amt > 0.01)
+                    except Exception:
+                        pass
+                self._json({"echo": STATE["echo"], "echoTime": STATE["echoTime"]}); return
 
             if p == "/api/blend":
                 mode = body.get("mode")

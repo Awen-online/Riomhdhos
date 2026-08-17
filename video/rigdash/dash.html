@@ -73,6 +73,17 @@
   <div class="row"><span class="k">Camera</span><span class="v" id="v_vid">&mdash;</span></div>
 </div>
 
+<h2>Echo</h2>
+<div class="card">
+  <div class="row"><span class="k">Trail amount</span><span class="v" id="v_echo">0.00</span></div>
+  <input type="range" id="r_echo" min="0" max="1" step="0.01" value="0">
+  <div class="row"><span class="k">Trail length</span><span class="v" id="v_et">1.00&times;</span></div>
+  <input type="range" id="r_et" min="0.25" max="3" step="0.05" value="1">
+  <div class="sub">Delayed copies of the camera, screen-blended and scaled slightly larger.
+  At zero they are switched off, not just faded &mdash; a transparent layer still costs a
+  delayed frame buffer.</div>
+</div>
+
 <h2>Overlay</h2>
 <div class="card" id="overlay">
   <div class="row"><span class="k">Chladni strength</span><span class="v" id="v_int">1.00</span></div>
@@ -311,6 +322,20 @@ $('r_cx').oninput = () => {
   $('v_cx').textContent = v.toFixed(2); pushVis({complexity:v});
 };
 
+function pushEcho(patch){
+  clearTimeout(window._et);
+  window._et = setTimeout(() => fetch('/api/echo', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify(patch)}), 130);
+}
+$('r_echo').oninput = () => {
+  const v = parseFloat($('r_echo').value);
+  $('v_echo').textContent = v.toFixed(2); pushEcho({echo:v});
+};
+$('r_et').oninput = () => {
+  const v = parseFloat($('r_et').value);
+  $('v_et').textContent = v.toFixed(2) + '×'; pushEcho({echoTime:v});
+};
+
 $('r_vr').oninput = () => {
   const v = parseFloat($('r_vr').value);
   $('v_vr').textContent = v.toFixed(2); pushVis({vReact:v});
@@ -343,6 +368,10 @@ let MOODS = [];
     $('r_kal').value = VIS.kaleido;
     $('v_kal').textContent = VIS.kaleido < 2 ? 'off' : VIS.kaleido + ' fold';
     $('r_cx').value = VIS.complexity; $('v_cx').textContent = Number(VIS.complexity).toFixed(2);
+    $('r_echo').value = s.audio.echo || 0;
+    $('v_echo').textContent = Number(s.audio.echo || 0).toFixed(2);
+    $('r_et').value = s.audio.echoTime ?? 1;
+    $('v_et').textContent = Number(s.audio.echoTime ?? 1).toFixed(2) + '×';
     $('r_vr').value = s.audio.vReact || 0;
     $('v_vr').textContent = Number(s.audio.vReact || 0).toFixed(2);
     $('r_int').value = s.audio.intensity ?? 1;
