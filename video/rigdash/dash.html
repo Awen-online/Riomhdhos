@@ -37,8 +37,21 @@
   .foot{color:var(--dim);font-size:11px;line-height:1.6;margin:14px 2px}
 </style>
 
+<h2>Scene</h2>
+<div class="card"><div class="moods" id="scenes"></div></div>
+
 <h2>Mood</h2>
 <div class="card"><div class="moods" id="moods"></div></div>
+
+<h2>Overlay</h2>
+<div class="card" id="overlay">
+  <div class="row"><span class="k">Chladni strength</span><span class="v" id="v_int">1.00</span></div>
+  <input type="range" id="r_int" min="0" max="1" step="0.01" value="1">
+  <div class="sub">0 hides the figure without touching OBS &mdash; the camera stays untouched underneath.</div>
+</div>
+
+<h2>Render health</h2>
+<div class="card" id="health"><span class="sub">&mdash;</span></div>
 
 <h2>Audio <span class="sub" id="feedState"></span></h2>
 <div class="card" id="meters"></div>
@@ -120,7 +133,40 @@ async function flush(){
   }
 }
 
-/* ---- moods ------------------------------------------------------------ */
+/* ---- scenes ----------------------------------------------------------- */
+function renderScenes(scenes, cur){
+  const box = $('scenes'); box.innerHTML='';
+  for (const sc of scenes){
+    const b = document.createElement('button');
+    b.textContent = sc;
+    if (sc === cur) b.className = 'sel';
+    b.onclick = async () => {
+      try{
+        const r = await fetch('/api/scene', {method:'POST',
+          headers:{'Content-Type':'application/json'}, body: JSON.stringify({scene:sc})});
+        renderScenes(scenes, (await r.json()).currentScene);
+      }catch(e){ $('err').textContent = e.message; }
+    };
+    box.append(b);
+  }
+}
+
+/* ---- render health ----------------------------------------------------- */
+function renderHealth(h){
+  const pct = h.budgetMs ? (h.renderMs / h.budgetMs * 100) : 0;
+  // Colour by headroom, because the number only means something against the budget:
+  // 16 ms is comfortable at 30 fps and over budget at 60.
+  const col = pct > 90 ? 'var(--bad)' : pct > 70 ? 'var(--accent)' : 'var(--ok)';
+  $('health').innerHTML =
+    `<div class="row"><span class="k">Frame</span>` +
+    `<span class="v" style="color:${col}">${h.renderMs} / ${h.budgetMs} ms &middot; ${pct.toFixed(0)}%</span></div>` +
+    `<div class="meter"><i style="width:${Math.min(100,pct)}%;background:${col}"></i></div>` +
+    `<div class="row"><span class="k">Output</span><span class="v">${h.fps} fps</span></div>` +
+    `<div class="row"><span class="k">Skipped</span><span class="v">${h.skipped} render &middot; ${h.missed} output</span></div>` +
+    `<div class="row"><span class="k">OBS CPU</span><span class="v">${h.cpu}%</span></div>`;
+}
+
+/* ---- moods ------------------------------------------------------------- */
 function renderMoods(moods, sel){
   const box = $('moods'); box.innerHTML='';
   for (const m of moods){
@@ -170,14 +216,31 @@ setInterval(() => {
   $('feedState').style.color = alive ? 'var(--dim)' : 'var(--bad)';
 }, 700);
 
+$('r_int').oninput = () => {
+  const v = parseFloat($('r_int').value);
+  $('v_int').textContent = v.toFixed(2);
+  clearTimeout(window._it);
+  window._it = setTimeout(() => fetch('/api/visuals', {method:'POST',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({intensity:v})}), 100);
+};
+
 /* ---- init ------------------------------------------------------------- */
 let MOODS = [];
 (async function(){
   try{
     const s = await (await fetch('/api/state')).json();
     MOODS = s.moods; current = s.audio.mood;
+    renderScenes(s.scenes, s.currentScene);
     renderMoods(MOODS, current);
     renderFilters(s.filters);
+    renderHealth(s.health);
+    $('r_int').value = s.audio.intensity ?? 1;
+    $('v_int').textContent = Number(s.audio.intensity ?? 1).toFixed(2);
+    // Health is polled, not streamed: it changes slowly and putting it on the 40 Hz audio
+    // feed would mean an OBS round-trip per audio block.
+    setInterval(async () => {
+      try{ renderHealth((await (await fetch('/api/state')).json()).health); }catch(e){}
+    }, 4000);
   }catch(e){ $('err').textContent = 'cannot reach OBS: ' + e.message; }
 })();
 </script>

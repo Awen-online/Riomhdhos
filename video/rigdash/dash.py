@@ -65,7 +65,12 @@ ALLOWED = {
 }
 
 STATE = {k: 0.0 for k in BANDS}
-STATE.update({"rms": 0.0, "centroid": 0.0, "peak": 0.0, "mood": "COSMOS", "t": 0.0})
+# `intensity` scales the overlay's alpha in the page. Kept HERE rather than as an OBS
+# filter because it must be adjustable while the overlay is live, and OBS's own opacity
+# lives in a colour-correction filter - adding or removing filters is the operation that
+# crashes the render thread. A number the page already receives costs nothing.
+STATE.update({"rms": 0.0, "centroid": 0.0, "peak": 0.0, "mood": "COSMOS",
+              "intensity": 1.0, "t": 0.0})
 _subs, _lock = [], threading.Lock()
 _cl = None
 _clock = threading.Lock()
@@ -178,8 +183,27 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/state":
                 with _lock:
                     audio = dict(STATE)
-                self._json({"audio": audio, "filters": filter_state(),
-                            "moods": MOODS, "source": SOURCE})
+                cl = client()
+                sl = cl.get_scene_list()
+                st = cl.get_stats()
+                v = cl.get_video_settings()
+                fps = v.fps_numerator / max(1, v.fps_denominator)
+                # Render time against budget is the number that decides whether another
+                # filter or overlay can be afforded. Two inference filters plus a browser
+                # source is most of a 33 ms frame, and nothing else on the machine says so.
+                self._json({
+                    "audio": audio, "filters": filter_state(),
+                    "moods": MOODS, "source": SOURCE,
+                    "scenes": [s["sceneName"] for s in sl.scenes],
+                    "currentScene": sl.current_program_scene_name,
+                    "health": {
+                        "fps": round(fps, 2),
+                        "budgetMs": round(1000.0 / fps, 2),
+                        "renderMs": round(st.average_frame_render_time, 2),
+                        "skipped": st.render_skipped_frames,
+                        "missed": st.output_skipped_frames,
+                        "cpu": round(st.cpu_usage, 1),
+                    }})
             elif p == "/visuals":
                 self._file(VISUALS / "index.html")
             elif p in ("/", "/index.html"):
@@ -202,6 +226,20 @@ class Handler(BaseHTTPRequestHandler):
                     with _lock:
                         STATE["mood"] = next(m for m in MOODS if m.upper() == name)
                 self._json({"mood": STATE["mood"]}); return
+
+            if p == "/api/scene":
+                name = body.get("scene")
+                if name in [s["sceneName"] for s in cl.get_scene_list().scenes]:
+                    cl.set_current_program_scene(name)
+                self._json({"currentScene": cl.get_scene_list().current_program_scene_name})
+                return
+
+            if p == "/api/visuals":
+                with _lock:
+                    if "intensity" in body:
+                        STATE["intensity"] = max(0.0, min(1.0, float(body["intensity"])))
+                    out = {"intensity": STATE["intensity"]}
+                self._json(out); return
 
             if p == "/api/toggle":
                 name = body.get("filter")

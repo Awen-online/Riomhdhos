@@ -21,7 +21,8 @@
   does to a surface. For a drone rig built on sustained tones, that is the honest visual.
 -->
 <style>
-  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  html,body{margin:0;height:100%;background:transparent;overflow:hidden}
+  body.opaque{background:#000}
   canvas{display:block;width:100vw;height:100vh}
   /* Diagnostics, off by default. A browser source has no console you can reach, so
      ?debug=1 is the only way to see whether features are arriving. */
@@ -51,6 +52,8 @@ uniform vec2  iRes;
 uniform float iTime;
 uniform float uN, uM;        // Chladni mode numbers - from the spectral centroid
 uniform float uWidth;        // nodal line thickness
+uniform float uOpaque;       // 1 = paint the plate, 0 = transparent overlay
+uniform float uIntensity;    // overlay strength, from the dashboard
 uniform float uGlow;
 uniform float uWarp;
 uniform float uRot;
@@ -94,16 +97,43 @@ void main(){
   float line = 1.0 - smoothstep(0.0, uWidth, d);
   float halo = exp(-d * 0.75) * uGlow;
 
-  vec3 col = uBg + uGlowC * halo + uLine * line;
+  vec3 col = uGlowC * halo + uLine * line;
 
   float r = length(uv);
-  col *= 1.0 - 0.5*r*r;                          // vignette
-  col += (hash(gl_FragCoord.xy + iTime) - 0.5) * 0.012;   // grain kills banding
-  gl_FragColor = vec4(col, 1.0);
+  float vig = 1.0 - 0.5*r*r;
+  col *= vig;
+
+  // TRANSPARENCY. uOpaque = 0 keeps only the figure and lets everything else through, so
+  // this can sit OVER the camera instead of replacing it. Alpha is the figure's own
+  // energy - lines solid, glow soft, plate empty - and the vignette rides on alpha too,
+  // so the overlay fades at the edges instead of ending on a hard rectangle.
+  //
+  // The canvas is premultiplied (WebGL's default), which happens to suit this exactly:
+  // col is already built by scaling the palette by the same line and halo terms that
+  // alpha is made from, so it is premultiplied by construction.
+  //
+  // NOTE TO ANYONE EDITING THIS SHADER: it lives inside a JS template literal, so a
+  // BACKTICK ANYWHERE IN HERE - even in a comment - terminates the string and the rest
+  // of the shader is parsed as JavaScript. That is exactly how this broke: quoting two
+  // variable names in backticks produced 'Uncaught SyntaxError: Unexpected identifier'
+  // and a source that rendered nothing at all.
+  float a = clamp(line + halo * 0.7, 0.0, 1.0) * vig;
+
+  // Grain scaled by alpha - unscaled it would speckle the transparent plate with noise
+  // that has nothing behind it to blend into.
+  float grain = (hash(gl_FragCoord.xy + iTime) - 0.5) * 0.012;
+  col += grain * max(a, uOpaque);
+
+  col = mix(col, col + uBg * vig, uOpaque);
+  a *= uIntensity;
+  col *= mix(uIntensity, 1.0, uOpaque);
+  gl_FragColor = vec4(col, mix(a, 1.0, uOpaque));
 }`;
 
 const cv = document.getElementById('c');
-const gl = cv.getContext('webgl', {antialias:false, preserveDrawingBuffer:false});
+const OPAQUE = new URLSearchParams(location.search).has('opaque');
+const gl = cv.getContext('webgl', {alpha:true, antialias:false,
+                                   preserveDrawingBuffer:false});
 gl.getExtension('OES_standard_derivatives');   // dFdx/dFdy in WebGL1
 
 function build(){
@@ -128,7 +158,7 @@ function build(){
 const prog = build();
 const U = n => gl.getUniformLocation(prog, n);
 
-let F = {sub:0, low:0, mid:0, high:0, rms:0, centroid:0, mood:'COSMOS'};
+let F = {sub:0, low:0, mid:0, high:0, rms:0, centroid:0, mood:'COSMOS', intensity:1};
 let live = false, lastMsg = 0;
 
 const es = new EventSource('/feed');
@@ -151,7 +181,8 @@ function frame(t){
   // resting state and keeps drifting, so a dropped connection looks like a quiet passage
   // instead of a crash on a projector in front of an audience.
   const alive = live && (performance.now() - lastMsg) < 2000;
-  const f = alive ? F : {sub:0, low:0, mid:0, high:0, rms:0, centroid:0.25, mood:F.mood};
+  const f = alive ? F : {sub:0, low:0, mid:0, high:0, rms:0, centroid:0.25,
+                        mood:F.mood, intensity:F.intensity};
 
   // MODE NUMBERS FROM THE SPECTRUM. Kept non-integer and slewed slowly so the figure
   // MORPHS between modes rather than snapping - snapping is the tacky version, and a
@@ -180,12 +211,16 @@ function frame(t){
   gl.uniform1f(U('uN'), S.n);
   gl.uniform1f(U('uM'), S.m);
   gl.uniform1f(U('uWidth'), S.width);
+  gl.uniform1f(U('uOpaque'), OPAQUE ? 1.0 : 0.0);
+  gl.uniform1f(U('uIntensity'), f.intensity === undefined ? 1.0 : f.intensity);
   gl.uniform1f(U('uGlow'), S.glow);
   gl.uniform1f(U('uWarp'), S.warp);
   gl.uniform1f(U('uRot'), S.rot);
   gl.uniform3fv(U('uBg'), pal.bg);
   gl.uniform3fv(U('uLine'), pal.line);
   gl.uniform3fv(U('uGlowC'), pal.glow);
+  gl.clearColor(0,0,0,0);
+  gl.clear(gl.COLOR_BUFFER_BIT);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
   if (hud.style.display === 'block'){
@@ -200,5 +235,6 @@ function frame(t){
 }
 const hud = document.getElementById('hud');
 if (new URLSearchParams(location.search).get('debug')) hud.style.display = 'block';
+if (OPAQUE) document.body.classList.add('opaque');
 requestAnimationFrame(frame);
 </script>
