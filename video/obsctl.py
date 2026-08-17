@@ -301,6 +301,52 @@ def cmd_cycle(args):
     print(f"{args.source}: {'not delivering (0x0)' if (w, h) == (0, 0) else f'{w:.0f}x{h:.0f}'}")
 
 
+def cmd_focal_blur(args):
+    """Depth-of-field blur on a camera, from a monocular depth estimate.
+
+    NOT the person-segmentation models the plugin ships with - those are PEOPLE detectors,
+    so with nobody in frame every pixel is "background" and the whole picture just goes
+    soft. Depth estimation works on any scene, which is what makes this usable on a shot
+    of instruments as well as on a person.
+
+    The three settings that actually decide the look, all of which were wrong on the first
+    attempts:
+
+      blur_focus_depth  the WIDTH of the sharp band. 0.20 kept only the nearest things
+                        sharp and softened the keyboard; 0.45 holds foreground through
+                        mid-distance - and that band is where a person stands, so walking
+                        into frame lands inside the sharp zone.
+      blur_background   strength. 2-3 is invisible for depth blur; it needs 7-9. This is
+                        the setting most likely to make you think the filter is broken.
+      enable_threshold  MUST be off. On, it forces a soft depth gradient into a hard
+                        keep/cut decision - a cutout, not a blur.
+
+    ⚠️ Do NOT run this during a live stream. Reinitialising the filter while the render
+    thread is inside it crashes OBS - observed, with an access violation in
+    obs_source_skip_video_filter. This is a rehearsal operation.
+    """
+    cl = connect()
+    existing = [f["filterName"] for f in cl.get_source_filter_list(args.source).filters]
+    settings = {
+        "model_select":      "models/tcmonodepth_tcsmallnet_192x320.onnx",
+        "enable_focal_blur": True,
+        "enable_threshold":  False,
+        "blur_background":   args.strength,
+        "blur_focus_point":  args.focus,
+        "blur_focus_depth":  args.depth,
+        "temporal_smooth_factor": 0.9,   # stops the depth mask crawling between frames
+        "useGPU":            "dml",      # DirectML -> the Radeon, not the CPU
+    }
+    if args.name in existing:
+        cl.set_source_filter_settings(args.source, args.name, settings, True)
+        print(f"updated '{args.name}' on {args.source}")
+    else:
+        cl.create_source_filter(args.source, args.name, "background_removal", settings)
+        print(f"created '{args.name}' on {args.source}")
+    print(f"  strength {args.strength}   focus {args.focus}   depth {args.depth}")
+    print("  give it ~8s to settle before judging it")
+
+
 def cmd_shot(args):
     """Save a frame. Proves the source is actually delivering pixels, which 'the source
     exists' does not."""
@@ -343,6 +389,15 @@ def main():
     b.add_argument("--replace", action="store_true")
     b.add_argument("--switch", action="store_true", help="make this the program scene")
     b.set_defaults(fn=cmd_build_cam)
+
+    fb = sub.add_parser("focal-blur", help="depth-of-field blur on a camera (known-good preset)")
+    fb.add_argument("--source", default="Webcam")
+    fb.add_argument("--name", default="Focal blur")
+    fb.add_argument("--strength", type=int, default=7, help="7-9; below ~5 is invisible")
+    fb.add_argument("--focus", type=float, default=0.22, help="centre of the sharp band")
+    fb.add_argument("--depth", type=float, default=0.45,
+                    help="width of the sharp band; 0.45 keeps a person and the keyboard sharp")
+    fb.set_defaults(fn=cmd_focal_blur)
 
     s = sub.add_parser("shot", help="save a screenshot of a scene")
     s.add_argument("--scene", default="CAM")
