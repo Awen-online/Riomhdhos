@@ -92,6 +92,9 @@ class CameraEngine(
 
     private fun bind(owner: LifecycleOwner, p: ProcessCameraProvider) {
         p.unbindAll()
+        // ⚠️ Disconnect viewers BEFORE the new encoder exists. They are decoding a stream
+        // whose geometry is about to change, and an elementary stream cannot say so.
+        server?.dropNalClients()
         encoder?.release(); encoder = null
 
         val preview = Preview.Builder()

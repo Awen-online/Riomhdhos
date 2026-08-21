@@ -57,13 +57,36 @@ class StreamServer(
     fun mjpegWanted() = mjpegViewers.get() > 0
 
     private class NalClient {
-        // Bounded on purpose: a client that cannot keep up must lose frames rather than
-        // apply back-pressure to the encoder. Unbounded here would turn one slow viewer
-        // into growing latency for everybody.
-        val q = ArrayBlockingQueue<Pair<ByteArray, Boolean>>(120)
+        /** Set when the stream's geometry changes; the writer loop then closes the socket. */
+        @Volatile var closed = false
+        // ⚠️ SHALLOW ON PURPOSE, and 120 was wrong. A queue is latency: at 30 fps, 120
+        // frames is FOUR SECONDS of video that a struggling client would work through
+        // before showing anything current. For a live camera a late frame is worthless -
+        // dropping it and showing the newest one is always the right trade. Six frames caps
+        // the queue's own contribution at ~200 ms.
+        val q = ArrayBlockingQueue<Pair<ByteArray, Boolean>>(6)
         @Volatile var sawKeyframe = false
     }
     private val nalClients = CopyOnWriteArrayList<NalClient>()
+
+    /**
+     * Disconnect every viewer, because the stream they are decoding no longer exists.
+     *
+     * ⚠️ THIS IS REQUIRED WHENEVER THE ENCODER IS REBUILT - a resolution or lens change.
+     * A bare Annex-B elementary stream has NO CONTAINER, so there is no way to signal
+     * mid-stream that the geometry changed. ffmpeg keeps decoding at the OLD size and
+     * OBS sits there showing a stale 1280x720 while the phone sends 1920x1080, then
+     * drops into a disconnect/reconnect loop. Closing the socket is the only honest
+     * signal available: the client reconnects, re-probes, and gets the new SPS/PPS.
+     */
+    fun dropNalClients() {
+        codecConfig = null          // the old SPS/PPS describes a stream that is gone
+        for (c in nalClients) {
+            c.closed = true
+            c.q.offer(ByteArray(0) to false)   // wake the writer out of its poll()
+        }
+        nalClients.clear()
+    }
 
     /** Publish one encoded H.264 access unit to every connected viewer. */
     fun publishNal(nal: ByteArray, keyframe: Boolean) {
@@ -216,9 +239,11 @@ class StreamServer(
         val client = NalClient()
         nalClients.add(client)
         try {
-            while (running) {
+            while (running && !client.closed) {
                 val item = client.q.poll(2, TimeUnit.SECONDS) ?: continue
+                if (client.closed) return
                 val (nal, key) = item
+                if (nal.isEmpty()) continue
                 if (!client.sawKeyframe) {
                     if (!key) continue
                     client.sawKeyframe = true

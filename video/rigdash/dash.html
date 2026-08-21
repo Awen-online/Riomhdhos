@@ -245,6 +245,15 @@
       second and OBS reconnects. Between songs, not mid-song — zoom, exposure and the locks
       all apply live without it. Measured on the Pixel 6: 720p sustains 30 fps, 1080p 26.7.</div>
   </div>
+  <h2>Filters on the wired camera</h2>
+  <div id="filters"></div>
+  <p class="note">⚠️ Parameters and on/off ONLY. Adding, removing or changing a filter's
+  model reinitialises it while the render thread may be inside it — an access violation in
+  <code>obs_source_skip_video_filter</code>, observed. Do those from OBS itself, before a
+  show.<br><br>
+  Measured budget: focal blur ~7 ms, AI low light ~10 ms of a 33.3 ms frame. Colour
+  correction is a GPU shader at ~0.12 ms — if a gamma lift is enough for the room, turning
+  the AI low light off buys back nearly a third of the frame.</p>
   <div class="card">
     <button class="mini" id="cam_refresh">Refresh camera state</button>
     <div class="note" id="cam_note">Fetched on demand — a wired-camera query runs a UI dump
@@ -267,11 +276,7 @@
   <h2>Render</h2>
   <div class="card" id="health"><span class="sub">—</span></div>
 
-  <h2>Camera filters</h2>
-  <div id="filters"></div>
-  <p class="note">Parameters and on/off only. Adding, removing or re-modelling a filter
-  crashes OBS's render thread — do those before a show, from OBS itself.<br><br>
-  OBS browser source → <code>/visuals</code> on this port.</p>
+  <p class="note">OBS browser source → <code>/visuals</code> on this port.</p>
 </section>
 
 <div class="err" id="err"></div>
