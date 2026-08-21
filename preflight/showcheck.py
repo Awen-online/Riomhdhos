@@ -31,6 +31,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 RIG_HOST = "192.168.1.232"
 RIG_PORT = 8765
@@ -401,6 +402,87 @@ def _host_usb_roles():
 
 # --------------------------------------------------------------------------- ollama
 
+def check_cameras(dash="http://127.0.0.1:8770"):
+    """The camera path, from each phone through to a source OBS is actually rendering.
+
+    ⚠️ Every check here asks whether something DELIVERS, never whether it exists. A dshow
+    source can hold a device and show nothing; an ffmpeg source can be configured perfectly
+    and never open; RigCam can be installed and not running. Existence proves nothing.
+    """
+    g = "cameras"
+    try:
+        cam = json.load(urllib.request.urlopen(dash + "/api/camera", timeout=75))
+    except Exception as e:
+        check(g, "dashboard", BAD, str(e),
+              f"The rig dashboard is not answering at {dash}. Start it: "
+              "python video/rigdash/dash.py --uvc-serial <wired> --rigcam http://<ip>:8090")
+        return
+    check(g, "dashboard", OK, dash)
+
+    u = cam.get("uvc") or {}
+    if u.get("reachable"):
+        check(g, "wired camera", OK, f"zoom {u.get('selected') or '?'}x via ADB")
+    else:
+        check(g, "wired camera", WARN, "not reachable",
+              "uvczoom could not read the phone's UI. It needs the phone AWAKE and "
+              "UNLOCKED - there is no way round that, it is a UI tap. "
+              "adb shell settings put global stay_on_while_plugged_in 3 keeps it awake.")
+
+    r = cam.get("rigcam") or {}
+    if r.get("offline"):
+        check(g, "wifi camera", WARN, f"offline ({r.get('error')})",
+              "RigCam is not answering. It now runs as a foreground service, so it should "
+              "survive backgrounding - if it is gone, the app was stopped or the phone left "
+              "the network.")
+    elif not r.get("streaming"):
+        check(g, "wifi camera", WARN, "reachable but not streaming",
+              "The server is up but no frames are encoded. CameraX will not open a camera "
+              "behind a keyguard - unlock the phone.")
+    else:
+        e = r.get("encoder") or {}
+        check(g, "wifi camera", OK,
+              f"{r.get('resolution')} @{r.get('fps')} {e.get('bitrateKbps')} kbps")
+        if e.get("lastError"):
+            check(g, "wifi encoder", WARN, e["lastError"],
+                  "The encoder fell back to its ByteBuffer input path. Harmless, but it "
+                  "means getInputImage failed on this device.")
+
+    # And finally: is OBS actually rendering them?
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "video"))
+        import obsctl
+        cl = obsctl.connect(timeout=15)
+        scenes = {s_["sceneName"] for s_ in cl.get_scene_list().scenes}
+        for scene, src in (("Pixel8", "Pixel 8"), ("Pixel6", "Pixel 6 (WiFi)")):
+            if scene not in scenes:
+                check(g, f"obs {src}", SKIP, f"no scene {scene}")
+                continue
+            # ⚠️ A DISABLED SCENE ITEM AND A DEAD SOURCE BOTH MEASURE 0x0, and the
+            # difference matters enormously: one is a checkbox, the other is a broken
+            # capture path. This cost a long detour chasing containers and buffer sizes
+            # when the actual cause was an unticked item.
+            items = cl.get_scene_item_list(scene).scene_items
+            hit = next((i for i in items if i["sourceName"] == src), None)
+            if hit is None:
+                check(g, f"obs {src}", SKIP, f"not in scene {scene}")
+                continue
+            if not hit["sceneItemEnabled"]:
+                check(g, f"obs {src}", WARN, "scene item is DISABLED",
+                      f"It will never open while unticked - a disabled item is never "
+                      f"activated. Tick '{src}' in scene '{scene}'.")
+                continue
+            w, h = obsctl._source_size(cl, scene, src)
+            if (w, h) == (0, 0):
+                check(g, f"obs {src}", BAD, "0x0 - holding the device, showing nothing",
+                      "A source at 0x0 has never received a frame. For the wired camera "
+                      "check nothing else claimed it (one DirectShow consumer only); for "
+                      "the WiFi one check RigCam is serving.")
+            else:
+                check(g, f"obs {src}", OK, f"{int(w)}x{int(h)}")
+    except Exception as e:
+        check(g, "obs sources", WARN, f"{type(e).__name__}: {e}")
+
+
 def check_ollama():
     g = "ai"
     try:
@@ -438,16 +520,19 @@ def check_ollama():
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--only", nargs="*", choices=["rig", "osc", "obs", "phone", "ai"])
+    ap.add_argument("--only", nargs="*",
+                    choices=["rig", "osc", "obs", "phone", "cameras", "ai"])
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--osc-seconds", type=int, default=6)
     args = ap.parse_args()
-    want = set(args.only) if args.only else {"rig", "osc", "obs", "phone", "ai"}
+    want = set(args.only) if args.only else {"rig", "osc", "obs", "phone",
+                                             "cameras", "ai"}
 
     if "rig" in want:   check_rig(rig_token())
     if "osc" in want:   check_osc(args.osc_seconds)
     if "obs" in want:   check_obs(); check_obs_encoders()
     if "phone" in want: check_phone()
+    if "cameras" in want: check_cameras()
     if "ai" in want:    check_ollama()
 
     if args.json:

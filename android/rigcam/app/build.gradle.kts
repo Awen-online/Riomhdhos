@@ -42,6 +42,8 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$camerax")
     implementation("androidx.camera:camera-view:$camerax")
     implementation("androidx.core:core-ktx:1.13.1")
+    // A Service is not a LifecycleOwner; CameraX.bindToLifecycle needs one.
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }

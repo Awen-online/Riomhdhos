@@ -11,6 +11,13 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
+    <!-- ⚠️ FOREGROUND_SERVICE_CAMERA is mandatory from Android 14 for a service that holds
+         the camera, and must match foregroundServiceType below. Missing it does not fail
+         quietly - startForeground throws and the service dies immediately. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
 
     <application
@@ -28,5 +35,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".CamService"
+            android:exported="false"
+            android:foregroundServiceType="camera" />
     </application>
 </manifest>

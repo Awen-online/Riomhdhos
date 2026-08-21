@@ -55,7 +55,11 @@ class CameraEngine(
     private var provider: ProcessCameraProvider? = null
 
     @Volatile private var targetSize = Size(1280, 720)
-    @Volatile private var bitRate = 6_000_000
+    // ⚠️ 16 Mbps, not the 6 that was a guess. MEASURED at 1920x1080: 6 Mbps produced
+    // 6.5 Mbps actual at 27.4 fps, 16 Mbps produced 17.4 Mbps at 27.8 fps - so on a LAN the
+    // extra bitrate costs nothing in frame rate and is pure detail. Lower it only if this
+    // ever runs over something thinner than local WiFi.
+    @Volatile private var bitRate = 16_000_000
     @Volatile private var fps = 30
     @Volatile private var facing = CameraSelector.LENS_FACING_BACK
     @Volatile private var aeLock = false

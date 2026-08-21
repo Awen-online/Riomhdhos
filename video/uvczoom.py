@@ -18,7 +18,7 @@ tapping whatever moved into that spot instead.
     python uvczoom.py 0.5              # ULTRAWIDE (125.8 deg on the Pixel 8)
     python uvczoom.py 1.0 / 2.0
     python uvczoom.py --front / --back
-    python uvczoom.py --hq             # toggle High Quality mode
+    python uvczoom.py --hq             # toggle High Quality mode (raises a warning; see below)
 
 ⚠️ REQUIRES THE PHONE UNLOCKED AND AWAKE. There is no way around this - it is a UI tap.
 `adb shell settings put global stay_on_while_plugged_in 3` keeps it awake on the cable
@@ -104,6 +104,14 @@ def ensure_preview(serial):
     # dismissing it every lookup below finds nothing and the tool looks broken.
     if "ok" in nodes and "immersive_cling_title" in nodes:
         adb("shell", "input", "tap", *map(str, nodes["ok"][1]), serial=serial)
+        nodes = dump(serial)
+    # ⚠️ Toggling High Quality raises a confirmation dialog which then covers the whole UI,
+    # so every later lookup finds nothing. Acknowledge it, but deliberately do NOT tick
+    # "don't show again" - the warning is real (it disables power optimisation, and on the
+    # Pixel 8 drain measured -232 mA -> -404 mA), and a human should keep seeing it.
+    if "hq_warning_ack_button" in nodes:
+        adb("shell", "input", "tap", *map(str, nodes["hq_warning_ack_button"][1]),
+            serial=serial)
         nodes = dump(serial)
     return nodes
 

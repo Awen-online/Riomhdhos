@@ -1,11 +1,10 @@
 package online.awen.rigcam
 
 import android.Manifest
-import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
 import android.view.WindowManager
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -14,84 +13,55 @@ import online.awen.rigcam.databinding.ActivityMainBinding
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
+/**
+ * A thin controller. The camera and the server live in [CamService] so they survive this
+ * Activity being backgrounded, covered by another app, or torn down by the lockscreen -
+ * all of which used to take the stream down with them.
+ */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var ui: ActivityMainBinding
-    private lateinit var server: StreamServer
-    private lateinit var engine: CameraEngine
-    private var wifiLock: WifiManager.WifiLock? = null
-    private var wakeLock: PowerManager.WakeLock? = null
 
-    private val askCamera = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startEverything() else ui.status.text = getString(R.string.no_permission)
+    private val askPerms = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted[Manifest.permission.CAMERA] == true) startCam()
+        else ui.status.text = getString(R.string.no_permission)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ui = ActivityMainBinding.inflate(layoutInflater)
         setContentView(ui.root)
-
-        // A camera that sleeps is not a camera. Keeping the screen on also sidesteps the
-        // whole lockscreen class of problem that plagued the USB route.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
-            == PackageManager.PERMISSION_GRANTED) {
-            startEverything()
-        } else {
-            askCamera.launch(Manifest.permission.CAMERA)
+        val needed = mutableListOf(Manifest.permission.CAMERA)
+        // ⚠️ Without POST_NOTIFICATIONS on Android 13+ the foreground-service notification is
+        // suppressed. The service still runs, but there is then no way to see that it is
+        // running or to stop it - a silent background process holding the camera.
+        if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.POST_NOTIFICATIONS
+
+        val missing = needed.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
+        if (missing.isEmpty()) startCam() else askPerms.launch(missing.toTypedArray())
     }
 
-    private fun startEverything() {
-        acquireLocks()
-
-        // The engine IS the control surface, so it can be handed to the server directly;
-        // the server is then handed back so the encoder can publish into it.
-        engine = CameraEngine(this)
-        server = StreamServer(PORT, engine)
-        engine.server = server
-
-        // No PreviewView: the one Preview use case CameraX allows is spent feeding the
-        // encoder surface. Framing happens in OBS.
-        engine.start(this)
-        server.start()
-
+    private fun startCam() {
+        ContextCompat.startForegroundService(this, Intent(this, CamService::class.java))
         val ip = lanAddress() ?: "?.?.?.?"
-        ui.status.text = getString(R.string.serving, ip, PORT)
+        ui.status.text = getString(R.string.serving, ip, CamService.PORT)
     }
 
-    /**
-     * ⚠️ MEASURED, NOT PRECAUTIONARY: on the Pixel 6 over WiFi, packet loss went from ~0%
-     * to 37.8% as soon as the screen locked, because Android parks the WiFi radio in a
-     * power-saving mode. WIFI_MODE_FULL_HIGH_PERF is what keeps a video stream usable.
-     */
-    private fun acquireLocks() {
-        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "rigcam:wifi")
-            .apply { setReferenceCounted(false); acquire() }
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "rigcam:cpu")
-            .apply { setReferenceCounted(false); acquire() }
-    }
-
-    /**
-     * The address a host on the LAN can actually reach.
-     *
-     * ⚠️ Do not use the first address found. This phone may be tethering, on WiFi, and on a
-     * VPN at once; the desktop hit exactly this and reported a ProtonVPN tunnel address as
-     * its own. Prefer a real site-local IPv4 on a non-virtual, non-loopback interface.
-     */
+    /** See CamService.lanAddress - a phone can be on WiFi, tethering and a VPN at once. */
     private fun lanAddress(): String? {
         val candidates = mutableListOf<Pair<Int, String>>()
         for (nif in NetworkInterface.getNetworkInterfaces()) {
             if (!nif.isUp || nif.isLoopback || nif.isVirtual) continue
             val name = nif.name.lowercase()
             val rank = when {
-                name.startsWith("wlan") -> 0        // WiFi: what we actually want
-                name.startsWith("rndis") || name.startsWith("ncm") -> 1   // USB tether
-                name.startsWith("tun") || name.startsWith("ppp") -> 9     // VPN: last
+                name.startsWith("wlan") -> 0
+                name.startsWith("rndis") || name.startsWith("ncm") -> 1
+                name.startsWith("tun") || name.startsWith("ppp") -> 9
                 else -> 5
             }
             for (addr in nif.inetAddresses) {
@@ -101,16 +71,5 @@ class MainActivity : AppCompatActivity() {
             }
         }
         return candidates.minByOrNull { it.first }?.second
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        if (::server.isInitialized) server.stop()
-        try { wifiLock?.release() } catch (_: Exception) {}
-        try { wakeLock?.release() } catch (_: Exception) {}
-    }
-
-    companion object {
-        const val PORT = 8090
     }
 }
