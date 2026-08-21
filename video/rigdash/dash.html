@@ -92,6 +92,24 @@
      renders heavy enough to fill in the detail of the denser glyphs. */
   .ic svg{stroke-width:1.6}
 
+  /* ⚠️ PENDING STATE IS NOT DECORATION. A wired-camera tap is ~2 s of ADB - uiautomator
+     dump, parse, tap - and for those two seconds nothing changed on screen, which reads as
+     a dead button and invites a second press. The press now takes effect visually at once
+     and animates until the server confirms. */
+  @keyframes camPulse{0%{opacity:1}50%{opacity:.45}100%{opacity:1}}
+  button.pending{background:var(--accent);border-color:var(--accent);color:#241503;
+                 animation:camPulse 900ms ease-in-out infinite}
+  button.pending::after{content:"";display:inline-block;width:9px;height:9px;margin-left:7px;
+                 vertical-align:-1px;border:2px solid currentColor;border-right-color:transparent;
+                 border-radius:50%;animation:camSpin 700ms linear infinite}
+  @keyframes camSpin{to{transform:rotate(360deg)}}
+  button[disabled]{opacity:.4}
+  /* Respect the setting: keep the state change, drop the motion. */
+  @media (prefers-reduced-motion:reduce){
+    button.pending{animation:none}
+    button.pending::after{animation:none;border-right-color:currentColor;opacity:.5}
+  }
+
   /* DESKTOP. Everything above is sized for a thumb at arm's length on a phone, which is
      the surface used live. Under a mouse, at desk distance, those same glyphs read as
      oversized - the icon stops supporting the label and starts shouting over it again.
@@ -196,6 +214,10 @@
        buttons because three fixed presets are genuinely all DeviceAsWebcam offers; the
        WiFi one gets sliders because Camera2 gives continuous control. Showing a zoom
        slider for the wired camera would look uniform and be a lie. -->
+  <h2>Phones</h2>
+  <div class="card" id="devlist"><span class="sub">—</span></div>
+
+  <h2>Wired camera</h2>
   <div class="card">
     <div class="row"><span class="k">Wired · Pixel 8 · USB</span><span class="v" id="v_uvc">—</span></div>
     <div class="g3" id="uvc_zoom"></div>
@@ -213,6 +235,15 @@
     <div class="g3" id="rig_locks"></div>
     <div class="note">Lock AE and AWB once the shot is framed — two cameras auto-exposing
       independently drift apart, and that is what makes a cut jump.</div>
+    <div class="row"><span class="k">Lens</span><span class="v" id="v_face">—</span></div>
+    <div class="g2" id="rig_facing"></div>
+    <div class="row"><span class="k">Resolution</span><span class="v" id="v_res">—</span></div>
+    <div class="g2" id="rig_res"></div>
+    <div class="row"><span class="k">Frame rate</span><span class="v" id="v_fps">—</span></div>
+    <div class="g3" id="rig_fps"></div>
+    <div class="note">⚠️ These four re-open the capture session, so the stream drops for a
+      second and OBS reconnects. Between songs, not mid-song — zoom, exposure and the locks
+      all apply live without it. Measured on the Pixel 6: 720p sustains 30 fps, 1080p 26.7.</div>
   </div>
   <div class="card">
     <button class="mini" id="cam_refresh">Refresh camera state</button>
@@ -457,8 +488,47 @@ function camBtn(box, label, icon, on, handler){
   const b = document.createElement('button');
   b.innerHTML = '<span class="ic">' + icon + '</span>' + label;
   if (on) b.className = 'sel';
-  b.onclick = handler;
+  b.onclick = async () => {
+    if (b.disabled) return;
+    // Lock the whole group, not just this button: a second press during a wired action
+    // queues another 2 s of ADB behind the first and the UI drifts out of step.
+    const sibs = [...box.querySelectorAll('button')];
+    sibs.forEach(x => x.disabled = true);
+    b.classList.add('pending');
+    try { await handler(); }
+    catch(e){ $('err').textContent = e.message; }
+    finally {
+      b.classList.remove('pending');
+      // The group is usually re-rendered by now; re-enabling detached nodes is harmless.
+      sibs.forEach(x => x.disabled = false);
+    }
+  };
   box.append(b);
+}
+
+function renderDevices(){
+  const box = $('devlist');
+  const ds = (CAM && CAM.devices) || [];
+  if (!ds.length){ box.innerHTML = '<span class="sub">no phones on adb</span>'; return; }
+  box.innerHTML = ds.map(d => {
+    // Role is decided by which serial the dashboard was told is the wired one - never
+    // guessed, because guessing sent the wired controls to the wrong phone once already.
+    const role = d.role === 'wired' ? 'WIRED · UVC' : 'WIFI · RigCam';
+    const batt = (d.level ? d.level + '%' : '?')
+               + (d.healthPct ? '  ·  health ' + d.healthPct + '%' : '')
+               + (d.cycles ? '  ·  ' + d.cycles + ' cycles' : '');
+    const where = d.ip ? d.ip : (d.usb ? 'usb: ' + d.usb : '—');
+    const vb = d.verifiedboot === 'yellow'
+        ? '<span style="color:var(--ok)">verified yellow</span>'   // correct for GrapheneOS
+        : '<span style="color:var(--bad)">verified ' + (d.verifiedboot||'?') + '</span>';
+    return '<div style="margin:2px 0 12px">'
+      + '<div class="hdr"><span class="nm">' + (d.model||d.serial) + '</span>'
+      + '<span class="sub">' + role + '</span></div>'
+      + '<div class="sub">Android ' + (d.android||'?') + ' · GrapheneOS ' + (d.build||'?')
+      + ' · patch ' + (d.patch||'?') + '</div>'
+      + '<div class="sub">' + vb + ' · ' + where + ' · ' + d.serial + '</div>'
+      + '<div class="sub">battery ' + batt + '</div></div>';
+  }).join('');
 }
 
 function renderCamera(){
@@ -500,28 +570,56 @@ function renderCamera(){
          () => camPost({target:'rigcam', awbLock: !r.awbLock}));
   camBtn(lb, 'torch',    CAM_ICON.torch, !!r.torch,
          () => camPost({target:'rigcam', torch: !r.torch}));
+
+  // Session-fixed settings. Each rebinds, so they are separated from the live controls.
+  const fb = $('rig_facing'); fb.innerHTML = '';
+  for (const f of ['back','front'])
+    camBtn(fb, f, CAM_ICON.flip, r.facing === f,
+           () => camPost({target:'rigcam', facing:f}));
+  $('v_face').textContent = r.facing || '—';
+
+  const rb = $('rig_res'); rb.innerHTML = '';
+  for (const q of ['1280x720','1920x1080'])
+    camBtn(rb, q.replace('1280x720','720p').replace('1920x1080','1080p'), CAM_ICON.one,
+           r.requested === q, () => camPost({target:'rigcam', resolution:q}));
+  $('v_res').textContent = r.resolution || '—';
+
+  const pb = $('rig_fps'); pb.innerHTML = '';
+  for (const f of [24,30,60])
+    camBtn(pb, f + ' fps', CAM_ICON.one, r.fps === f,
+           () => camPost({target:'rigcam', fps:f}));
+  $('v_fps').textContent = r.fps ? r.fps + ' fps' : '—';
+  renderDevices();
 }
 
 async function camPost(body){
+  if (body.target === 'uvc') $('v_uvc').textContent = 'working…';
   try{
     await post('/api/camera', body);
     // The wired camera has no readback except another UI dump, so re-query after a tap.
     if (body.target === 'uvc') loadCamera();
-    else { Object.assign(CAM.rigcam, body); renderCamera(); }
-  }catch(e){ $('err').textContent = e.message; }
+    else if (body.facing || body.resolution || body.fps || body.bitrate){
+      // The session is being rebuilt; local state would be a guess. Give it a moment.
+      setTimeout(loadCamera, 2500);
+    } else { Object.assign(CAM.rigcam, body); renderCamera(); }
+  }catch(e){
+    $('err').textContent = e.message;
+    if (body.target === 'uvc') $('v_uvc').textContent = 'failed';
+  }
 }
 
 async function loadCamera(){
   if (camBusy) return;
   camBusy = true;
   $('cam_note').textContent = 'querying…';
+  $('cam_refresh').classList.add('pending');
   try{
     CAM = await (await fetch('/api/camera')).json();
     renderCamera();
     $('cam_note').textContent = 'Fetched on demand — a wired-camera query runs a UI dump '
       + 'and costs ~2 s, so it is deliberately not in the 1 Hz poll.';
   }catch(e){ $('cam_note').textContent = 'camera query failed: ' + e.message; }
-  finally{ camBusy = false; }
+  finally{ camBusy = false; $('cam_refresh').classList.remove('pending'); }
 }
 $('cam_refresh').onclick = loadCamera;
 slider('r_rz','v_rz', v => v.toFixed(2) + '×' + (v < 1 ? '  wide' : ''),

@@ -50,6 +50,9 @@ class CameraEngine(
     private val executor = Executors.newSingleThreadExecutor()
     private var camera: Camera? = null
     private var encoder: H264Encoder? = null
+    // Kept so a settings change that needs a new capture session can rebind itself.
+    private var owner: LifecycleOwner? = null
+    private var provider: ProcessCameraProvider? = null
 
     @Volatile private var targetSize = Size(1280, 720)
     @Volatile private var bitRate = 6_000_000
@@ -61,9 +64,26 @@ class CameraEngine(
     @Volatile private var actualH = 0
 
     fun start(owner: LifecycleOwner) {
+        this.owner = owner
         val future = ProcessCameraProvider.getInstance(context)
-        future.addListener({ bind(owner, future.get()) },
-                           ContextCompat.getMainExecutor(context))
+        future.addListener({
+            provider = future.get()
+            bind(owner, future.get())
+        }, ContextCompat.getMainExecutor(context))
+    }
+
+    /**
+     * Re-open the capture session. Needed for anything the session is fixed at: which lens,
+     * what resolution, what frame rate.
+     *
+     * ⚠️ MAIN THREAD ONLY - `bindToLifecycle` requires it. And ⚠️ this DROPS THE STREAM for
+     * a moment and builds a new encoder, so it is a between-songs operation, not a live one.
+     * Zoom, EV and the AE/AWB locks all apply without it and are the safe live controls.
+     */
+    private fun rebind() {
+        val o = owner ?: return
+        val p = provider ?: return
+        ContextCompat.getMainExecutor(context).execute { bind(o, p) }
     }
 
     private fun bind(owner: LifecycleOwner, p: ProcessCameraProvider) {
@@ -123,6 +143,8 @@ class CameraEngine(
         {"streaming":${(e?.nalsOut ?: 0) > 0},
          "resolution":"${actualW}x${actualH}",
          "facing":"${if (facing == CameraSelector.LENS_FACING_BACK) "back" else "front"}",
+         "requested":"${targetSize.width}x${targetSize.height}",
+         "fps":$fps,
          "encoder":{"input":"surface",
                     "bitrateKbps":${bitRate / 1000},
                     "fps":$fps,
@@ -160,12 +182,32 @@ class CameraEngine(
         }
         params["aeLock"]?.toBooleanStrictOrNull()?.let { aeLock = it; done += "aeLock=$it" }
         params["awbLock"]?.toBooleanStrictOrNull()?.let { awbLock = it; done += "awbLock=$it" }
+        // ---- settings the capture session is fixed at: each forces a rebind ----
+        var needRebind = false
         params["bitrate"]?.toIntOrNull()?.let {
-            bitRate = it.coerceIn(500_000, 20_000_000); done += "bitrate=$bitRate (on rebind)"
+            bitRate = it.coerceIn(500_000, 20_000_000); done += "bitrate=$bitRate"
+            needRebind = true
+        }
+        params["fps"]?.toIntOrNull()?.let {
+            fps = it.coerceIn(10, 60); done += "fps=$fps"; needRebind = true
+        }
+        params["facing"]?.let {
+            val f = if (it.equals("front", true)) CameraSelector.LENS_FACING_FRONT
+                    else CameraSelector.LENS_FACING_BACK
+            if (f != facing) { facing = f; done += "facing=$it"; needRebind = true }
+        }
+        params["resolution"]?.let { r ->
+            val m = Regex("""(\d+)\s*[xX]\s*(\d+)""").find(r)
+            if (m != null) {
+                targetSize = Size(m.groupValues[1].toInt(), m.groupValues[2].toInt())
+                done += "resolution=${targetSize.width}x${targetSize.height}"
+                needRebind = true
+            }
         }
         if (done.any { it.startsWith("aeLock") || it.startsWith("awbLock") }) {
             pushCaptureOptions()
         }
-        return """{"applied":[${done.joinToString(",") { "\"$it\"" }}]}"""
+        if (needRebind) rebind()
+        return """{"applied":[${done.joinToString(",") { "\"$it\"" }}],"rebound":$needRebind}"""
     }
 }

@@ -78,6 +78,67 @@ UVC_ZOOMS = ("0.5", "1.0", "2.0")
 # wired-camera controls MUST NOT land on the WiFi one - doing so launches DeviceAsWebcam
 # over RigCam and kills its stream.
 UVC_SERIAL = None
+ADB = r"C:\Users\mccul\Android\Sdk\platform-tools\adb.exe"
+
+# ⚠️ CACHED. Each phone costs an adb round trip, and this is identity information that
+# changes on the timescale of an OS update, not a song.
+_dev_cache = {"at": 0.0, "data": []}
+_DEV_TTL = 120.0
+
+
+def adb_devices():
+    try:
+        out = subprocess.run([ADB, "devices"], capture_output=True, text=True,
+                             timeout=10).stdout
+    except Exception:
+        return []
+    return [l.split()[0] for l in out.splitlines()[1:]
+            if l.strip() and l.split()[-1] == "device"]
+
+
+def device_info(serial):
+    """Identity + health for one phone, in one shell round trip."""
+    script = (
+        'echo model=$(getprop ro.product.model);'
+        'echo device=$(getprop ro.product.device);'
+        'echo android=$(getprop ro.build.version.release);'
+        'echo build=$(getprop ro.build.display.id);'
+        'echo patch=$(getprop ro.build.version.security_patch);'
+        'echo verifiedboot=$(getprop ro.boot.verifiedbootstate);'
+        'echo usb=$(getprop sys.usb.config);'
+        'echo ip=$(ip -f inet addr show wlan0 2>/dev/null | grep -o "inet [0-9.]*" | head -1 | cut -d" " -f2);'
+        'echo level=$(dumpsys battery | grep -m1 "  level:" | tr -dc "0-9");'
+        'echo cycles=$(cat /sys/class/power_supply/battery/cycle_count 2>/dev/null);'
+        'echo full=$(cat /sys/class/power_supply/battery/charge_full 2>/dev/null);'
+        'echo design=$(cat /sys/class/power_supply/battery/charge_full_design 2>/dev/null);'
+    )
+    d = {"serial": serial}
+    try:
+        out = subprocess.run([ADB, "-s", serial, "shell", script],
+                             capture_output=True, text=True, timeout=20).stdout
+        for line in out.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                d[k.strip()] = v.strip()
+    except Exception as e:
+        d["error"] = type(e).__name__
+    # Health as a percentage of DESIGN capacity - the number that matters on a used phone,
+    # and one no settings screen shows.
+    try:
+        d["healthPct"] = round(100 * int(d["full"]) / int(d["design"]))
+    except Exception:
+        d["healthPct"] = None
+    d["role"] = "wired" if serial == UVC_SERIAL else "wifi"
+    return d
+
+
+def devices_snapshot():
+    now = time.time()
+    if now - _dev_cache["at"] < _DEV_TTL and _dev_cache["data"]:
+        return _dev_cache["data"]
+    data = [device_info(x) for x in adb_devices()]
+    _dev_cache.update(at=now, data=data)
+    return data
 
 
 def rigcam_call(path, timeout=2.5):
@@ -389,6 +450,8 @@ class Handler(BaseHTTPRequestHandler):
                     "rigcam": rigcam_call("/api/state"),
                     "uvc": {"reachable": uvc["ok"], "selected": uvc_selected(uvc["out"]),
                             "zooms": list(UVC_ZOOMS), "detail": uvc["out"]},
+                    "devices": devices_snapshot(),
+                    "wiredSerial": UVC_SERIAL,
                 }); return
 
             if p == "/api/state":
@@ -534,7 +597,7 @@ class Handler(BaseHTTPRequestHandler):
                     # Allowlist: only these reach the phone, and each is range-clamped there.
                     q = {}
                     for k in ("zoom", "linearZoom", "ev", "aeLock", "awbLock", "torch",
-                              "bitrate"):
+                              "bitrate", "fps", "facing", "resolution"):
                         if k in body and body[k] is not None:
                             v = body[k]
                             q[k] = str(v).lower() if isinstance(v, bool) else str(v)
