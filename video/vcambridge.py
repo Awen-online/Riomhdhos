@@ -70,71 +70,85 @@ def main():
 
     ff = shutil.which("ffmpeg") or r"C:\Users\mccul\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe"
 
+    # ⚠️ SELF-HEALING, and it is not optional. The first version probed the size once,
+    # opened one ffmpeg, and exited when the stream ended - CLEANLY, with status 0. So when
+    # the phone changed resolution (which makes RigCam drop its clients ON PURPOSE, so they
+    # re-probe), the bridge quit, the scheduled task saw a success and never restarted it,
+    # and the WiFi camera went dark with no error anywhere. A component the show depends on
+    # must reconnect by itself.
+    fixed = None
     if args.size:
-        w, h = (int(x) for x in args.size.lower().split("x"))
-    else:
-        got = probe_size(args.api)
-        if not got:
-            sys.exit("could not probe the stream size - is RigCam running? Pass --size.")
-        w, h = got
-    print(f"stream {w}x{h} from {args.url}")
+        fixed = tuple(int(x) for x in args.size.lower().split("x"))
 
-    # ⚠️ EVERY FLAG HERE IS ABOUT NOT ACCUMULATING FRAMES. `-fflags nobuffer` and
-    # `-flags low_delay` stop the demuxer and decoder holding frames back; a tiny probesize
-    # keeps startup short. The output is raw video on a pipe, so nothing downstream can
-    # buffer either - we read exactly one frame's worth and hand it straight over.
-    cmd = [ff, "-hide_banner", "-loglevel", "error",
-           "-fflags", "nobuffer", "-flags", "low_delay",
-           "-f", "h264", "-i", args.url,
-           "-vf", f"scale={w}:{h}",
-           "-pix_fmt", "rgb24", "-f", "rawvideo", "-fps_mode", "passthrough", "-"]
-    # ⚠️ Do NOT add `-probesize 32 -analyzeduration 0` here. They shave startup but leave
-    # ffmpeg unable to estimate the frame rate ("not enough frames to estimate rate"), and
-    # they buy nothing once running - the latency this tool targets is downstream, in OBS.
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, bufsize=0)
+    session = 0
+    while True:
+        size = fixed or probe_size(args.api)
+        if not size:
+            print("phone not answering; retrying in 5s", flush=True)
+            time.sleep(5)
+            continue
+        w, h = size
+        session += 1
+        print(f"[{session}] {w}x{h} from {args.url}", flush=True)
 
-    frame_bytes = w * h * 3
-    shown = 0
-    t0 = time.time()
-    last_report = t0
+        # ⚠️ Every flag here is about not accumulating frames. `-fflags nobuffer` and
+        # `-flags low_delay` stop the demuxer and decoder holding frames back. Do NOT add
+        # `-probesize 32 -analyzeduration 0`: they leave ffmpeg unable to estimate the frame
+        # rate and buy nothing, because the latency this tool targets is downstream in OBS.
+        cmd = [ff, "-hide_banner", "-loglevel", "error",
+               "-fflags", "nobuffer", "-flags", "low_delay",
+               "-f", "h264", "-i", args.url,
+               "-vf", f"scale={w}:{h}",
+               "-pix_fmt", "rgb24", "-f", "rawvideo", "-fps_mode", "passthrough", "-"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, bufsize=0)
+        frame_bytes = w * h * 3
+        shown = 0
+        t0 = time.time()
+        last_report = t0
 
-    try:
-        with pyvirtualcam.Camera(width=w, height=h, fps=args.fps,
-                                 backend=args.backend,
-                                 fmt=pyvirtualcam.PixelFormat.RGB) as cam:
-            print(f"feeding '{cam.device}'  -  add a Video Capture Device in OBS and pick it")
-            while True:
-                # ⚠️ A PIPE READ RETURNS WHAT IS AVAILABLE, NOT WHAT YOU ASKED FOR. With an
-                # unbuffered pipe the first read came back short, which looked exactly like
-                # the stream ending - the bridge exited immediately and blamed ffmpeg. Loop
-                # until a whole frame is in hand.
-                chunks, got = [], 0
-                while got < frame_bytes:
-                    part = proc.stdout.read(frame_bytes - got)
-                    if not part:
+        try:
+            with pyvirtualcam.Camera(width=w, height=h, fps=args.fps,
+                                     backend=args.backend,
+                                     fmt=pyvirtualcam.PixelFormat.RGB) as cam:
+                print(f"    feeding '{cam.device}'", flush=True)
+                while True:
+                    # ⚠️ A pipe read returns what is AVAILABLE, not what you asked for. The
+                    # first short read once looked exactly like the stream ending.
+                    chunks, got = [], 0
+                    while got < frame_bytes:
+                        part = proc.stdout.read(frame_bytes - got)
+                        if not part:
+                            break
+                        chunks.append(part)
+                        got += len(part)
+                    if got < frame_bytes:
+                        err = proc.stderr.read(300).decode("utf-8", "replace").strip()
+                        print(f"    stream ended{': ' + err if err else ''}", flush=True)
                         break
-                    chunks.append(part)
-                    got += len(part)
-                if got < frame_bytes:
-                    err = proc.stderr.read(400).decode("utf-8", "replace").strip()
-                    print("stream ended" + (f": {err}" if err else ""))
-                    break
-                buf = b"".join(chunks)
-                # ⚠️ NO sleep_until_next_frame() HERE. That paces output to a nominal rate,
-                # which is right for a generated source and wrong for a live one: it would
-                # reintroduce exactly the queue this tool exists to remove. Send each frame
-                # the moment it decodes.
-                cam.send(np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 3))
-                shown += 1
-                now = time.time()
-                if now - last_report >= 5:
-                    print(f"  {shown} frames, {shown / (now - t0):.1f} fps")
-                    last_report = now
-    except KeyboardInterrupt:
-        print("\nstopping")
-    finally:
-        proc.terminate()
+                    # No sleep_until_next_frame(): pacing to a nominal rate would
+                    # reintroduce exactly the queue this tool exists to remove.
+                    cam.send(np.frombuffer(b"".join(chunks),
+                                           dtype=np.uint8).reshape(h, w, 3))
+                    shown += 1
+                    now = time.time()
+                    if now - last_report >= 30:
+                        print(f"    {shown} frames, {shown / (now - t0):.1f} fps", flush=True)
+                        last_report = now
+        except KeyboardInterrupt:
+            proc.terminate()
+            print("stopping")
+            return
+        except Exception as e:
+            print(f"    session failed: {type(e).__name__}: {e}", flush=True)
+        finally:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+        # Re-probe on the next pass: the resolution may be exactly why this one ended.
+        time.sleep(2)
 
 
 if __name__ == "__main__":
