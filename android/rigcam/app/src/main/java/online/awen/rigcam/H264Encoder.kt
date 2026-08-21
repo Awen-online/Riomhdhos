@@ -29,7 +29,9 @@ class H264Encoder(
     private val height: Int,
     fps: Int,
     bitRate: Int,
-    private val onNal: (ByteArray, Boolean) -> Unit,
+    // ⚠️ The timestamp is the point: MediaCodec gets it from the camera's own surface,
+    // and without carrying it downstream a container has nothing to schedule with.
+    private val onNal: (ByteArray, Boolean, Long) -> Unit,
 ) {
     private var codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     private val info = MediaCodec.BufferInfo()
@@ -59,7 +61,8 @@ class H264Encoder(
     @Volatile var starved = 0L; private set        // frames dropped: no free input buffer
     @Volatile var nalsOut = 0L; private set        // access units the codec produced
     @Volatile var bytesOut = 0L; private set
-    @Volatile var lastError = ""; private set
+    @Volatile var lastError = ""
+        internal set
     private var forceBuffer = false
 
     private var frameIndex = 0L
@@ -99,7 +102,17 @@ class H264Encoder(
         Log.i(TAG, "encoder ${width}x$height lowLatency=$lowLatency")
         thread(name = "rigcam-drain", isDaemon = true) {
             while (draining) {
-                drain()
+                // ⚠️ NEVER LET THIS THREAD DIE. It is the only path video takes out of the
+                // encoder, and an exception here stops the camera entirely - which is
+                // exactly what a muxer bug did: 336 frames, then silence on every endpoint
+                // while /api/state cheerfully reported streaming=true. One bad frame is
+                // survivable; a dead drain thread is not.
+                try {
+                    drain()
+                } catch (e: Exception) {
+                    Log.e(TAG, "drain failed, continuing", e)
+                    lastError = "drain: " + (e.message ?: e.javaClass.simpleName)
+                }
                 Thread.sleep(4)
             }
         }
@@ -181,7 +194,8 @@ class H264Encoder(
             } else {
                 nalsOut++
                 bytesOut += bytes.size
-                onNal(bytes, info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0)
+                onNal(bytes, info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0,
+                      info.presentationTimeUs)
             }
         }
     }

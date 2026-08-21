@@ -117,10 +117,12 @@ class CameraEngine(
             val r = request.resolution
             actualW = r.width
             actualH = r.height
-            val enc = H264Encoder(r.width, r.height, fps, bitRate) { nal, key ->
+            val enc = H264Encoder(r.width, r.height, fps, bitRate) { nal, key, ptsUs ->
                 val s = server
-                s?.publishNal(nal, key)
+                // ⚠️ Publish the codec config BEFORE the frame, not after: the muxer needs
+                // SPS/PPS in hand to put them ahead of the very first keyframe.
                 s?.codecConfig = encoder?.codecConfig
+                s?.publishNal(nal, key, ptsUs)
             }
             encoder = enc
             request.provideSurface(enc.inputSurface, executor) { enc.release() }

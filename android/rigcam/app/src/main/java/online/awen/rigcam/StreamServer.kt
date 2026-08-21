@@ -68,6 +68,8 @@ class StreamServer(
         @Volatile var sawKeyframe = false
     }
     private val nalClients = CopyOnWriteArrayList<NalClient>()
+    private val tsClients = CopyOnWriteArrayList<NalClient>()
+    private var muxer = TsMuxer()
 
     /**
      * Disconnect every viewer, because the stream they are decoding no longer exists.
@@ -81,6 +83,12 @@ class StreamServer(
      */
     fun dropNalClients() {
         codecConfig = null          // the old SPS/PPS describes a stream that is gone
+        muxer = TsMuxer()           // continuity counters restart with the new stream
+        for (c in tsClients) {
+            c.closed = true
+            c.q.offer(ByteArray(0) to false)
+        }
+        tsClients.clear()
         for (c in nalClients) {
             c.closed = true
             c.q.offer(ByteArray(0) to false)   // wake the writer out of its poll()
@@ -89,11 +97,26 @@ class StreamServer(
     }
 
     /** Publish one encoded H.264 access unit to every connected viewer. */
-    fun publishNal(nal: ByteArray, keyframe: Boolean) {
-        for (c in nalClients) {
-            if (!c.q.offer(nal to keyframe)) {
+    fun publishNal(nal: ByteArray, keyframe: Boolean, ptsUs: Long) {
+        push(nalClients, nal, keyframe)
+        // Only pay for muxing when somebody is actually watching the TS endpoint.
+        if (tsClients.isNotEmpty()) {
+            // ⚠️ REPEAT SPS/PPS BEFORE EVERY KEYFRAME. The encoder reports codec config once,
+            // as a separate buffer that is never a displayable frame - so in a container it
+            // is simply absent, and ffmpeg reports 'Could not find codec parameters ...
+            // unspecified size' and refuses to decode. In the raw path a client got them
+            // from the HTTP preamble; a TS client has no preamble, so they go inline.
+            val csd = codecConfig
+            val au = if (keyframe && csd != null) csd + nal else nal
+            push(tsClients, muxer.mux(au, ptsUs, keyframe), keyframe)
+        }
+    }
+
+    private fun push(list: List<NalClient>, payload: ByteArray, keyframe: Boolean) {
+        for (c in list) {
+            if (!c.q.offer(payload to keyframe)) {
                 c.q.poll()                       // drop the oldest, keep the newest
-                c.q.offer(nal to keyframe)
+                c.q.offer(payload to keyframe)
             }
         }
     }
@@ -152,6 +175,7 @@ class StreamServer(
             val path = req.split(" ").getOrNull(1) ?: "/"
             try {
                 when {
+                    path.startsWith("/stream.ts") -> streamTs(out)
                     path.startsWith("/stream.h264") -> streamH264(out)
                     path.startsWith("/stream.mjpg") -> streamTo(out)
                     path.startsWith("/snapshot.jpg") -> snapshot(out)
@@ -256,6 +280,42 @@ class StreamServer(
         }
     }
 
+    /**
+     * MPEG-TS: the same H.264, but in a container that carries a clock.
+     *
+     * ⚠️ THIS EXISTS FOR TIMING, NOT FOR INGEST. Bare Annex-B ingests fine; what it cannot
+     * do is tell the decoder WHEN each frame is due, so ffmpeg synthesises a schedule and
+     * OBS's Media Source - which is a file player - buffers for smoothness. TS carries PCR
+     * and a PTS per frame.
+     *
+     * A joining client waits for a keyframe, and the muxer emits PAT and PMT immediately
+     * before every keyframe, so the tables and a decodable picture arrive together.
+     */
+    private fun streamTs(out: OutputStream) {
+        out.write(("HTTP/1.0 200 OK\r\n" +
+                   "Content-Type: video/mp2t\r\n" +
+                   "Cache-Control: no-store\r\n" +
+                   "Access-Control-Allow-Origin: *\r\n\r\n").toByteArray())
+        val client = NalClient()
+        tsClients.add(client)
+        try {
+            while (running && !client.closed) {
+                val item = client.q.poll(2, TimeUnit.SECONDS) ?: continue
+                if (client.closed) return
+                val (chunk, key) = item
+                if (chunk.isEmpty()) continue
+                if (!client.sawKeyframe) {
+                    if (!key) continue
+                    client.sawKeyframe = true
+                }
+                out.write(chunk)
+                out.flush()
+            }
+        } finally {
+            tsClients.remove(client)
+        }
+    }
+
     private fun html(out: OutputStream) {
         val body = """
             <!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
@@ -263,7 +323,8 @@ class StreamServer(
             img{width:100%;max-width:960px;border-radius:6px}code{color:#7fd}</style>
             <h3>RigCam</h3><img src="/stream.mjpg">
             <p>OBS &rarr; Media Source &rarr; uncheck <em>Local File</em> &rarr;
-            <code>http://IP:$port/stream.mjpg</code></p>
+            <code>http://IP:$port/stream.ts</code> (timestamped, preferred) or
+            <code>/stream.h264</code></p>
             <p><code>/api/state</code> &middot; <code>/api/set?zoom=1.5&amp;aeLock=true</code></p>
         """.trimIndent().toByteArray()
         out.write(("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n" +
