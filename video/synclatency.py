@@ -114,7 +114,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--wired", default="Pixel 8")
-    ap.add_argument("--wifi", default="Pixel 6 (WiFi)")
+    ap.add_argument("--wifi", default="Pixel 6 (vcam)")
     ap.add_argument("--torch-host", default="http://192.168.1.234:8090",
                     help="RigCam base URL of the phone whose torch fires")
     ap.add_argument("--runs", type=int, default=3)

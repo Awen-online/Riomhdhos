@@ -491,11 +491,9 @@ def check_cameras(dash="http://127.0.0.1:8770"):
         # it is the one place where a failure actually reaches the audience - check them
         # there rather than in the single-camera cut scenes.
         #
-        # ⚠️ 'Pixel 6 (WiFi)' is deliberately NOT checked. It is the 853 ms Media Source
-        # fallback, kept in BOTH CAMS but DISABLED on purpose in favour of the 414 ms vcam
-        # bridge. A disabled item reports WARN, so checking it would mean a preflight that
-        # never comes back clean - and a warning nobody can clear is a warning nobody reads.
-        # If the vcam bridge is ever abandoned, re-enable the item and add it back here.
+        # The WiFi phone is checked as 'Pixel 6 (vcam)' - it reaches OBS through
+        # vcambridge and the virtual-camera sink. The old Media Source path was
+        # 853 ms against 414 ms and has been removed entirely.
         for scene, src in (("BOTH CAMS", "Pixel 8"),
                            ("BOTH CAMS", "Pixel 6 (vcam)")):
             kind = kinds.get(src, "")

@@ -3,7 +3,9 @@ sys.path.insert(0, r"C:\Users\mccul\Riomhdhos\video")
 import obsctl
 
 SCENE = "BOTH CAMS"
-WIRED, WIFI = "Pixel 8", "Pixel 6 (WiFi)"
+# The WiFi phone arrives via vcambridge -> OBS Virtual Camera, NOT a Media Source: 414 ms
+# against 853 ms measured, and the Media Source has been removed.
+WIRED, WIFI = "Pixel 8", "Pixel 6 (vcam)"
 
 cl = obsctl.connect(timeout=25)
 v = cl.get_video_settings()

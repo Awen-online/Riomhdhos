@@ -56,7 +56,10 @@ from server import Analyser, BANDS             # noqa: E402  the analyser is alr
 SOURCE = "Webcam"
 # The wired camera and the virtual-camera bridge for the WiFi one. Both are dshow sources,
 # so both take the same filters.
-CAM_SOURCES = ["Pixel 8", "Pixel 6 (vcam)", "Pixel 6 (WiFi)"]
+# The WiFi phone reaches OBS through vcambridge and the OBS Virtual Camera sink, not
+# through a Media Source - measured 414 ms against 853 ms, and the Media Source path
+# has been removed entirely rather than left as a tempting dead end.
+CAM_SOURCES = ["Pixel 8", "Pixel 6 (vcam)"]
 
 # ---------------------------------------------------------------------------------------
 # The two camera back ends.
