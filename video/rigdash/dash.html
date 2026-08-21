@@ -85,6 +85,24 @@
   /* Thinner strokes at small sizes: a 1.4 stroke on a 24-unit viewBox scaled to 15px
      renders heavy enough to fill in the detail of the denser glyphs. */
   .ic svg{stroke-width:1.6}
+
+  /* DESKTOP. Everything above is sized for a thumb at arm's length on a phone, which is
+     the surface used live. Under a mouse, at desk distance, those same glyphs read as
+     oversized - the icon stops supporting the label and starts shouting over it again.
+     So step them down here rather than shrinking the phone layout, which is not the one
+     that has to work mid-song.
+
+     ⚠️ BOTH CONDITIONS ARE REQUIRED. min-width alone is wrong: a Pixel 8 in landscape is
+     ~915 CSS px wide and would wrongly get the desktop sizes. `pointer:fine` is what
+     actually distinguishes a mouse from a thumb - a phone reports `coarse`. */
+  @media (min-width:760px) and (pointer:fine){
+    .ic{width:11px;height:11px;margin-bottom:2px}
+    .g4 button .ic,.g3 button .ic{width:12px;height:12px}
+    #perform .g2 button .ic{width:13px;height:13px;margin-bottom:3px}
+    .tabs .ic{width:10px;height:10px}
+    /* A thinner stroke at the smaller size, or the glyphs fill in and read as blobs. */
+    .ic svg{stroke-width:1.5}
+  }
 </style>
 
 <div class="bar">

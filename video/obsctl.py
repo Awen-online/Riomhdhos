@@ -274,7 +274,7 @@ def cmd_build_cam(args):
 
     t = _source_size(cl, scene, source)
     if t == (0, 0):
-        print("⚠️  source is still 0x0 - it is not receiving frames. Check that nothing "
+        print("WARNING: source is still 0x0 - it is not receiving frames. Check that nothing "
               "else holds the camera:\n    a DirectShow device has exactly ONE consumer, "
               "and a browser tab,\n    ffmpeg, or a second OBS source on the same device "
               "will silently win it.")

@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">RigCam</string>
+    <string name="starting">starting…</string>
+    <string name="no_permission">camera permission denied — grant it in Settings</string>
+    <string name="serving">http://%1$s:%2$d/stream.h264</string>
+</resources>
