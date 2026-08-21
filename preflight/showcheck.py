@@ -22,6 +22,7 @@ safe to run mid-setup or thirty seconds before a set.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -402,6 +403,15 @@ def _host_usb_roles():
 
 # --------------------------------------------------------------------------- ollama
 
+def _frame_hash(cl, source):
+    """Hash one rendered frame. None if the screenshot fails."""
+    try:
+        r = cl.get_source_screenshot(source, "png", 160, 90, -1)
+        return hashlib.md5(r.image_data.encode()).hexdigest()
+    except Exception:
+        return None
+
+
 def check_cameras(dash="http://127.0.0.1:8770"):
     """The camera path, from each phone through to a source OBS is actually rendering.
 
@@ -452,8 +462,12 @@ def check_cameras(dash="http://127.0.0.1:8770"):
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "video"))
         import obsctl
         cl = obsctl.connect(timeout=15)
-        scenes = {s_["sceneName"] for s_ in cl.get_scene_list().scenes}
+        sl = cl.get_scene_list()
+        scenes = {s_["sceneName"] for s_ in sl.scenes}
+        program = sl.current_program_scene_name
+        kinds = {i["inputName"]: i["inputKind"] for i in cl.get_input_list().inputs}
         for scene, src in (("Pixel8", "Pixel 8"), ("Pixel6", "Pixel 6 (WiFi)")):
+            kind = kinds.get(src, "")
             if scene not in scenes:
                 check(g, f"obs {src}", SKIP, f"no scene {scene}")
                 continue
@@ -473,12 +487,40 @@ def check_cameras(dash="http://127.0.0.1:8770"):
                 continue
             w, h = obsctl._source_size(cl, scene, src)
             if (w, h) == (0, 0):
-                check(g, f"obs {src}", BAD, "0x0 - holding the device, showing nothing",
-                      "A source at 0x0 has never received a frame. For the wired camera "
-                      "check nothing else claimed it (one DirectShow consumer only); for "
-                      "the WiFi one check RigCam is serving.")
+                # ⚠️ A media source only RUNS while its scene is the program scene, unlike a
+                # dshow camera which runs whenever it is active. Reporting that as a broken
+                # capture path sends you hunting for a fault that does not exist - it cost a
+                # whole debugging session once, through a source rebuild, a media-restart, a
+                # scene-item toggle and an OBS restart.
+                if kind == "ffmpeg_source" and scene != program:
+                    check(g, f"obs {src}", SKIP,
+                          f"idle - '{scene}' is not the program scene",
+                          "A media source only runs while its scene is live. Switch to "
+                          f"'{scene}' to test it.")
+                else:
+                    check(g, f"obs {src}", BAD, "0x0 - holding the device, showing nothing",
+                          "A source at 0x0 has never received a frame. For the wired camera "
+                          "check nothing else claimed it (one DirectShow consumer only); "
+                          "for the WiFi one check RigCam is serving.")
+                continue
+
+            # ⚠️ A RESOLUTION IS NOT A PICTURE. This check reported `ok 1920x1080` for a
+            # source frozen on a stale frame - the torch produced no change in it at all.
+            # A stale frame keeps its resolution forever.
+            #
+            # Two frames a second apart settle it, and sensor noise is what makes it
+            # reliable: a live camera never produces byte-identical frames, even pointed at
+            # a still room, while a frozen source repeats exactly.
+            a = _frame_hash(cl, src)
+            time.sleep(1.1)
+            b = _frame_hash(cl, src)
+            if a and b and a == b:
+                check(g, f"obs {src}", BAD, f"{int(w)}x{int(h)} but FROZEN",
+                      "Two frames a second apart were byte-identical, which a live camera "
+                      "never manages. The source is holding a stale frame: it reports a "
+                      "resolution and delivers nothing.")
             else:
-                check(g, f"obs {src}", OK, f"{int(w)}x{int(h)}")
+                check(g, f"obs {src}", OK, f"{int(w)}x{int(h)} live")
     except Exception as e:
         check(g, "obs sources", WARN, f"{type(e).__name__}: {e}")
 
