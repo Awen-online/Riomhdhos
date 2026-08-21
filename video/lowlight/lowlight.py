@@ -107,7 +107,7 @@ def main():
         print(f"  budget: ~{total:.1f} ms/frame with the depth blur "
               f"({total/16.67*100:.0f}% at 60fps, {total/33.33*100:.0f}% at 30fps)")
         if total > 16.67:
-            print("  ⚠️ over budget at 60 fps. The camera only delivers 30 fps, so setting")
+            print("  WARNING: over budget at 60 fps. The camera only delivers 30 fps, so setting")
             print("     OBS output to 30 fps doubles the budget and costs nothing real.")
 
     time.sleep(8)
@@ -116,4 +116,11 @@ def main():
 
 
 if __name__ == "__main__":
+    # cp1252 is the console default here, and a stray non-ASCII character in a print has
+    # now killed three separate tools AT THE MOMENT THEY HAD SOMETHING USEFUL TO SAY.
+    # Degrade the character, never the process.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     main()

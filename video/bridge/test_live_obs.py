@@ -109,12 +109,12 @@ finally:
         time.sleep(0.4)
         print(f"\nrestored scene: {original}")
     except Exception as exc:
-        print(f"\n⚠️  could not restore {original}: {exc}")
+        print(f"\nWARNING:  could not restore {original}: {exc}")
     for scene in made:
         try:
             cl.remove_scene(scene)
         except Exception as exc:
-            print(f"⚠️  could not remove {scene}: {exc}")
+            print(f"WARNING:  could not remove {scene}: {exc}")
     if made:
         print(f"removed test scenes: {', '.join(made)}")
 

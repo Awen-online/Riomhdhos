@@ -582,4 +582,11 @@ def main():
 
 
 if __name__ == "__main__":
+    # cp1252 is the console default here, and a stray non-ASCII character in a print has
+    # now killed three separate tools AT THE MOMENT THEY HAD SOMETHING USEFUL TO SAY.
+    # Degrade the character, never the process.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     main()
