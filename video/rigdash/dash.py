@@ -54,6 +54,9 @@ import obsctl                                  # noqa: E402  credential handling
 from server import Analyser, BANDS             # noqa: E402  the analyser is already tested
 
 SOURCE = "Webcam"
+# The wired camera and the virtual-camera bridge for the WiFi one. Both are dshow sources,
+# so both take the same filters.
+CAM_SOURCES = ["Pixel 8", "Pixel 6 (vcam)", "Pixel 6 (WiFi)"]
 
 # ---------------------------------------------------------------------------------------
 # The two camera back ends.
@@ -376,14 +379,27 @@ def _current_blend(cl, scene):
         return None
 
 
-def filter_state():
+def camera_sources():
+    """Every camera that exists and can carry filters.
+
+    ⚠️ Both cameras deserve the same treatment. The panel used to act on one hardcoded
+    source, so the WiFi camera could not be blurred, lit or colour-corrected at all - and
+    the two feeds cut together badly precisely because only one of them was ever graded.
+    """
     cl = client()
+    have = {i["inputName"] for i in cl.get_input_list().inputs}
+    return [n for n in CAM_SOURCES if n in have]
+
+
+def filter_state(source=None):
+    cl = client()
+    source = source or SOURCE
     out = []
-    for f in cl.get_source_filter_list(SOURCE).filters:
+    for f in cl.get_source_filter_list(source).filters:
         kind = f["filterKind"]
         if kind not in ALLOWED:
             continue
-        s = cl.get_source_filter(SOURCE, f["filterName"]).filter_settings
+        s = cl.get_source_filter(source, f["filterName"]).filter_settings
         params = []
         for key, (lo, hi, step, label) in ALLOWED[kind].items():
             params.append({"key": key, "label": label, "min": lo, "max": hi,
@@ -467,6 +483,7 @@ class Handler(BaseHTTPRequestHandler):
                 # source is most of a 33 ms frame, and nothing else on the machine says so.
                 self._json({
                     "audio": audio, "filters": filter_state(),
+                    "cameraFilters": {n: filter_state(n) for n in camera_sources()},
                     "moods": MOODS, "source": SOURCE,
                     "scenes": [s["sceneName"] for s in sl.scenes],
                     "currentScene": sl.current_program_scene_name,
@@ -622,17 +639,19 @@ class Handler(BaseHTTPRequestHandler):
 
             if p == "/api/toggle":
                 name = body.get("filter")
-                cur = next((f for f in filter_state() if f["name"] == name), None)
+                src = body.get("source") or SOURCE
+                cur = next((f for f in filter_state(src) if f["name"] == name), None)
                 if not cur:
-                    self._json({"error": "no such filter"}, 404); return
-                cl.set_source_filter_enabled(SOURCE, name, not cur["enabled"])
-                self._json({"filters": filter_state()}); return
+                    self._json({"error": f"no filter '{name}' on '{src}'"}, 404); return
+                cl.set_source_filter_enabled(src, name, not cur["enabled"])
+                self._json({"source": src, "filters": filter_state(src)}); return
 
             if p == "/api/set":
                 name = body.get("filter")
-                cur = next((f for f in filter_state() if f["name"] == name), None)
+                src = body.get("source") or SOURCE
+                cur = next((f for f in filter_state(src) if f["name"] == name), None)
                 if not cur:
-                    self._json({"error": "no such filter"}, 404); return
+                    self._json({"error": f"no filter '{name}' on '{src}'"}, 404); return
                 allow = ALLOWED[cur["kind"]]
                 out = {}
                 for k, v in (body.get("params") or {}).items():
@@ -642,8 +661,8 @@ class Handler(BaseHTTPRequestHandler):
                     val = max(lo, min(hi, float(v)))
                     out[k] = int(val) if isinstance(step, int) else val
                 if out:
-                    cl.set_source_filter_settings(SOURCE, name, out, True)
-                self._json({"applied": out}); return
+                    cl.set_source_filter_settings(src, name, out, True)
+                self._json({"source": src, "applied": out}); return
 
             self.send_error(404)
         except Exception as e:

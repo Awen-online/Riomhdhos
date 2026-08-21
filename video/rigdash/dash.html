@@ -245,7 +245,14 @@
       second and OBS reconnects. Between songs, not mid-song — zoom, exposure and the locks
       all apply live without it. Measured on the Pixel 6: 720p sustains 30 fps, 1080p 26.7.</div>
   </div>
-  <h2>Filters on the wired camera</h2>
+  <h2>Filters</h2>
+  <div class="card">
+    <div class="row"><span class="k">Configure filters on</span><span class="v" id="v_fxcam">—</span></div>
+    <div class="g2" id="fxcam"></div>
+    <div class="note">Each camera carries its own filter chain. Grade them to match before
+      cutting between them — two feeds where only one is corrected is exactly what makes a
+      cut jump.</div>
+  </div>
   <div id="filters"></div>
   <p class="note">⚠️ Parameters and on/off ONLY. Adding, removing or changing a filter's
   model reinitialises it while the render thread may be inside it — an access violation in
@@ -639,6 +646,25 @@ slider('r_cx','v_cx', v => v.toFixed(2), v => pushVis({complexity:v}));
 slider('r_et','v_et', v => v.toFixed(2) + '×', v => post('/api/echo', {echoTime:v}), 140);
 slider('r_vr','v_vr', v => v.toFixed(2), v => pushVis({vReact:v}));
 
+let CAMFX = {}, FXCAM = null;
+
+function renderFxPicker(){
+  const box = $('fxcam'); box.innerHTML = '';
+  const names = Object.keys(CAMFX);
+  if (!names.length){ $('v_fxcam').textContent = 'no cameras'; return; }
+  if (!FXCAM || !CAMFX[FXCAM]) FXCAM = names[0];
+  for (const n of names){
+    const b = document.createElement('button');
+    const count = (CAMFX[n] || []).length;
+    b.innerHTML = '<span class="ic">' + CAM_ICON.one + '</span>' + n +
+                  ' <span class="sub">' + count + '</span>';
+    if (n === FXCAM) b.className = 'sel';
+    b.onclick = () => { FXCAM = n; renderFxPicker(); renderFilters(CAMFX[n] || []); };
+    box.append(b);
+  }
+  $('v_fxcam').textContent = FXCAM;
+}
+
 function renderFilters(filters){
   const box = $('filters'); box.innerHTML='';
   if (!filters.length){
@@ -654,8 +680,12 @@ function renderFilters(filters){
     const btn = document.createElement('button');
     btn.className = 'pill' + (f.enabled ? ' on' : '');
     btn.textContent = f.enabled ? 'ON' : 'OFF';
-    btn.onclick = () => post('/api/toggle', {filter:f.name})
-                          .then(j => renderFilters(j.filters))
+    // ⚠️ Always name the source. Without it the server falls back to its default camera
+    // and the click silently grades the WRONG feed.
+    btn.onclick = () => post('/api/toggle', {filter:f.name, source:FXCAM})
+                          .then(j => { CAMFX[j.source] = j.filters;
+                                       if (j.source === FXCAM) renderFilters(j.filters);
+                                       renderFxPicker(); })
                           .catch(e => $('err').textContent = e.message);
     hdr.append(left, btn); card.append(hdr);
     for (const p of f.params){
@@ -670,7 +700,8 @@ function renderFilters(filters){
       r.oninput = () => {
         val.textContent = fmt(parseFloat(r.value));
         debounced('f'+f.name+p.key, 120,
-          () => post('/api/set', {filter:f.name, params:{[p.key]: parseFloat(r.value)}})
+          () => post('/api/set', {filter:f.name, source:FXCAM,
+                                  params:{[p.key]: parseFloat(r.value)}})
                   .catch(e => $('err').textContent = e.message));
       };
       card.append(r);
@@ -735,7 +766,10 @@ async function refresh(){
          complexity:s.audio.complexity ?? 1};
   $('b_scene').textContent = curScene;
   renderMoods(); renderScenes(); renderDecks(); renderBlend(s.blend);
-  renderFilters(s.filters); renderHealth(s.health); renderPresets(s.presets || []);
+  CAMFX = s.cameraFilters || {};
+  renderFxPicker();
+  renderFilters(CAMFX[FXCAM] || s.filters || []);
+  renderHealth(s.health); renderPresets(s.presets || []);
   const set = (id, valId, v, fmt) => { $(id).value = v; $(valId).textContent = fmt(v); };
   set('r_int','v_int', s.audio.intensity ?? 1, v => Number(v).toFixed(2));
   set('r_echo','v_echo', s.audio.echo ?? 0, v => Number(v).toFixed(2));
