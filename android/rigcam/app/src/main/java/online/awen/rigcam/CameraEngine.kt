@@ -153,6 +153,7 @@ class CameraEngine(
          "requested":"${targetSize.width}x${targetSize.height}",
          "fps":$fps,
          "encoder":{"input":"surface",
+                    "lowLatency":${encoder?.lowLatency ?: false},
                     "bitrateKbps":${bitRate / 1000},
                     "fps":$fps,
                     "nalsOut":${e?.nalsOut ?: 0},

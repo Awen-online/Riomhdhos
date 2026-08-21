@@ -31,7 +31,7 @@ class H264Encoder(
     bitRate: Int,
     private val onNal: (ByteArray, Boolean) -> Unit,
 ) {
-    private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+    private var codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     private val info = MediaCodec.BufferInfo()
 
     /**
@@ -68,33 +68,41 @@ class H264Encoder(
     private var sliceHeight = 0
     private var scratch: ByteArray? = null
 
+    /** Whether the encoder accepted the low-latency hints. Reported at /api/state. */
+    @Volatile var lowLatency = false; private set
+
     init {
-        val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT,
-                       MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
-            setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            // One second between keyframes: a viewer joining mid-stream sees nothing until
-            // the next one, so a long GOP means a long black wait on every reconnect.
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-            setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)   // reordering = latency
+        var fmt = baseFormat(width, height, fps, bitRate, lowLatency = true)
+        var ok = try {
+            codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE); true
+        } catch (e: Exception) {
+            Log.w(TAG, "low-latency configure rejected: ${e.message}")
+            false
         }
-        codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        if (ok) {
+            lowLatency = true
+        } else {
+            // ⚠️ Not every encoder accepts these keys, and a rejected configure leaves the
+            // codec unusable - it cannot simply be reconfigured. Throw this one away and
+            // build a plain one rather than losing video entirely over an optimisation.
+            try { codec.release() } catch (_: Exception) {}
+            codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            fmt = baseFormat(width, height, fps, bitRate, lowLatency = false)
+            codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        }
         // ⚠️ createInputSurface() MUST come after configure() and before start().
-        // This is the whole point of the rewrite: the camera renders straight into the
-        // encoder, so no frame is ever read by the CPU.
         inputSurface = codec.createInputSurface()
         codec.start()
+        val inFmt = codec.inputFormat
+        stride = inFmt.getInteger(MediaFormat.KEY_STRIDE, width)
+        sliceHeight = inFmt.getInteger(MediaFormat.KEY_SLICE_HEIGHT, height)
+        Log.i(TAG, "encoder ${width}x$height lowLatency=$lowLatency")
         thread(name = "rigcam-drain", isDaemon = true) {
             while (draining) {
                 drain()
                 Thread.sleep(4)
             }
         }
-        val inFmt = codec.inputFormat
-        stride = inFmt.getInteger(MediaFormat.KEY_STRIDE, width)
-        sliceHeight = inFmt.getInteger(MediaFormat.KEY_SLICE_HEIGHT, height)
-        Log.i(TAG, "encoder ${width}x$height stride=$stride slice=$sliceHeight")
     }
 
     fun submit(image: ImageProxy): Boolean {
@@ -246,6 +254,39 @@ class H264Encoder(
 
     companion object {
         private const val TAG = "RigCam"
+
+        /**
+         * ⚠️ THE LOW-LATENCY KEYS ARE THE POINT OF THIS FUNCTION.
+         *
+         * By default an H.264 encoder is free to hold several frames for rate-control
+         * lookahead - a queue INSIDE the encoder that no amount of tuning downstream can
+         * see or drain. Measured before these were set: the WiFi camera ran ~500 ms behind
+         * the wired one, and it moved not at all for OBS buffering (tested at 4 MB, 1 MB
+         * and 0), a shallower client queue, or 60 fps capture.
+         *
+         *   KEY_LATENCY 1    the encoder may hold at most one frame  (API 30+)
+         *   KEY_PRIORITY 0   realtime, not best-effort throughput
+         *   BITRATE_MODE_CBR VBR spends bits by looking ahead; CBR decides per frame
+         *
+         * Any of them may be rejected, which is why the caller falls back to a plain
+         * format rather than failing.
+         */
+        private fun baseFormat(w: Int, h: Int, fps: Int, bitRate: Int,
+                               lowLatency: Boolean): MediaFormat =
+            MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT,
+                           MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+                setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+                setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                if (lowLatency) {
+                    setInteger(MediaFormat.KEY_LATENCY, 1)
+                    setInteger(MediaFormat.KEY_PRIORITY, 0)
+                    setInteger(MediaFormat.KEY_BITRATE_MODE,
+                               MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                }
+            }
 
         private fun copyPlanes(src: ImageProxy, dst: android.media.Image) {
             val w = src.width
