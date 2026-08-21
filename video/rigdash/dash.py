@@ -255,24 +255,52 @@ def client():
         return _cl
 
 
+def publish(feats=None):
+    """Stamp the clock and push STATE to every /feed subscriber."""
+    with _lock:
+        if feats:
+            STATE.update(feats)
+        STATE["t"] = time.time()
+        payload = json.dumps(STATE)
+        dead = []
+        for q in _subs:
+            try:
+                q.put_nowait(payload)      # drop, never block: this may be a realtime thread
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _subs.remove(q)
+
+
+def clock_thread(hz=20):
+    """Drive the visuals when there is no audio.
+
+    ⚠️ THE ANIMATION CLOCK USED TO LIVE INSIDE THE AUDIO CALLBACK. STATE["t"] - which is
+    what the shader animates against - was only ever stamped when a sample buffer arrived,
+    so running with --no-audio left /feed emitting NOTHING and every generative visual
+    frozen at black. That is not hypothetical: disabling the Focusrite for the BSOD
+    elimination test silently took the pre-show visuals down with it, and nothing reported
+    it, because the page still served and the source still had a resolution.
+
+    Audio should MODULATE the visuals, never be the thing that makes them move. This ticker
+    only fills in when the audio thread is not publishing, so with audio present it costs
+    nothing and changes nothing.
+    """
+    period = 1.0 / hz
+    while True:
+        time.sleep(period)
+        with _lock:
+            quiet = time.time() - STATE.get("t", 0) > 0.5
+        if quiet:
+            publish()
+
+
 def audio_thread(device, samplerate, blocksize, channels):
     an = Analyser(samplerate, blocksize)
 
     def cb(indata, frames, tinfo, status):
         mono = indata.mean(axis=1) if indata.ndim > 1 else indata
-        feats = an.process(np.asarray(mono, dtype=np.float32))
-        with _lock:
-            STATE.update(feats)
-            STATE["t"] = time.time()
-            payload = json.dumps(STATE)
-            dead = []
-            for q in _subs:
-                try:
-                    q.put_nowait(payload)      # drop, never block: this is a realtime thread
-                except queue.Full:
-                    dead.append(q)
-            for q in dead:
-                _subs.remove(q)
+        publish(an.process(np.asarray(mono, dtype=np.float32)))
 
     with sd.InputStream(device=device, channels=channels, samplerate=samplerate,
                         blocksize=blocksize, dtype="float32", callback=cb):
@@ -728,6 +756,8 @@ def main():
     ap.add_argument("--no-audio", action="store_true",
                     help="filter control only, no audio capture")
     args = ap.parse_args()
+
+    threading.Thread(target=clock_thread, daemon=True).start()
 
     global SOURCE, RIGCAM, UVC_SERIAL
     SOURCE = args.source

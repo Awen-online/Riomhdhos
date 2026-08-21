@@ -487,11 +487,17 @@ def check_cameras(dash="http://127.0.0.1:8770"):
         scenes = {s_["sceneName"] for s_ in sl.scenes}
         program = sl.current_program_scene_name
         kinds = {i["inputName"]: i["inputKind"] for i in cl.get_input_list().inputs}
-        # (scene, source). The vcam source is the one that matters for the WiFi camera now;
-        # the Media Source entry is kept because it still exists and may be re-enabled.
-        for scene, src in (("Pixel8", "Pixel 8"),
-                           ("BOTH CAMS", "Pixel 6 (vcam)"),
-                           ("Pixel6", "Pixel 6 (WiFi)")):
+        # (scene, source). BOTH CAMS is the program scene and holds both live cameras, so
+        # it is the one place where a failure actually reaches the audience - check them
+        # there rather than in the single-camera cut scenes.
+        #
+        # ⚠️ 'Pixel 6 (WiFi)' is deliberately NOT checked. It is the 853 ms Media Source
+        # fallback, kept in BOTH CAMS but DISABLED on purpose in favour of the 414 ms vcam
+        # bridge. A disabled item reports WARN, so checking it would mean a preflight that
+        # never comes back clean - and a warning nobody can clear is a warning nobody reads.
+        # If the vcam bridge is ever abandoned, re-enable the item and add it back here.
+        for scene, src in (("BOTH CAMS", "Pixel 8"),
+                           ("BOTH CAMS", "Pixel 6 (vcam)")):
             kind = kinds.get(src, "")
             if scene not in scenes:
                 check(g, f"obs {src}", SKIP, f"no scene {scene}")
