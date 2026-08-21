@@ -35,7 +35,7 @@
   .dot.bad{background:var(--bad)}
 
   .tabs{position:sticky;top:47px;z-index:9;background:var(--bg);display:grid;
-        grid-template-columns:repeat(3,1fr);gap:6px;padding:8px 0 10px}
+        grid-template-columns:repeat(4,1fr);gap:6px;padding:8px 0 10px}
   .tabs button{padding:11px;font-size:12px;letter-spacing:.12em;text-transform:uppercase}
   .tabs button.sel{background:var(--fg);border-color:var(--fg);color:#0b0d10}
   section{display:none} section.on{display:block}
@@ -119,6 +119,7 @@
 <div class="tabs">
   <button id="t_perform" class="sel"></button>
   <button id="t_look"></button>
+  <button id="t_cams"></button>
   <button id="t_rig"></button>
 </div>
 
@@ -182,6 +183,43 @@
     <div class="note">Motion bends the figure; a busy shot thins the lines so the overlay
       stops competing with it.</div>
   </div>
+</section>
+
+<section id="cams">
+  <!-- ⚠️ CAMERAS GET THEIR OWN TAB, and it is not tidiness. They are touched at a
+       DIFFERENT TIME from everything else: framing and locking exposure happens once at
+       load-in, while Look is worked between songs and Perform mid-song. They also outgrew
+       a corner of Look - two cameras with genuinely different control sets is ten controls,
+       which buried the visuals decks underneath them.
+
+       ⚠️ THE TWO CAMERAS GET DIFFERENT CONTROLS ON PURPOSE. The wired one gets three
+       buttons because three fixed presets are genuinely all DeviceAsWebcam offers; the
+       WiFi one gets sliders because Camera2 gives continuous control. Showing a zoom
+       slider for the wired camera would look uniform and be a lie. -->
+  <div class="card">
+    <div class="row"><span class="k">Wired · Pixel 8 · USB</span><span class="v" id="v_uvc">—</span></div>
+    <div class="g3" id="uvc_zoom"></div>
+    <div class="g3" id="uvc_more"></div>
+    <div class="note">Zoom presets only — the host has no camera control over UVC, so these
+      tap the phone's own screen over ADB. Needs the phone awake and unlocked. <b>0.5 is the
+      ultrawide.</b></div>
+  </div>
+  <div class="card">
+    <div class="row"><span class="k">WiFi · RigCam</span><span class="v" id="v_rig">—</span></div>
+    <div class="row"><span class="k">Zoom</span><span class="v" id="v_rz">1.00×</span></div>
+    <input type="range" id="r_rz" min="0.5" max="8" step="0.01" value="1">
+    <div class="row"><span class="k">Exposure</span><span class="v" id="v_rev">0</span></div>
+    <input type="range" id="r_rev" min="-24" max="24" step="1" value="0">
+    <div class="g3" id="rig_locks"></div>
+    <div class="note">Lock AE and AWB once the shot is framed — two cameras auto-exposing
+      independently drift apart, and that is what makes a cut jump.</div>
+  </div>
+  <div class="card">
+    <button class="mini" id="cam_refresh">Refresh camera state</button>
+    <div class="note" id="cam_note">Fetched on demand — a wired-camera query runs a UI dump
+      and costs ~2 s, so it is deliberately not in the 1 Hz poll.</div>
+  </div>
+
 </section>
 
 <section id="rig">
@@ -263,12 +301,15 @@ const BLEND_ICON = {
 };
 
 const TAB_ICON = {
+  // A camera body, because that tab is about the physical cameras rather than the picture.
+  cams:    SVG('<path d="M3 8.5A2 2 0 0 1 5 6.5h2.2l1.1-1.8h7.4l1.1 1.8H19a2 2 0 0 1 2 2v8A2 2 0 0 1 19 18.5H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="12.5" r="3.4"/>'),
   perform: SVG('<path d="M8 5v14M16 5v14"/><path d="M8 9h8M8 15h8"/>', 1.6),
   look:    SVG('<circle cx="12" cy="12" r="3.2"/><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/>'),
   rig:     SVG('<path d="M4 18V9M9 18V5M14 18v-7M19 18v-4"/>', 1.8),
 };
 
-const TABS = [['t_perform','perform'], ['t_look','look'], ['t_rig','rig']];
+const TABS = [['t_perform','perform'], ['t_look','look'], ['t_cams','cams'],
+              ['t_rig','rig']];
 for (const [btn, sec] of TABS){
   $(btn).innerHTML = '<span class="ic">' + TAB_ICON[sec] + '</span>' +
                      sec.charAt(0).toUpperCase() + sec.slice(1);
@@ -278,6 +319,9 @@ for (const [btn, sec] of TABS){
       $(s).classList.toggle('on', s === sec);
     }
     window.scrollTo(0,0);
+    // Camera state is expensive to read, so it loads when you actually open Look rather
+    // than on every poll. Once per visit is enough - taps re-query themselves.
+    if (sec === 'cams' && !CAM) loadCamera();
   };
 }
 
@@ -389,6 +433,102 @@ function renderBlend(cur){
   }
   $('v_bl').textContent = cur ? cur.replace('OBS_BLEND_','').toLowerCase() : '—';
 }
+/* ---- camera ------------------------------------------------------------------------
+   ⚠️ FETCHED ON DEMAND, NEVER FROM THE POLL LOOP. Reading the wired camera runs a
+   uiautomator dump on the phone and costs ~2 s; in the 1 Hz refresh that would stall the
+   whole dashboard once a second. It loads when you open Look, and on Refresh.
+
+   ⚠️ AND IT IS FIRE-AND-FORGET ON THE SLIDERS. A zoom drag emits many values; each one is
+   an HTTP round trip to a phone. The slider helper already throttles, and we deliberately
+   do not await a response before accepting the next drag - a laggy phone must not make the
+   control feel stuck. */
+const CAM_ICON = {
+  wide:  SVG('<path d="M3 8.5A2.5 2.5 0 0 1 5.5 6h13A2.5 2.5 0 0 1 21 8.5v7A2.5 2.5 0 0 1 18.5 18h-13A2.5 2.5 0 0 1 3 15.5z"/><path d="M7.5 12h9M7.5 12l2.5-2.5M7.5 12l2.5 2.5M16.5 12L14 9.5M16.5 12L14 14.5"/>'),
+  one:   SVG('<circle cx="12" cy="12" r="6.5"/><path d="M12 8.5v7"/>'),
+  tight: SVG('<circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L21 21"/>'),
+  flip:  SVG('<path d="M12 5v14"/><path d="M9 8L5 12l4 4"/><path d="M15 8l4 4-4 4"/>'),
+  hq:    SVG('<path d="M12 3l2.4 5.6L20 9.6l-4 4.1.9 5.9L12 16.9 7.1 19.6 8 13.7 4 9.6l5.6-1z"/>'),
+  lock:  SVG('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'),
+  torch: SVG('<path d="M9 3h6l-1 4H10z"/><path d="M10 7h4v5l-2 9-2-9z"/>'),
+};
+let CAM = null, camBusy = false;
+
+function camBtn(box, label, icon, on, handler){
+  const b = document.createElement('button');
+  b.innerHTML = '<span class="ic">' + icon + '</span>' + label;
+  if (on) b.className = 'sel';
+  b.onclick = handler;
+  box.append(b);
+}
+
+function renderCamera(){
+  const u = (CAM && CAM.uvc) || {};
+  const r = (CAM && CAM.rigcam) || {};
+
+  $('v_uvc').textContent = u.reachable
+      ? (u.selected ? u.selected + '×' : 'ready')
+      : 'unreachable';
+  const zb = $('uvc_zoom'); zb.innerHTML = '';
+  for (const z of (u.zooms || ['0.5','1.0','2.0'])){
+    const ico = z === '0.5' ? CAM_ICON.wide : (z === '2.0' ? CAM_ICON.tight : CAM_ICON.one);
+    camBtn(zb, z === '0.5' ? '0.5 wide' : z + '×', ico, u.selected === z,
+           () => camPost({target:'uvc', zoom:z}));
+  }
+  const mb = $('uvc_more'); mb.innerHTML = '';
+  camBtn(mb, 'front', CAM_ICON.flip, false, () => camPost({target:'uvc', lens:'front'}));
+  camBtn(mb, 'back',  CAM_ICON.flip, false, () => camPost({target:'uvc', lens:'back'}));
+  camBtn(mb, 'hi-q',  CAM_ICON.hq,   false, () => camPost({target:'uvc', hq:true}));
+
+  const off = r.offline || !r.zoom;
+  $('v_rig').textContent = off ? 'offline'
+      : (r.streaming ? r.resolution + ' streaming' : r.resolution + ' idle');
+  if (!off){
+    // Range comes from the phone: the Pixel 6 reports 0.670-7.0, the Pixel 8 0.549-8.0,
+    // and the sub-1.0 minimum IS the ultrawide.
+    const s = $('r_rz');
+    s.min = r.zoom.min; s.max = r.zoom.max; s.value = r.zoom.ratio;
+    $('v_rz').textContent = (+r.zoom.ratio).toFixed(2) + '×'
+        + (r.zoom.ratio < 1 ? '  wide' : '');
+    const e = $('r_rev');
+    e.min = r.ev.min; e.max = r.ev.max; e.value = r.ev.index;
+    $('v_rev').textContent = r.ev.index;
+  }
+  const lb = $('rig_locks'); lb.innerHTML = '';
+  camBtn(lb, 'AE lock',  CAM_ICON.lock,  !!r.aeLock,
+         () => camPost({target:'rigcam', aeLock: !r.aeLock}));
+  camBtn(lb, 'AWB lock', CAM_ICON.lock,  !!r.awbLock,
+         () => camPost({target:'rigcam', awbLock: !r.awbLock}));
+  camBtn(lb, 'torch',    CAM_ICON.torch, !!r.torch,
+         () => camPost({target:'rigcam', torch: !r.torch}));
+}
+
+async function camPost(body){
+  try{
+    await post('/api/camera', body);
+    // The wired camera has no readback except another UI dump, so re-query after a tap.
+    if (body.target === 'uvc') loadCamera();
+    else { Object.assign(CAM.rigcam, body); renderCamera(); }
+  }catch(e){ $('err').textContent = e.message; }
+}
+
+async function loadCamera(){
+  if (camBusy) return;
+  camBusy = true;
+  $('cam_note').textContent = 'querying…';
+  try{
+    CAM = await (await fetch('/api/camera')).json();
+    renderCamera();
+    $('cam_note').textContent = 'Fetched on demand — a wired-camera query runs a UI dump '
+      + 'and costs ~2 s, so it is deliberately not in the 1 Hz poll.';
+  }catch(e){ $('cam_note').textContent = 'camera query failed: ' + e.message; }
+  finally{ camBusy = false; }
+}
+$('cam_refresh').onclick = loadCamera;
+slider('r_rz','v_rz', v => v.toFixed(2) + '×' + (v < 1 ? '  wide' : ''),
+       v => post('/api/camera', {target:'rigcam', zoom:v}).catch(()=>{}));
+slider('r_rev','v_rev', v => String(Math.round(v)),
+       v => post('/api/camera', {target:'rigcam', ev:Math.round(v)}).catch(()=>{}));
+
 slider('r_x','v_x', v => v.toFixed(2), v => pushVis({xfade:v}));
 // 1 sector cannot mirror anything - the fold needs at least 2, so 0 and 1 both mean off.
 slider('r_kal','v_kal', v => v < 2 ? 'off' : v + ' fold', v => pushVis({kaleido: v < 2 ? 0 : v}));

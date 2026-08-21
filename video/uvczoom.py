@@ -47,11 +47,22 @@ def adb(*args, serial=None):
 
 
 def only_device():
+    """The single attached device, or an error.
+
+    ⚠️ NEVER SILENTLY PICK THE FIRST. With both phones plugged in this returned whichever
+    adb happened to list first, and the dashboard's *wired camera* controls drove the WRONG
+    PHONE - launching DeviceAsWebcam on the WiFi camera, which stole the camera from RigCam
+    and took its stream down. Guessing was worse than failing, because it failed somewhere
+    else entirely.
+    """
     out = adb("devices")
     devs = [l.split()[0] for l in out.splitlines()[1:]
             if l.strip() and l.split()[-1] == "device"]
     if not devs:
         sys.exit("no adb device. Is USB debugging on and the cable in?")
+    if len(devs) > 1:
+        sys.exit("more than one device attached (" + ", ".join(devs) +
+                 ") - pass --serial to say which. Refusing to guess.")
     return devs[0]
 
 

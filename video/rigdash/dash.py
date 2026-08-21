@@ -29,6 +29,9 @@ down mid-show.
 import argparse
 import json
 import queue
+import subprocess
+import urllib.parse
+import urllib.request
 import sys
 import threading
 import time
@@ -51,6 +54,65 @@ import obsctl                                  # noqa: E402  credential handling
 from server import Analyser, BANDS             # noqa: E402  the analyser is already tested
 
 SOURCE = "Webcam"
+
+# ---------------------------------------------------------------------------------------
+# The two camera back ends.
+#
+# ⚠️ THEY ARE NOT INTERCHANGEABLE, and the panel says so rather than pretending otherwise.
+#   WIRED (Pixel 8, UVC)  - the host gets NO camera control over UVC at all (see
+#                           video/camctl.py: zoom/focus unsupported, exposure min==max), so
+#                           the only route is tapping the phone's own DeviceAsWebcam UI over
+#                           ADB. Three fixed zoom presets, ~2 s per action, and it needs the
+#                           phone unlocked.
+#   RIGCAM (WiFi)         - our own app, full Camera2 control: continuous zoom, EV, and the
+#                           AE/AWB locks that let two cameras cut together.
+#
+# ⚠️ NEITHER IS POLLED FROM THE 1 Hz LOOP. `uvczoom --state` runs a uiautomator dump and
+# costs ~2 s; putting that in the status poll would stall the whole dashboard once a second.
+# Camera state is fetched on demand, when the panel is opened or refreshed.
+# ---------------------------------------------------------------------------------------
+RIGCAM = "http://127.0.0.1:8090"       # via `adb forward tcp:8090 tcp:8090`, or a LAN IP
+UVCZOOM = HERE.parent / "uvczoom.py"
+UVC_ZOOMS = ("0.5", "1.0", "2.0")
+# ⚠️ The wired phone is named explicitly. Two phones are attached in normal use and the
+# wired-camera controls MUST NOT land on the WiFi one - doing so launches DeviceAsWebcam
+# over RigCam and kills its stream.
+UVC_SERIAL = None
+
+
+def rigcam_call(path, timeout=2.5):
+    """Talk to the RigCam app. Never raises - an unreachable phone is a normal state."""
+    try:
+        with urllib.request.urlopen(RIGCAM + path, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except Exception as e:
+        return {"offline": True, "error": type(e).__name__}
+
+
+def uvc_call(*args, timeout=30):
+    """Run uvczoom.py. Reuses the tested tool rather than restating its ADB handling."""
+    if not UVCZOOM.exists():
+        return {"ok": False, "out": "uvczoom.py not found"}
+    try:
+        cmd = [sys.executable, str(UVCZOOM), *args]
+        if UVC_SERIAL:
+            cmd += ["--serial", UVC_SERIAL]
+        p = subprocess.run(cmd,
+                           capture_output=True, text=True, timeout=timeout)
+        out = (p.stdout or p.stderr or "").strip()
+        return {"ok": p.returncode == 0, "out": out[-400:]}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "out": "timed out - is the phone awake and unlocked?"}
+    except Exception as e:
+        return {"ok": False, "out": f"{type(e).__name__}: {e}"}
+
+
+def uvc_selected(text):
+    """Pull the active zoom out of `uvczoom --state` output, or None."""
+    for line in (text or "").splitlines():
+        if "currently selected zoom" in line:
+            return line.split(":")[-1].strip()
+    return None
 CODE_HASH = "?"
 MOODS = ["COSMOS", "THE CAIRN", "ÉIRE", "THE DEEP"]
 
@@ -320,6 +382,15 @@ class Handler(BaseHTTPRequestHandler):
                             _subs.remove(q)
                 return
 
+            if p == "/api/camera":
+                # On demand only. See the note by RIGCAM above.
+                uvc = uvc_call("--state")
+                self._json({
+                    "rigcam": rigcam_call("/api/state"),
+                    "uvc": {"reachable": uvc["ok"], "selected": uvc_selected(uvc["out"]),
+                            "zooms": list(UVC_ZOOMS), "detail": uvc["out"]},
+                }); return
+
             if p == "/api/state":
                 with _lock:
                     audio = dict(STATE)
@@ -442,6 +513,38 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 self._json({"echo": STATE["echo"], "echoTime": STATE["echoTime"]}); return
 
+            if p == "/api/camera":
+                target = body.get("target")
+                if target == "uvc":
+                    args = []
+                    if body.get("zoom") in UVC_ZOOMS:
+                        args = [body["zoom"]]
+                    elif body.get("lens") == "front":
+                        args = ["--front"]
+                    elif body.get("lens") == "back":
+                        args = ["--back"]
+                    elif body.get("hq"):
+                        args = ["--hq"]
+                    if not args:
+                        self._json({"error": "nothing to do"}, 400); return
+                    r = uvc_call(*args)
+                    self._json({"uvc": r}, 200 if r["ok"] else 502); return
+
+                if target == "rigcam":
+                    # Allowlist: only these reach the phone, and each is range-clamped there.
+                    q = {}
+                    for k in ("zoom", "linearZoom", "ev", "aeLock", "awbLock", "torch",
+                              "bitrate"):
+                        if k in body and body[k] is not None:
+                            v = body[k]
+                            q[k] = str(v).lower() if isinstance(v, bool) else str(v)
+                    if not q:
+                        self._json({"error": "nothing to do"}, 400); return
+                    self._json({"rigcam": rigcam_call(
+                        "/api/set?" + urllib.parse.urlencode(q))}); return
+
+                self._json({"error": "target must be uvc or rigcam"}, 400); return
+
             if p == "/api/blend":
                 mode = body.get("mode")
                 if mode not in BLEND_MODES:
@@ -534,14 +637,20 @@ def main():
     ap.add_argument("--port", type=int, default=8770)
     ap.add_argument("--device", type=int, default=None)
     ap.add_argument("--source", default="Webcam")
+    ap.add_argument("--uvc-serial", default=None,
+                    help="adb serial of the WIRED phone (required when two are attached)")
+    ap.add_argument("--rigcam", default="http://127.0.0.1:8090",
+                    help="RigCam base URL (adb forward gives 127.0.0.1:8090)")
     ap.add_argument("--samplerate", type=int, default=44100)
     ap.add_argument("--blocksize", type=int, default=1024)
     ap.add_argument("--no-audio", action="store_true",
                     help="filter control only, no audio capture")
     args = ap.parse_args()
 
-    global SOURCE
+    global SOURCE, RIGCAM, UVC_SERIAL
     SOURCE = args.source
+    RIGCAM = args.rigcam
+    UVC_SERIAL = args.uvc_serial
     client()                                    # fail now, not on the phone's first tap
 
     if not args.no_audio:
