@@ -99,10 +99,16 @@ def main():
                "-fflags", "nobuffer", "-flags", "low_delay",
                "-f", "h264", "-i", args.url,
                "-vf", f"scale={w}:{h}",
-               "-pix_fmt", "rgb24", "-f", "rawvideo", "-fps_mode", "passthrough", "-"]
+               # ⚠️ NV12, NOT rgb24. RGB is 3 bytes per pixel; at 1080p30 that is 6.2 MB a
+               # frame and 186 MB/s through a Python loop, which pegged the CPU and stalled
+               # the pipe - TCP then back-pressured the phone and its frames were dropped
+               # mid-GOP, which is what "pixelating and breaking" actually was. NV12 is
+               # 1.5 bytes per pixel: 93 MB/s, half the work, and it is what the virtual
+               # camera wants anyway, so ffmpeg skips a colour conversion too.
+               "-pix_fmt", "nv12", "-f", "rawvideo", "-fps_mode", "passthrough", "-"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, bufsize=0)
-        frame_bytes = w * h * 3
+        frame_bytes = w * h * 3 // 2      # NV12
         shown = 0
         t0 = time.time()
         last_report = t0
@@ -110,7 +116,7 @@ def main():
         try:
             with pyvirtualcam.Camera(width=w, height=h, fps=args.fps,
                                      backend=args.backend,
-                                     fmt=pyvirtualcam.PixelFormat.RGB) as cam:
+                                     fmt=pyvirtualcam.PixelFormat.NV12) as cam:
                 print(f"    feeding '{cam.device}'", flush=True)
                 while True:
                     # ⚠️ A pipe read returns what is AVAILABLE, not what you asked for. The
@@ -128,8 +134,7 @@ def main():
                         break
                     # No sleep_until_next_frame(): pacing to a nominal rate would
                     # reintroduce exactly the queue this tool exists to remove.
-                    cam.send(np.frombuffer(b"".join(chunks),
-                                           dtype=np.uint8).reshape(h, w, 3))
+                    cam.send(np.frombuffer(b"".join(chunks), dtype=np.uint8))
                     shown += 1
                     now = time.time()
                     if now - last_report >= 30:

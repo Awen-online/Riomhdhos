@@ -114,9 +114,21 @@ class StreamServer(
 
     private fun push(list: List<NalClient>, payload: ByteArray, keyframe: Boolean) {
         for (c in list) {
-            if (!c.q.offer(payload to keyframe)) {
-                c.q.poll()                       // drop the oldest, keep the newest
-                c.q.offer(payload to keyframe)
+            if (c.q.offer(payload to keyframe)) continue
+            // ⚠️ NEVER DROP AN ARBITRARY H.264 FRAME. Dropping the oldest is right for MJPEG,
+            // where every frame stands alone - and destructive here, because every P-frame
+            // references the ones before it. Discarding one mid-GOP does not cost a frame,
+            // it corrupts everything until the next keyframe: the "pixelating and breaking"
+            // a viewer actually sees.
+            //
+            // So when a client falls behind, throw away its whole backlog and resync at the
+            // next keyframe. That is a brief freeze instead of a smear of garbage, and with
+            // a 1 s keyframe interval the freeze is short.
+            c.q.clear()
+            c.sawKeyframe = false
+            if (keyframe) {
+                c.q.offer(payload to true)
+                c.sawKeyframe = true
             }
         }
     }
