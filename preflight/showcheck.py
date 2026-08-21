@@ -429,6 +429,27 @@ def check_cameras(dash="http://127.0.0.1:8770"):
         return
     check(g, "dashboard", OK, dash)
 
+    # ⚠️ The bridge is what makes the WiFi camera usable: measured 414 ms through it against
+    # 853 ms through OBS's Media Source. If it stops, that feed goes cold - so check the
+    # process exists BEFORE checking the picture, or a dead bridge just looks like a frozen
+    # camera and you debug the wrong end.
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "Get-CimInstance Win32_Process -Filter \"Name='python.exe' or "
+             "Name='pythonw.exe'\" | Where-Object { $_.CommandLine -like '*vcambridge*' } "
+             "| Select-Object -First 1 -ExpandProperty ProcessId"],
+            capture_output=True, text=True, timeout=25).stdout.strip()
+    except Exception:
+        out = ""
+    if out.isdigit():
+        check(g, "vcam bridge", OK, f"running (pid {out})")
+    else:
+        check(g, "vcam bridge", WARN, "not running",
+              "The WiFi camera's low-latency path is down. Start it: "
+              "Start-ScheduledTask -TaskName 'Riomhdhos vcam bridge'  - or run "
+              "python video/vcambridge.py by hand.")
+
     u = cam.get("uvc") or {}
     if u.get("reachable"):
         check(g, "wired camera", OK, f"zoom {u.get('selected') or '?'}x via ADB")
@@ -466,7 +487,11 @@ def check_cameras(dash="http://127.0.0.1:8770"):
         scenes = {s_["sceneName"] for s_ in sl.scenes}
         program = sl.current_program_scene_name
         kinds = {i["inputName"]: i["inputKind"] for i in cl.get_input_list().inputs}
-        for scene, src in (("Pixel8", "Pixel 8"), ("Pixel6", "Pixel 6 (WiFi)")):
+        # (scene, source). The vcam source is the one that matters for the WiFi camera now;
+        # the Media Source entry is kept because it still exists and may be re-enabled.
+        for scene, src in (("Pixel8", "Pixel 8"),
+                           ("BOTH CAMS", "Pixel 6 (vcam)"),
+                           ("Pixel6", "Pixel 6 (WiFi)")):
             kind = kinds.get(src, "")
             if scene not in scenes:
                 check(g, f"obs {src}", SKIP, f"no scene {scene}")
