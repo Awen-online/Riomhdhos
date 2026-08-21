@@ -77,7 +77,13 @@
      supporting the word and starts competing with it - the first pass ran to 1.9x, which
      made the glyph the loudest thing in a button whose label you still have to read.
      Ratios here: 15px glyph over 11.5px text, 17 over 15, 12 over 12. */
-  .ic{width:14px;height:14px;margin:0 auto 3px;color:inherit;opacity:.8}
+  /* ⚠️ display:block IS LOad-BEARING, not tidiness. Without it the span is `inline`, and an
+     inline box IGNORES width/height - so the SVG inside (width:100%/height:100%) expanded to
+     fill its button. The mood buttons rendered their icons at 702x719px while every other
+     icon looked right, because `.tabs` is a flex container and a flex item DOES honour
+     width. Two rounds of shrinking these values changed nothing on those four buttons,
+     because the property was being discarded rather than applied. */
+  .ic{display:block;width:14px;height:14px;margin:0 auto 3px;color:inherit;opacity:.8}
   .g4 button .ic,.g3 button .ic{width:15px;height:15px}
   #perform .g2 button .ic{width:17px;height:17px;margin-bottom:4px}
   .tabs button{display:flex;align-items:center;justify-content:center;gap:6px}
