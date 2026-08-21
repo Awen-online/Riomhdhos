@@ -34,8 +34,12 @@
        margin-right:6px;vertical-align:middle}
   .dot.bad{background:var(--bad)}
 
-  .tabs{position:sticky;top:47px;z-index:9;background:var(--bg);display:grid;
-        grid-template-columns:repeat(4,1fr);gap:6px;padding:8px 0 10px}
+  /* ⚠️ top MUST equal the status bar's rendered height (measured: 40px), or content
+     scrolls through the slot between them. It was 47 against a 40px bar, which showed a
+     7px sliver of whatever card was passing underneath - measured, not guessed. The
+     script keeps it in step if a long scene name ever wraps the bar onto two lines. */
+  .tabs{position:sticky;top:40px;z-index:9;background:var(--bg);display:grid;
+        grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:8px 0 10px}
   .tabs button{padding:11px;font-size:12px;letter-spacing:.12em;text-transform:uppercase}
   .tabs button.sel{background:var(--fg);border-color:var(--fg);color:#0b0d10}
   section{display:none} section.on{display:block}
@@ -68,7 +72,15 @@
   .meter{height:8px;background:#0d1116;border-radius:4px;overflow:hidden;margin:2px 0 8px}
   .meter>i{display:block;height:100%;width:0;background:linear-gradient(90deg,#3d6d8c,#7fd0c8);
            transition:width .06s linear}
-  .err{color:var(--bad);font-size:12px;min-height:1.1em;margin:6px 2px}
+  /* ⚠️ ERRORS COME TO YOU. This lived at the bottom of the document, which put it ~970px
+     down a 913px viewport - a failed scene change reported itself off-screen, so the only
+     symptom was a button that appeared to do nothing. Pinned to the bottom of the VIEWPORT
+     instead, and it takes up no room until there is something to say. */
+  .err{position:fixed;left:12px;right:12px;bottom:max(10px,env(safe-area-inset-bottom));
+       z-index:20;color:#2a0b0a;background:var(--bad);border-radius:10px;
+       padding:11px 13px;font-size:13px;font-weight:600;
+       box-shadow:0 6px 20px rgba(0,0,0,.55)}
+  .err:empty{display:none}
   .presets{display:flex;flex-wrap:wrap;gap:6px}
   .presets button{flex:1 1 30%;padding:13px 6px;font-size:13px}
   .mini{padding:9px 12px;font-size:12px;font-weight:500}
@@ -130,7 +142,7 @@
 </style>
 
 <div class="bar">
-  <div><span class="dot" id="dot"></span><span class="scene" id="b_scene">—</span></div>
+  <div><span class="dot" id="dot" title="audio feed"></span><span class="scene" id="b_scene">—</span></div>
   <div class="stats" id="b_stats">—</div>
 </div>
 
@@ -270,7 +282,12 @@
 </section>
 
 <section id="rig">
-  <h2>Audio in <span class="sub" id="feedState"></span></h2>
+  <!-- The state span sits OUTSIDE the h2's uppercase run on purpose: inside it, "Audio in"
+       + "no signal" rendered as the single letter-spaced phrase AUDIO IN NO SIGNAL, which
+       reads as a heading rather than as a heading plus a verdict. -->
+  <h2>Audio in</h2>
+  <div class="card"><div class="row" style="margin:0"><span class="k">Feed</span
+      ><span class="v" id="feedState">—</span></div></div>
   <div class="card" id="meters"></div>
 
   <h2>Camera</h2>
@@ -722,7 +739,11 @@ function renderHealth(h){
     '<div class="row"><span class="k">Skipped</span><span class="v">' + h.skipped +
       ' render · ' + h.missed + ' output</span></div>' +
     '<div class="row"><span class="k">OBS CPU</span><span class="v">' + h.cpu + '%</span></div>';
+  // ⚠️ The status strip carries the SAME colour as the Render card. Without it the one
+  // number you must not miss mid-song sat in --dim at 96% exactly as it did at 24% - the
+  // headroom warning was only visible on Rig, the tab you never open during a set.
   $('b_stats').textContent = pct.toFixed(0) + '% frame · ' + h.fps + ' fps';
+  $('b_stats').style.color = pct > 70 ? col : '';
 }
 
 const BARS = [['sub','Sub'],['low','Low'],['mid','Mid'],['high','High'],['rms','Level']];
@@ -754,8 +775,26 @@ new EventSource('/feed').onmessage = e => {
 setInterval(() => {
   const alive = performance.now() - lastFeed < 2000;
   $('feedState').textContent = alive ? 'live' : 'no signal';
+  $('feedState').style.color = alive ? 'var(--ok)' : 'var(--bad)';
   $('dot').className = 'dot' + (alive ? '' : ' bad');
+  // ⚠️ A FROZEN NUMBER LOOKS LIVE. These are only ever written by the feed, so when the
+  // feed stops they sit at whatever they last read and quietly claim the camera is fine.
+  // Say the feed is gone instead - which is the whole point of showing them.
+  if (!alive){
+    $('v_vid').textContent = 'no feed';
+    for (const [k] of BARS){ $('m_'+k).style.width = '0%'; $('n_'+k).textContent = '—'; }
+  }
 }, 700);
+
+/* Keep the tab strip pinned exactly under the status bar however tall it renders - a long
+   scene name wrapping onto a second line would otherwise re-open the gap. */
+(function(){
+  const bar = document.querySelector('.bar'), tabs = document.querySelector('.tabs');
+  const sync = () => { tabs.style.top = bar.offsetHeight + 'px'; };
+  sync();
+  if (window.ResizeObserver) new ResizeObserver(sync).observe(bar);
+  addEventListener('resize', sync);
+})();
 
 async function refresh(){
   const s = await (await fetch('/api/state')).json();
@@ -781,7 +820,20 @@ async function refresh(){
 }
 refresh().catch(e => $('err').textContent = 'cannot reach OBS: ' + e.message);
 // Health only. A full refresh would fight whatever slider is under a thumb.
+// A tap clears it; otherwise the next successful call does.
+$('err').onclick = () => { $('err').textContent = ''; };
+
 setInterval(async () => {
-  try{ renderHealth((await (await fetch('/api/state')).json()).health); }catch(e){}
+  try{
+    const s = await (await fetch('/api/state')).json();
+    renderHealth(s.health);
+    // ⚠️ WHICH SCENE IS LIVE MUST NOT GO STALE. This poll already had the answer and threw
+    // it away, so a cut made from OBS itself (or a hotkey, or the second operator) left the
+    // strip confidently naming a scene that was no longer on air. Re-render only on an
+    // actual change, so it never repaints under a thumb.
+    if (s.currentScene && s.currentScene !== curScene){
+      curScene = s.currentScene; $('b_scene').textContent = curScene; renderScenes();
+    }
+  }catch(e){}
 }, 4000);
 </script>
