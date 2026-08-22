@@ -1,14 +1,25 @@
 package online.awen.rigcam
 
 import android.content.Context
+import android.graphics.Rect
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
+import android.hardware.camera2.params.ColorSpaceTransform
+import android.hardware.camera2.params.RggbChannelVector
 import android.util.Size
 import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.Preview
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
@@ -64,6 +75,22 @@ class CameraEngine(
     @Volatile private var facing = CameraSelector.LENS_FACING_BACK
     @Volatile private var aeLock = false
     @Volatile private var awbLock = false
+    // WARNING: THE POINT OF MANUAL IS THAT BOTH PHONES CAN BE GIVEN THE SAME NUMBERS.
+    // Locking auto-exposure only freezes whatever each camera happened to land on, so the
+    // two still start from different places - measured p50 152 against 98, a visible jump
+    // on a cut. Setting ISO, shutter and white-balance gains explicitly makes them match by
+    // construction, and they cannot drift apart mid-set.
+    @Volatile private var manualExposure = false
+    @Volatile private var iso = 400
+    @Volatile private var shutterNs = 16666666L
+    @Volatile private var manualWb = false
+    @Volatile private var wbR = 1.8f
+    @Volatile private var wbG = 1.0f
+    @Volatile private var wbB = 1.9f
+    @Volatile private var faceTrack = false
+    @Volatile private var stabilize = false
+    @Volatile private var facesSeen = 0
+    @Volatile private var lastMeterMs = 0L
     @Volatile private var actualW = 0
     @Volatile private var actualH = 0
 
@@ -97,7 +124,18 @@ class CameraEngine(
         server?.dropNalClients()
         encoder?.release(); encoder = null
 
-        val preview = Preview.Builder()
+        val previewBuilder = Preview.Builder()
+        // The session capture callback is the only route from CameraX to CaptureResult -
+        // and therefore to STATISTICS_FACES.
+        Camera2Interop.Extender(previewBuilder).setSessionCaptureCallback(
+            object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(session: CameraCaptureSession,
+                                                request: CaptureRequest,
+                                                result: TotalCaptureResult) {
+                    try { meterOnFace(result) } catch (_: Exception) {}
+                }
+            })
+        val preview = previewBuilder
             .setResolutionSelector(
                 ResolutionSelector.Builder()
                     .setResolutionStrategy(
@@ -133,14 +171,110 @@ class CameraEngine(
         pushCaptureOptions()
     }
 
-    /** AE/AWB lock live, without rebinding - rebinding would drop the stream. */
+    /** Everything that can change without rebinding - rebinding would drop the stream. */
     private fun pushCaptureOptions() {
         val c = camera ?: return
-        Camera2CameraControl.from(c.cameraControl).captureRequestOptions =
-            CaptureRequestOptions.Builder()
-                .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, aeLock)
-                .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, awbLock)
-                .build()
+        val b = CaptureRequestOptions.Builder()
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, aeLock)
+            .setCaptureRequestOption(CaptureRequest.CONTROL_AWB_LOCK, awbLock)
+
+        if (manualExposure) {
+            // WARNING: AE must be OFF or the sensor keys are ignored - the camera keeps
+            // driving exposure itself and the values silently do nothing.
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE,
+                                      CaptureRequest.CONTROL_AE_MODE_OFF)
+            b.setCaptureRequestOption(CaptureRequest.SENSOR_SENSITIVITY, iso)
+            b.setCaptureRequestOption(CaptureRequest.SENSOR_EXPOSURE_TIME, shutterNs)
+        } else {
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE,
+                                      CaptureRequest.CONTROL_AE_MODE_ON)
+        }
+
+        if (manualWb) {
+            // Same rule: AWB off, and COLOR_CORRECTION_MODE must be TRANSFORM_MATRIX or the
+            // gains are ignored.
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE,
+                                      CaptureRequest.CONTROL_AWB_MODE_OFF)
+            b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_MODE,
+                                      CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+            b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_GAINS,
+                                      RggbChannelVector(wbR, wbG, wbG, wbB))
+            // WARNING: TRANSFORM_MATRIX MODE MEANS THE HAL USES COLOR_CORRECTION_TRANSFORM, AND
+            // IT IS NOT OPTIONAL. Setting the mode and the gains but not the matrix leaves it
+            // all zeroes, which is singular - measured on the Pixel 6, the pipeline rejected
+            // EVERY frame with "Color correction matrix is NOT invertible!" and the stream
+            // stopped dead while /api/set still cheerfully reported success. Identity here, so
+            // the gains above are the only thing colouring the picture.
+            b.setCaptureRequestOption(CaptureRequest.COLOR_CORRECTION_TRANSFORM, IDENTITY_CCM)
+        } else {
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AWB_MODE,
+                                      CaptureRequest.CONTROL_AWB_MODE_AUTO)
+        }
+
+        b.setCaptureRequestOption(CaptureRequest.STATISTICS_FACE_DETECT_MODE,
+            if (faceTrack) CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE
+            else CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF)
+
+        b.setCaptureRequestOption(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+            if (stabilize) CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+            else CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+
+        Camera2CameraControl.from(c.cameraControl).captureRequestOptions = b.build()
+    }
+
+    /**
+     * Point focus and exposure at the largest face the ISP reports.
+     *
+     * WARNING: THIS IS FREE AND ON-DEVICE. An earlier answer said face tracking was not
+     * available - true of OBS PLUGINS, and wrong about the phone: both cameras report
+     * availableFaceDetectModes [0,1,2], so the ISP finds faces itself at no cost here and
+     * none at all on the desktop.
+     */
+    private fun meterOnFace(result: CaptureResult) {
+        if (!faceTrack) return
+        val faces = result.get(CaptureResult.STATISTICS_FACES) ?: return
+        facesSeen = faces.size
+        val face = faces.maxByOrNull { it.bounds.width() * it.bounds.height() } ?: return
+        val now = System.currentTimeMillis()
+        // WARNING: throttled hard. Re-metering every frame makes the camera hunt
+        // continuously and the picture breathe - worse than not tracking at all.
+        if (now - lastMeterMs < 1200) return
+        lastMeterMs = now
+
+        val c = camera ?: return
+        val active: Rect = Camera2CameraInfo.from(c.cameraInfo)
+            .getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            ?: return
+        val cx = face.bounds.exactCenterX() / active.width().toFloat()
+        val cy = face.bounds.exactCenterY() / active.height().toFloat()
+        val pt = SurfaceOrientedMeteringPointFactory(1f, 1f).createPoint(cx, cy)
+        try {
+            c.cameraControl.startFocusAndMetering(
+                FocusMeteringAction.Builder(pt,
+                    FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE)
+                    .disableAutoCancel()
+                    .build())
+        } catch (_: Exception) {
+        }
+    }
+
+    /** What the sensor will actually accept - read from the device, never assumed. */
+    private fun isoRange(): android.util.Range<Int>? = try {
+        Camera2CameraInfo.from(camera!!.cameraInfo)
+            .getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+    } catch (e: Exception) { null }
+
+    private fun shutterRange(): android.util.Range<Long>? = try {
+        Camera2CameraInfo.from(camera!!.cameraInfo)
+            .getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+    } catch (e: Exception) { null }
+
+    private companion object {
+        /** 3x3 identity as numerator/denominator pairs, row-major. */
+        val IDENTITY_CCM = ColorSpaceTransform(
+            intArrayOf(1, 1, 0, 1, 0, 1,
+                       0, 1, 1, 1, 0, 1,
+                       0, 1, 0, 1, 1, 1))
     }
 
     override fun stateJson(): String {
@@ -169,6 +303,12 @@ class CameraEngine(
          "ev":{"index":${ev?.exposureCompensationIndex ?: 0},
                "min":${ev?.exposureCompensationRange?.lower ?: 0},
                "max":${ev?.exposureCompensationRange?.upper ?: 0}},
+         "manual":{"exposure":$manualExposure,"iso":$iso,"shutterNs":$shutterNs,
+                   "wb":$manualWb,"wbR":$wbR,"wbG":$wbG,"wbB":$wbB,
+                   "isoMin":${isoRange()?.lower ?: 0},"isoMax":${isoRange()?.upper ?: 0},
+                   "shutterMinNs":${shutterRange()?.lower ?: 0},
+                   "shutterMaxNs":${shutterRange()?.upper ?: 0}},
+         "faceTrack":$faceTrack,"faces":$facesSeen,"stabilize":$stabilize,
          "aeLock":$aeLock,"awbLock":$awbLock,
          "torch":${c?.cameraInfo?.torchState?.value == 1}}
         """.trimIndent().replace("\n", "")
@@ -190,6 +330,39 @@ class CameraEngine(
         params["torch"]?.toBooleanStrictOrNull()?.let {
             c.cameraControl.enableTorch(it); done += "torch=$it"
         }
+        // WARNING: clamp to what the DEVICE reports, not to a guess. An out-of-range ISO or
+        // shutter is not rejected loudly - the camera quietly ignores the whole request and
+        // the picture simply does not change, which reads as a broken control.
+        params["iso"]?.toIntOrNull()?.let {
+            val r = isoRange()
+            iso = if (r != null) it.coerceIn(r.lower, r.upper) else it
+            manualExposure = true; done += "iso=$iso"
+        }
+        params["shutterNs"]?.toLongOrNull()?.let {
+            val r = shutterRange()
+            shutterNs = if (r != null) it.coerceIn(r.lower, r.upper) else it
+            manualExposure = true; done += "shutterNs=$shutterNs"
+        }
+        params["shutter"]?.let { txt ->
+            // Accept "1/60" as well as nanoseconds, because that is how anyone thinks about
+            // shutter speed.
+            val m = Regex("""1/(\d+)""").find(txt)
+            if (m != null) {
+                val r = shutterRange()
+                val ns = 1_000_000_000L / m.groupValues[1].toLong()
+                shutterNs = if (r != null) ns.coerceIn(r.lower, r.upper) else ns
+                manualExposure = true; done += "shutter=1/${m.groupValues[1]}"
+            }
+        }
+        params["manualExposure"]?.toBooleanStrictOrNull()?.let {
+            manualExposure = it; done += "manualExposure=$it"
+        }
+        params["wbR"]?.toFloatOrNull()?.let { wbR = it; manualWb = true; done += "wbR=$it" }
+        params["wbG"]?.toFloatOrNull()?.let { wbG = it; manualWb = true; done += "wbG=$it" }
+        params["wbB"]?.toFloatOrNull()?.let { wbB = it; manualWb = true; done += "wbB=$it" }
+        params["manualWb"]?.toBooleanStrictOrNull()?.let { manualWb = it; done += "manualWb=$it" }
+        params["faceTrack"]?.toBooleanStrictOrNull()?.let { faceTrack = it; done += "faceTrack=$it" }
+        params["stabilize"]?.toBooleanStrictOrNull()?.let { stabilize = it; done += "stabilize=$it" }
         params["aeLock"]?.toBooleanStrictOrNull()?.let { aeLock = it; done += "aeLock=$it" }
         params["awbLock"]?.toBooleanStrictOrNull()?.let { awbLock = it; done += "awbLock=$it" }
         // ---- settings the capture session is fixed at: each forces a rebind ----
@@ -214,7 +387,12 @@ class CameraEngine(
                 needRebind = true
             }
         }
-        if (done.any { it.startsWith("aeLock") || it.startsWith("awbLock") }) {
+        // Any of these live entirely in the capture request, so one push applies them all
+        // without touching the session.
+        if (done.any {
+                it.startsWith("aeLock") || it.startsWith("awbLock") || it.startsWith("iso") ||
+                it.startsWith("shutter") || it.startsWith("manual") || it.startsWith("wb") ||
+                it.startsWith("faceTrack") || it.startsWith("stabilize") }) {
             pushCaptureOptions()
         }
         if (needRebind) rebind()
