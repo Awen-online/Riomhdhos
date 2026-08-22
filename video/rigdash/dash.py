@@ -621,6 +621,12 @@ class Handler(BaseHTTPRequestHandler):
             # died - including /api/power, whose whole job is putting the phones to sleep
             # and has nothing to do with OBS. The connection was refused, SystemExit escaped
             # the handler, and the client got no response at all: not an error, silence.
+            #
+            # ⚠️ AND IT IS NOT JUST /api/power. That fix moved ONE route above the guard and
+            # left /api/camera below it, so with OBS closed every camera tap came back 503
+            # "OBS is not running" - for a request whose entire path is dashboard -> phone.
+            # Framing a shot before opening OBS is the normal order of work, so this is the
+            # case that matters. Anything that does not touch OBS belongs above the guard.
             if p == "/api/power":
                 mode = body.get("mode")
                 # 'normal' is what the button says; 'show' is what power.py has always
@@ -633,6 +639,45 @@ class Handler(BaseHTTPRequestHandler):
                 r = power_call(mode)
                 _dev_cache["at"] = 0          # battery figures are about to change a lot
                 self._json({"mode": mode, "result": r}, 200 if r["ok"] else 502); return
+
+            if p == "/api/camera":
+                target = body.get("target")
+                if target == "uvc":
+                    args = []
+                    if body.get("zoom") in UVC_ZOOMS:
+                        args = [body["zoom"]]
+                    elif body.get("lens") == "front":
+                        args = ["--front"]
+                    elif body.get("lens") == "back":
+                        args = ["--back"]
+                    elif body.get("hq"):
+                        args = ["--hq"]
+                    if not args:
+                        self._json({"error": "nothing to do"}, 400); return
+                    r = uvc_call(*args)
+                    self._json({"uvc": r}, 200 if r["ok"] else 502); return
+
+                if target == "rigcam":
+                    # Allowlist: only these reach the phone, and each is range-clamped there.
+                    q = {}
+                    for k in ("zoom", "linearZoom", "ev", "aeLock", "awbLock", "torch",
+                              "bitrate", "fps", "facing", "resolution",
+                              # Manual sensor and colour. These exist so BOTH cameras can be
+                              # given the same explicit numbers instead of two auto algorithms
+                              # drifting apart mid-set - grading in OBS got black level within
+                              # 5 but could not close a mid-tone gap of 152 against 98.
+                              "iso", "shutter", "shutterNs", "manualExposure",
+                              "wbR", "wbG", "wbB", "manualWb",
+                              "faceTrack", "stabilize"):
+                        if k in body and body[k] is not None:
+                            v = body[k]
+                            q[k] = str(v).lower() if isinstance(v, bool) else str(v)
+                    if not q:
+                        self._json({"error": "nothing to do"}, 400); return
+                    self._json({"rigcam": rigcam_call(
+                        "/api/set?" + urllib.parse.urlencode(q))}); return
+
+                self._json({"error": "target must be uvc or rigcam"}, 400); return
 
             cl = self._obs_or_none()
             if cl is None:
@@ -714,38 +759,6 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 self._json({"echo": STATE["echo"], "echoTime": STATE["echoTime"]}); return
-
-            if p == "/api/camera":
-                target = body.get("target")
-                if target == "uvc":
-                    args = []
-                    if body.get("zoom") in UVC_ZOOMS:
-                        args = [body["zoom"]]
-                    elif body.get("lens") == "front":
-                        args = ["--front"]
-                    elif body.get("lens") == "back":
-                        args = ["--back"]
-                    elif body.get("hq"):
-                        args = ["--hq"]
-                    if not args:
-                        self._json({"error": "nothing to do"}, 400); return
-                    r = uvc_call(*args)
-                    self._json({"uvc": r}, 200 if r["ok"] else 502); return
-
-                if target == "rigcam":
-                    # Allowlist: only these reach the phone, and each is range-clamped there.
-                    q = {}
-                    for k in ("zoom", "linearZoom", "ev", "aeLock", "awbLock", "torch",
-                              "bitrate", "fps", "facing", "resolution"):
-                        if k in body and body[k] is not None:
-                            v = body[k]
-                            q[k] = str(v).lower() if isinstance(v, bool) else str(v)
-                    if not q:
-                        self._json({"error": "nothing to do"}, 400); return
-                    self._json({"rigcam": rigcam_call(
-                        "/api/set?" + urllib.parse.urlencode(q))}); return
-
-                self._json({"error": "target must be uvc or rigcam"}, 400); return
 
             if p == "/api/blend":
                 mode = body.get("mode")

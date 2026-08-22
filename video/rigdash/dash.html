@@ -261,6 +261,20 @@
     <div class="g3" id="rig_locks"></div>
     <div class="note">Lock AE and AWB once the shot is framed — two cameras auto-exposing
       independently drift apart, and that is what makes a cut jump.</div>
+    <div class="row"><span class="k">Sensor</span><span class="v" id="v_sensor">auto</span></div>
+    <div class="g2" id="rig_manual"></div>
+    <div class="row"><span class="k">ISO</span><span class="v" id="v_iso">—</span></div>
+    <input type="range" id="r_iso" min="44" max="3200" step="1" value="400">
+    <div class="row"><span class="k">Shutter</span><span class="v" id="v_shut">—</span></div>
+    <input type="range" id="r_shut" min="30" max="500" step="5" value="60">
+    <div class="row"><span class="k">Warmth</span><span class="v" id="v_wb">—</span></div>
+    <input type="range" id="r_wb" min="-100" max="100" step="1" value="0">
+    <div class="g2" id="rig_smart"></div>
+    <div class="note">Locking holds whatever the camera last chose; <b>manual sets a number
+      you can repeat</b>. That is the difference that matters when two phones have to match —
+      graded from OBS, black level came within 5 but mid-tones stayed 152 against 98. Face
+      metering uses the phone's own hardware face detection to drive focus and exposure,
+      re-aimed at most every 1.2 s so it settles instead of hunting.</div>
     <div class="row"><span class="k">Lens</span><span class="v" id="v_face">—</span></div>
     <div class="g2" id="rig_facing"></div>
     <div class="row"><span class="k">Resolution</span><span class="v" id="v_res">—</span></div>
@@ -661,6 +675,40 @@ function renderCamera(){
   camBtn(lb, 'torch',    CAM_ICON.torch, !!r.torch,
          () => camPost({target:'rigcam', torch: !r.torch}));
 
+  const m = r.manual || {};
+  $('v_sensor').textContent = off ? '—'
+      : ((m.exposure ? 'manual' : 'auto') + ' exp · ' + (m.wb ? 'manual' : 'auto') + ' WB');
+  const nb = $('rig_manual'); nb.innerHTML = '';
+  camBtn(nb, 'manual exp', CAM_ICON.one, !!m.exposure,
+         () => camPost({target:'rigcam', manualExposure: !m.exposure}));
+  camBtn(nb, 'manual WB',  CAM_ICON.one, !!m.wb,
+         () => camPost({target:'rigcam', manualWb: !m.wb}));
+  if (!off && m.isoMax){
+    // WARNING: BOUNDS COME FROM THE SENSOR, NOT FROM A GUESS. Out of range is not refused
+    // loudly - the camera ignores the whole request and the picture just does not change.
+    // The Pixel 6 reports 44-11377, but the top of that is noise, so the slider stops at a
+    // usable ceiling while the phone still clamps anything sent directly.
+    const si = $('r_iso');
+    si.min = m.isoMin; si.max = Math.min(m.isoMax, 6400); si.value = m.iso;
+    $('v_iso').textContent = m.iso;
+    // Shutter reads as a denominator because that is how anyone thinks about it.
+    const sh = $('r_shut');
+    sh.value = Math.round(1e9 / Math.max(1, m.shutterNs));
+    $('v_shut').textContent = '1/' + sh.value;
+    // One warmth axis instead of three raw gains: nobody tunes a camera by typing an R
+    // channel multiplier. 0 is the neutral 1.8/1.0/1.9 the phone starts from.
+    $('r_wb').value = Math.round((m.wbR - 1.8) * 125);
+    $('v_wb').textContent = wbLabel(+$('r_wb').value);
+  }
+  const sb = $('rig_smart'); sb.innerHTML = '';
+  camBtn(sb, 'face focus', CAM_ICON.one, !!r.faceTrack,
+         () => camPost({target:'rigcam', faceTrack: !r.faceTrack}));
+  camBtn(sb, 'stabilise',  CAM_ICON.one, !!r.stabilize,
+         () => camPost({target:'rigcam', stabilize: !r.stabilize}));
+  if (r.faceTrack && !off)
+    $('v_sensor').textContent += ' · ' + (r.faces || 0) + ' face'
+        + (r.faces === 1 ? '' : 's');
+
   // Session-fixed settings. Each rebinds, so they are separated from the live controls.
   const fb = $('rig_facing'); fb.innerHTML = '';
   for (const f of ['back','front'])
@@ -692,7 +740,25 @@ async function camPost(body){
     else if (body.facing || body.resolution || body.fps || body.bitrate){
       // The session is being rebuilt; local state would be a guess. Give it a moment.
       setTimeout(loadCamera, 2500);
-    } else { Object.assign(CAM.rigcam, body); renderCamera(); }
+    } else {
+      Object.assign(CAM.rigcam, body);
+      // WARNING: THE SENSOR KEYS ARE FLAT ON THE WIRE BUT NESTED IN THE STATE. /api/set takes
+      // manualExposure=true; /api/state reports it as manual.exposure. Assigning the body
+      // wholesale writes a key nothing reads, so the button stays dark until the next query
+      // and reads as a control that does not work.
+      const mm = CAM.rigcam.manual;
+      if (mm){
+        if ('manualExposure' in body) mm.exposure = body.manualExposure;
+        if ('manualWb' in body)       mm.wb       = body.manualWb;
+        if ('iso' in body)            mm.iso      = body.iso;
+        if ('wbR' in body)            mm.wbR      = body.wbR;
+        if ('wbB' in body)            mm.wbB      = body.wbB;
+        // Setting either one implies manual, exactly as the phone does it.
+        if ('iso' in body || 'shutter' in body) mm.exposure = true;
+        if ('wbR' in body) mm.wb = true;
+      }
+      renderCamera();
+    }
   }catch(e){
     $('err').textContent = e.message;
     if (body.target === 'uvc') $('v_uvc').textContent = 'failed';
@@ -717,6 +783,22 @@ slider('r_rz','v_rz', v => v.toFixed(2) + '×' + (v < 1 ? '  wide' : ''),
        v => post('/api/camera', {target:'rigcam', zoom:v}).catch(()=>{}));
 slider('r_rev','v_rev', v => String(Math.round(v)),
        v => post('/api/camera', {target:'rigcam', ev:Math.round(v)}).catch(()=>{}));
+
+// Warmth is one axis over three gains: negative cools, positive warms, and green is left
+// alone because a green cast is a fault to fix, not a look to dial in.
+function wbLabel(v){
+  return v === 0 ? 'neutral' : (v > 0 ? '+' + v + ' warm' : v + ' cool');
+}
+function wbGains(v){
+  return {wbR: +(1.8 + v / 125).toFixed(3), wbG: 1.0, wbB: +(1.9 - v / 125).toFixed(3)};
+}
+slider('r_iso','v_iso', v => String(Math.round(v)),
+       v => post('/api/camera', {target:'rigcam', iso:Math.round(v)}).catch(()=>{}));
+slider('r_shut','v_shut', v => '1/' + Math.round(v),
+       v => post('/api/camera', {target:'rigcam', shutter:'1/' + Math.round(v)}).catch(()=>{}));
+slider('r_wb','v_wb', wbLabel,
+       v => post('/api/camera',
+                 Object.assign({target:'rigcam'}, wbGains(Math.round(v)))).catch(()=>{}));
 
 slider('r_x','v_x', v => v.toFixed(2), v => pushVis({xfade:v}));
 // 1 sector cannot mirror anything - the fold needs at least 2, so 0 and 1 both mean off.
