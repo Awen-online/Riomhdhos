@@ -457,14 +457,46 @@ def check_cameras(dash="http://127.0.0.1:8770"):
               "Start-ScheduledTask -TaskName 'Riomhdhos vcam bridge'  - or run "
               "python video/vcambridge.py by hand.")
 
-    u = cam.get("uvc") or {}
-    if u.get("reachable"):
-        check(g, "wired camera", OK, f"zoom {u.get('selected') or '?'}x via ADB")
-    else:
-        check(g, "wired camera", WARN, "not reachable",
-              "uvczoom could not read the phone's UI. It needs the phone AWAKE and "
-              "UNLOCKED - there is no way round that, it is a UI tap. "
-              "adb shell settings put global stay_on_while_plugged_in 3 keeps it awake.")
+    # WARNING: THE WIRED PHONE IS NO LONGER A UVC WEBCAM. It used to reach OBS through
+    # GrapheneOS DeviceAsWebcam, and this checked it by reading that app's UI over ADB. It now
+    # runs RigCam over an adb forward like the other one, so the UVC check reported a WARN
+    # for a camera that was working perfectly - a false alarm before every show is worse than
+    # no check, because it trains you to ignore the report.
+    for label, r in (cam.get("rigcams") or {}).items():
+        if r.get("offline"):
+            check(g, f"camera {label}", WARN, f"offline ({r.get('error')})",
+                  "RigCam is not answering. It runs as a foreground service, so it should "
+                  "survive the screen going off. Check the phone is awake and on the network, "
+                  "and for the USB phone that its adb forward is up.")
+            continue
+        m = r.get("manual") or {}
+        mode = ("manual" if m.get("exposure") else "auto") + " exp/" + \
+               ("manual" if m.get("wb") else "auto") + " WB"
+        detail = (f"{r.get('resolution')} @{r.get('fps')} {mode}")
+        # Two cameras auto-exposing independently drift apart, and that is what makes a cut
+        # jump. It is not an error - it is a choice - so it reports rather than fails.
+        if not (m.get("exposure") and m.get("wb")):
+            check(g, f"camera {label}", WARN, detail,
+                  "This camera is still deciding its own exposure or white balance. Set both "
+                  "manually, to the SAME numbers on both phones, or they will drift apart "
+                  "over a set and cuts between them will jump.")
+        else:
+            check(g, f"camera {label}", OK, detail)
+
+    # Both phones matching MATTERS, so say so explicitly rather than leaving it to be eyeballed
+    # across two lines of the report.
+    cams = [(k, v) for k, v in (cam.get("rigcams") or {}).items() if not v.get("offline")]
+    if len(cams) > 1:
+        sets = {k: (v.get("manual", {}).get("iso"),
+                    v.get("manual", {}).get("shutterNs"),
+                    v.get("manual", {}).get("wbR")) for k, v in cams}
+        if len(set(sets.values())) == 1:
+            check(g, "cameras matched", OK, "same ISO, shutter and warmth on both")
+        else:
+            check(g, "cameras matched", WARN,
+                  "; ".join(f"{k} iso {v[0]}" for k, v in sets.items()),
+                  "The two cameras are set differently, so they will not cut together. "
+                  "Matching them at the sensor is the whole reason both phones run RigCam.")
 
     r = cam.get("rigcam") or {}
     if r.get("offline"):

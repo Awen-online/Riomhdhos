@@ -35,11 +35,17 @@ param(
   [string]$Url = "http://192.168.1.234:8090/stream.h264",
   [string]$Api = "http://192.168.1.234:8090/api/state",
   [string]$Size,
+  # There are now TWO bridges - one per phone - so the task name, the sink and the phone all
+  # have to be parameters. Windows has exactly one OBS Virtual Camera, so the second phone
+  # feeds Unity Capture instead; see the -Backend note below.
+  [string]$Name = "Riomhdhos vcam bridge",
+  [ValidateSet("obs", "unitycapture")] [string]$Backend = "obs",
+  [string]$AdbSerial,
   [switch]$NoRestartOnFailure,
   [switch]$Uninstall
 )
 
-$TaskName = "Riomhdhos vcam bridge"
+$TaskName = $Name
 
 if ($Uninstall) {
   if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
@@ -57,8 +63,11 @@ $python = (Get-Command pythonw.exe -ErrorAction SilentlyContinue).Source
 if (-not $python) { $python = (Get-Command python.exe -ErrorAction SilentlyContinue).Source }
 if (-not $python) { throw "no python on PATH" }
 
-$argList = @("`"$script`"", "--url", $Url, "--api", $Api)
+$argList = @("`"$script`"", "--url", $Url, "--api", $Api, "--backend", $Backend)
 if ($Size) { $argList += @("--size", $Size) }
+# A USB phone needs its adb forward re-made on every reconnect - a forward belongs to an adb
+# connection and dies with the cable. The bridge does it each pass when given the serial.
+if ($AdbSerial) { $argList += @("--adb-serial", $AdbSerial) }
 
 $action  = New-ScheduledTaskAction -Execute $python -Argument ($argList -join " ") -WorkingDirectory $here
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
@@ -83,6 +92,8 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
 "  runs   : at logon as $env:USERNAME, 90s delay, retry every minute"
 ""
 "Start it now with:  Start-ScheduledTask -TaskName '$TaskName'"
-"⚠️ The OBS Virtual Camera sink takes ONE producer. Stop any vcambridge you already have"
-"   running, and do not press OBS's own 'Start Virtual Camera' while this is feeding it."
+"⚠️ EACH SINK TAKES ONE PRODUCER, and so does each capture device on the consumer side."
+"   Do not run two bridges against the same -Backend, and do not press OBS's own"
+"   'Start Virtual Camera' while a bridge is feeding it. Two producers on one sink do not"
+"   error - they starve each other and the picture simply stops."
 "Check it is actually delivering with:  python preflight\showcheck.py --only cameras"

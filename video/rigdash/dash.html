@@ -243,48 +243,14 @@
       Sleep takes the cameras down. That is the point, and the checks on Rig will say so.</div>
   </div>
 
-  <h2>Wired camera</h2>
-  <div class="card">
-    <div class="row"><span class="k">Wired · Pixel 8 · USB</span><span class="v" id="v_uvc">—</span></div>
-    <div class="g3" id="uvc_zoom"></div>
-    <div class="g3" id="uvc_more"></div>
-    <div class="note">Zoom presets only — the host has no camera control over UVC, so these
-      tap the phone's own screen over ADB. Needs the phone awake and unlocked. <b>0.5 is the
-      ultrawide.</b></div>
-  </div>
-  <div class="card">
-    <div class="row"><span class="k">WiFi · RigCam</span><span class="v" id="v_rig">—</span></div>
-    <div class="row"><span class="k">Zoom</span><span class="v" id="v_rz">1.00×</span></div>
-    <input type="range" id="r_rz" min="0.5" max="8" step="0.01" value="1">
-    <div class="row"><span class="k">Exposure</span><span class="v" id="v_rev">0</span></div>
-    <input type="range" id="r_rev" min="-24" max="24" step="1" value="0">
-    <div class="g3" id="rig_locks"></div>
-    <div class="note">Lock AE and AWB once the shot is framed — two cameras auto-exposing
-      independently drift apart, and that is what makes a cut jump.</div>
-    <div class="row"><span class="k">Sensor</span><span class="v" id="v_sensor">auto</span></div>
-    <div class="g2" id="rig_manual"></div>
-    <div class="row"><span class="k">ISO</span><span class="v" id="v_iso">—</span></div>
-    <input type="range" id="r_iso" min="44" max="3200" step="1" value="400">
-    <div class="row"><span class="k">Shutter</span><span class="v" id="v_shut">—</span></div>
-    <input type="range" id="r_shut" min="30" max="500" step="5" value="60">
-    <div class="row"><span class="k">Warmth</span><span class="v" id="v_wb">—</span></div>
-    <input type="range" id="r_wb" min="-100" max="100" step="1" value="0">
-    <div class="g2" id="rig_smart"></div>
-    <div class="note">Locking holds whatever the camera last chose; <b>manual sets a number
-      you can repeat</b>. That is the difference that matters when two phones have to match —
-      graded from OBS, black level came within 5 but mid-tones stayed 152 against 98. Face
-      metering uses the phone's own hardware face detection to drive focus and exposure,
-      re-aimed at most every 1.2 s so it settles instead of hunting.</div>
-    <div class="row"><span class="k">Lens</span><span class="v" id="v_face">—</span></div>
-    <div class="g2" id="rig_facing"></div>
-    <div class="row"><span class="k">Resolution</span><span class="v" id="v_res">—</span></div>
-    <div class="g2" id="rig_res"></div>
-    <div class="row"><span class="k">Frame rate</span><span class="v" id="v_fps">—</span></div>
-    <div class="g3" id="rig_fps"></div>
-    <div class="note">⚠️ These four re-open the capture session, so the stream drops for a
-      second and OBS reconnects. Between songs, not mid-song — zoom, exposure and the locks
-      all apply live without it. Measured on the Pixel 6: 720p sustains 30 fps, 1080p 26.7.</div>
-  </div>
+  <h2>Cameras</h2>
+  <div id="rig_cards"></div>
+  <div class="note">Both phones run RigCam now. The Pixel 8 used to come in over UVC, which
+    offered zoom presets and a quality toggle and nothing else — no exposure, no white
+    balance, which is exactly why the two could never be matched. Give them the
+    <b>same ISO, shutter and warmth</b> and they match by construction instead of drifting
+    apart over a set.</div>
+
   <h2>Filters</h2>
   <div class="card">
     <div class="row"><span class="k">Configure filters on</span><span class="v" id="v_fxcam">—</span></div>
@@ -598,7 +564,10 @@ function renderDevices(){
   box.innerHTML = ds.map(d => {
     // Role is decided by which serial the dashboard was told is the wired one - never
     // guessed, because guessing sent the wired controls to the wrong phone once already.
-    const role = d.role === 'wired' ? 'WIRED · UVC' : 'WIFI · RigCam';
+    // Both phones run RigCam now; only the transport differs. Saying UVC here was left over
+    // from when the wired phone came in through DeviceAsWebcam, and a label that names the
+    // wrong software is worse than no label - it sends you to the wrong tool when it breaks.
+    const role = d.role === 'wired' ? 'USB · RigCam' : 'WIFI · RigCam';
     // ⚠️ Runtime, coloured, not just a percentage. These phones draw ~500 mA while
     // streaming, so '14%' and '45%' can both mean 'dies during the set' - or not. The
     // number a performer needs is HOURS LEFT, and it needs to shout when it is short.
@@ -635,133 +604,164 @@ function renderDevices(){
   }).join('');
 }
 
-function renderCamera(){
-  const u = (CAM && CAM.uvc) || {};
-  const r = (CAM && CAM.rigcam) || {};
-
-  $('v_uvc').textContent = u.reachable
-      ? (u.selected ? u.selected + '×' : 'ready')
-      : 'unreachable';
-  const zb = $('uvc_zoom'); zb.innerHTML = '';
-  for (const z of (u.zooms || ['0.5','1.0','2.0'])){
-    const ico = z === '0.5' ? CAM_ICON.wide : (z === '2.0' ? CAM_ICON.tight : CAM_ICON.one);
-    camBtn(zb, z === '0.5' ? '0.5 wide' : z + '×', ico, u.selected === z,
-           () => camPost({target:'uvc', zoom:z}));
-  }
-  const mb = $('uvc_more'); mb.innerHTML = '';
-  camBtn(mb, 'front', CAM_ICON.flip, false, () => camPost({target:'uvc', lens:'front'}));
-  camBtn(mb, 'back',  CAM_ICON.flip, false, () => camPost({target:'uvc', lens:'back'}));
-  camBtn(mb, 'hi-q',  CAM_ICON.hq,   false, () => camPost({target:'uvc', hq:true}));
-
+function rigCard(label, r, idx){
+  // Per-phone ids: the same controls exist twice now, and two elements sharing an id means
+  // the second phone silently drives the first one's readout.
+  const q = n => 'p' + idx + '_' + n;
+  const mark = PHONE_ICON[label] || PHONE_FALLBACK;
   const off = r.offline || !r.zoom;
-  $('v_rig').textContent = off ? 'offline'
-      : (r.streaming ? r.resolution + ' streaming' : r.resolution + ' idle');
-  if (!off){
-    // Range comes from the phone: the Pixel 6 reports 0.670-7.0, the Pixel 8 0.549-8.0,
-    // and the sub-1.0 minimum IS the ultrawide.
-    const s = $('r_rz');
-    s.min = r.zoom.min; s.max = r.zoom.max; s.value = r.zoom.ratio;
-    $('v_rz').textContent = (+r.zoom.ratio).toFixed(2) + '×'
-        + (r.zoom.ratio < 1 ? '  wide' : '');
-    const e = $('r_rev');
-    e.min = r.ev.min; e.max = r.ev.max; e.value = r.ev.index;
-    $('v_rev').textContent = r.ev.index;
-  }
-  const lb = $('rig_locks'); lb.innerHTML = '';
-  camBtn(lb, 'AE lock',  CAM_ICON.lock,  !!r.aeLock,
-         () => camPost({target:'rigcam', aeLock: !r.aeLock}));
-  camBtn(lb, 'AWB lock', CAM_ICON.lock,  !!r.awbLock,
-         () => camPost({target:'rigcam', awbLock: !r.awbLock}));
-  camBtn(lb, 'torch',    CAM_ICON.torch, !!r.torch,
-         () => camPost({target:'rigcam', torch: !r.torch}));
-
   const m = r.manual || {};
-  $('v_sensor').textContent = off ? '—'
-      : ((m.exposure ? 'manual' : 'auto') + ' exp · ' + (m.wb ? 'manual' : 'auto') + ' WB');
-  const nb = $('rig_manual'); nb.innerHTML = '';
-  camBtn(nb, 'manual exp', CAM_ICON.one, !!m.exposure,
-         () => camPost({target:'rigcam', manualExposure: !m.exposure}));
-  camBtn(nb, 'manual WB',  CAM_ICON.one, !!m.wb,
-         () => camPost({target:'rigcam', manualWb: !m.wb}));
-  if (!off && m.isoMax){
-    // WARNING: BOUNDS COME FROM THE SENSOR, NOT FROM A GUESS. Out of range is not refused
-    // loudly - the camera ignores the whole request and the picture just does not change.
-    // The Pixel 6 reports 44-11377, but the top of that is noise, so the slider stops at a
-    // usable ceiling while the phone still clamps anything sent directly.
-    const si = $('r_iso');
-    si.min = m.isoMin; si.max = Math.min(m.isoMax, 6400); si.value = m.iso;
-    $('v_iso').textContent = m.iso;
-    // Shutter reads as a denominator because that is how anyone thinks about it.
-    const sh = $('r_shut');
-    sh.value = Math.round(1e9 / Math.max(1, m.shutterNs));
-    $('v_shut').textContent = '1/' + sh.value;
-    // One warmth axis instead of three raw gains: nobody tunes a camera by typing an R
-    // channel multiplier. 0 is the neutral 1.8/1.0/1.9 the phone starts from.
-    $('r_wb').value = Math.round((m.wbR - 1.8) * 125);
-    $('v_wb').textContent = wbLabel(+$('r_wb').value);
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML =
+      '<div class="row"><span class="k"><span class="phoneic">' + mark + '</span> '
+    + esc(label) + '</span><span class="v" id="' + q('state') + '">-</span></div>'
+    + '<div class="row"><span class="k">Zoom</span><span class="v" id="' + q('vz') + '">-</span></div>'
+    + '<input type="range" id="' + q('rz') + '" min="0.5" max="8" step="0.01" value="1">'
+    + '<div class="row"><span class="k">Exposure</span><span class="v" id="' + q('vev') + '">0</span></div>'
+    + '<input type="range" id="' + q('rev') + '" min="-24" max="24" step="1" value="0">'
+    + '<div class="g3" id="' + q('locks') + '"></div>'
+    + '<div class="row"><span class="k">Sensor</span><span class="v" id="' + q('sensor') + '">-</span></div>'
+    + '<div class="g2" id="' + q('manual') + '"></div>'
+    + '<div class="row"><span class="k">ISO</span><span class="v" id="' + q('viso') + '">-</span></div>'
+    + '<input type="range" id="' + q('iso') + '" min="44" max="3200" step="1" value="400">'
+    + '<div class="row"><span class="k">Shutter</span><span class="v" id="' + q('vshut') + '">-</span></div>'
+    + '<input type="range" id="' + q('shut') + '" min="30" max="500" step="5" value="60">'
+    + '<div class="row"><span class="k">Warmth</span><span class="v" id="' + q('vwb') + '">-</span></div>'
+    + '<input type="range" id="' + q('wb') + '" min="-100" max="100" step="1" value="0">'
+    + '<div class="g2" id="' + q('smart') + '"></div>'
+    + '<div class="row"><span class="k">Lens</span><span class="v" id="' + q('vface') + '">-</span></div>'
+    + '<div class="g2" id="' + q('facing') + '"></div>'
+    + '<div class="row"><span class="k">Resolution</span><span class="v" id="' + q('vres') + '">-</span></div>'
+    + '<div class="g2" id="' + q('res') + '"></div>'
+    + '<div class="row"><span class="k">Frame rate</span><span class="v" id="' + q('vfps') + '">-</span></div>'
+    + '<div class="g3" id="' + q('fps') + '"></div>'
+    + '<div class="note">&#9888;&#65039; Lens, resolution and frame rate re-open the capture '
+    + 'session, so the stream drops for a second and OBS reconnects. Between songs, not '
+    + 'mid-song &mdash; everything above them applies live.</div>';
+  return {card: card, q: q, off: off, m: m};
+}
+
+function renderCamera(){
+  const box = $('rig_cards');
+  const cams = (CAM && CAM.rigcams) || {};
+  box.innerHTML = '';
+  let idx = 0;
+  for (const label of Object.keys(cams)){
+    const r = cams[label] || {};
+    const built = rigCard(label, r, idx);
+    const q = built.q, off = built.off, m = built.m;
+    box.appendChild(built.card);
+    const send = body => camPost(Object.assign({target:'rigcam', phone:label}, body));
+
+    $(q('state')).textContent = off ? 'offline'
+        : (r.streaming ? r.resolution + ' streaming' : r.resolution + ' idle');
+    if (!off){
+      // Range comes from the phone: Pixel 6 reports 0.670-7.0, Pixel 8 0.549-8.0, and the
+      // sub-1.0 minimum IS the ultrawide.
+      const z = $(q('rz'));
+      z.min = r.zoom.min; z.max = r.zoom.max; z.value = r.zoom.ratio;
+      $(q('vz')).textContent = (+r.zoom.ratio).toFixed(2) + '\u00d7'
+          + (r.zoom.ratio < 1 ? '  wide' : '');
+      const e = $(q('rev'));
+      e.min = r.ev.min; e.max = r.ev.max; e.value = r.ev.index;
+      $(q('vev')).textContent = r.ev.index;
+    }
+    const lb = $(q('locks'));
+    camBtn(lb, 'AE lock',  CAM_ICON.lock,  !!r.aeLock,  () => send({aeLock: !r.aeLock}));
+    camBtn(lb, 'AWB lock', CAM_ICON.lock,  !!r.awbLock, () => send({awbLock: !r.awbLock}));
+    camBtn(lb, 'torch',    CAM_ICON.torch, !!r.torch,   () => send({torch: !r.torch}));
+
+    $(q('sensor')).textContent = off ? '-'
+        : ((m.exposure ? 'manual' : 'auto') + ' exp \u00b7 ' + (m.wb ? 'manual' : 'auto') + ' WB');
+    const nb = $(q('manual'));
+    camBtn(nb, 'manual exp', CAM_ICON.one, !!m.exposure, () => send({manualExposure: !m.exposure}));
+    camBtn(nb, 'manual WB',  CAM_ICON.one, !!m.wb,       () => send({manualWb: !m.wb}));
+    if (!off && m.isoMax){
+      // WARNING: BOUNDS COME FROM THE SENSOR, AND THE TWO PHONES DIFFER - Pixel 6 reports
+      // 44-11377, Pixel 8 21-10666. Out of range is not refused loudly: the camera ignores
+      // the whole request and the picture simply does not change.
+      const si = $(q('iso'));
+      si.min = m.isoMin; si.max = Math.min(m.isoMax, 6400); si.value = m.iso;
+      $(q('viso')).textContent = m.iso;
+      const sh = $(q('shut'));
+      sh.value = Math.round(1e9 / Math.max(1, m.shutterNs));
+      $(q('vshut')).textContent = '1/' + sh.value;
+      $(q('wb')).value = Math.round((m.wbR - 1.8) * 125);
+      $(q('vwb')).textContent = wbLabel(+$(q('wb')).value);
+    }
+    const sb = $(q('smart'));
+    camBtn(sb, 'face focus', CAM_ICON.one, !!r.faceTrack, () => send({faceTrack: !r.faceTrack}));
+    camBtn(sb, 'stabilise',  CAM_ICON.one, !!r.stabilize, () => send({stabilize: !r.stabilize}));
+    if (r.faceTrack && !off)
+      $(q('sensor')).textContent += ' \u00b7 ' + (r.faces || 0) + ' face'
+          + (r.faces === 1 ? '' : 's');
+
+    const fb = $(q('facing'));
+    for (const f of ['back','front'])
+      camBtn(fb, f, CAM_ICON.flip, r.facing === f, () => send({facing:f}));
+    $(q('vface')).textContent = r.facing || '-';
+    const rb = $(q('res'));
+    for (const w of ['1280x720','1920x1080'])
+      camBtn(rb, w.replace('1280x720','720p').replace('1920x1080','1080p'), CAM_ICON.one,
+             r.requested === w, () => send({resolution:w}));
+    $(q('vres')).textContent = r.resolution || '-';
+    const pb = $(q('fps'));
+    for (const f of [24,30,60])
+      camBtn(pb, f + ' fps', CAM_ICON.one, r.fps === f, () => send({fps:f}));
+    $(q('vfps')).textContent = r.fps ? r.fps + ' fps' : '-';
+
+    // Sliders bind by id, so they attach AFTER the card is in the document.
+    const P = extra => Object.assign({target:'rigcam', phone:label}, extra);
+    slider(q('rz'), q('vz'), v => v.toFixed(2) + '\u00d7' + (v < 1 ? '  wide' : ''),
+           v => post('/api/camera', P({zoom:v})).catch(()=>{}));
+    slider(q('rev'), q('vev'), v => String(Math.round(v)),
+           v => post('/api/camera', P({ev:Math.round(v)})).catch(()=>{}));
+    slider(q('iso'), q('viso'), v => String(Math.round(v)),
+           v => post('/api/camera', P({iso:Math.round(v)})).catch(()=>{}));
+    slider(q('shut'), q('vshut'), v => '1/' + Math.round(v),
+           v => post('/api/camera', P({shutter:'1/' + Math.round(v)})).catch(()=>{}));
+    slider(q('wb'), q('vwb'), wbLabel,
+           v => post('/api/camera', P(wbGains(Math.round(v)))).catch(()=>{}));
+    idx++;
   }
-  const sb = $('rig_smart'); sb.innerHTML = '';
-  camBtn(sb, 'face focus', CAM_ICON.one, !!r.faceTrack,
-         () => camPost({target:'rigcam', faceTrack: !r.faceTrack}));
-  camBtn(sb, 'stabilise',  CAM_ICON.one, !!r.stabilize,
-         () => camPost({target:'rigcam', stabilize: !r.stabilize}));
-  if (r.faceTrack && !off)
-    $('v_sensor').textContent += ' · ' + (r.faces || 0) + ' face'
-        + (r.faces === 1 ? '' : 's');
-
-  // Session-fixed settings. Each rebinds, so they are separated from the live controls.
-  const fb = $('rig_facing'); fb.innerHTML = '';
-  for (const f of ['back','front'])
-    camBtn(fb, f, CAM_ICON.flip, r.facing === f,
-           () => camPost({target:'rigcam', facing:f}));
-  $('v_face').textContent = r.facing || '—';
-
-  const rb = $('rig_res'); rb.innerHTML = '';
-  for (const q of ['1280x720','1920x1080'])
-    camBtn(rb, q.replace('1280x720','720p').replace('1920x1080','1080p'), CAM_ICON.one,
-           r.requested === q, () => camPost({target:'rigcam', resolution:q}));
-  $('v_res').textContent = r.resolution || '—';
-
-  const pb = $('rig_fps'); pb.innerHTML = '';
-  for (const f of [24,30,60])
-    camBtn(pb, f + ' fps', CAM_ICON.one, r.fps === f,
-           () => camPost({target:'rigcam', fps:f}));
-  $('v_fps').textContent = r.fps ? r.fps + ' fps' : '—';
+  if (!idx) box.innerHTML = '<div class="card"><div class="note">No phones configured. '
+      + 'Start the dashboard with --phone "Pixel 6=http://&hellip;:8090".</div></div>';
   renderDevices();
   renderPower();
 }
 
 async function camPost(body){
-  if (body.target === 'uvc') $('v_uvc').textContent = 'working…';
   try{
     await post('/api/camera', body);
-    // The wired camera has no readback except another UI dump, so re-query after a tap.
-    if (body.target === 'uvc') loadCamera();
-    else if (body.facing || body.resolution || body.fps || body.bitrate){
+    if (body.facing || body.resolution || body.fps || body.bitrate){
       // The session is being rebuilt; local state would be a guess. Give it a moment.
       setTimeout(loadCamera, 2500);
-    } else {
-      Object.assign(CAM.rigcam, body);
-      // WARNING: THE SENSOR KEYS ARE FLAT ON THE WIRE BUT NESTED IN THE STATE. /api/set takes
-      // manualExposure=true; /api/state reports it as manual.exposure. Assigning the body
-      // wholesale writes a key nothing reads, so the button stays dark until the next query
-      // and reads as a control that does not work.
-      const mm = CAM.rigcam.manual;
-      if (mm){
-        if ('manualExposure' in body) mm.exposure = body.manualExposure;
-        if ('manualWb' in body)       mm.wb       = body.manualWb;
-        if ('iso' in body)            mm.iso      = body.iso;
-        if ('wbR' in body)            mm.wbR      = body.wbR;
-        if ('wbB' in body)            mm.wbB      = body.wbB;
-        // Setting either one implies manual, exactly as the phone does it.
-        if ('iso' in body || 'shutter' in body) mm.exposure = true;
-        if ('wbR' in body) mm.wb = true;
-      }
-      renderCamera();
+      return;
     }
+    // Optimistic update so the button lights immediately, then the next query confirms.
+    const cams = (CAM && CAM.rigcams) || {};
+    const r = cams[body.phone];
+    if (!r) { loadCamera(); return; }
+    Object.assign(r, body);
+    // WARNING: THE SENSOR KEYS ARE FLAT ON THE WIRE BUT NESTED IN THE STATE. /api/set takes
+    // manualExposure=true; /api/state reports it as manual.exposure. Assigning the body
+    // wholesale writes a key nothing reads, so the button stays dark until the next query
+    // and reads as a control that does not work.
+    const mm = r.manual;
+    if (mm){
+      if ('manualExposure' in body) mm.exposure = body.manualExposure;
+      if ('manualWb' in body)       mm.wb       = body.manualWb;
+      if ('iso' in body)            mm.iso      = body.iso;
+      if ('wbR' in body)            mm.wbR      = body.wbR;
+      if ('wbB' in body)            mm.wbB      = body.wbB;
+      // Setting either one implies manual, exactly as the phone does it.
+      if ('iso' in body || 'shutter' in body) mm.exposure = true;
+      if ('wbR' in body) mm.wb = true;
+    }
+    renderCamera();
   }catch(e){
     $('err').textContent = e.message;
-    if (body.target === 'uvc') $('v_uvc').textContent = 'failed';
   }
 }
 
@@ -779,10 +779,6 @@ async function loadCamera(){
   finally{ camBusy = false; $('cam_refresh').classList.remove('pending'); }
 }
 $('cam_refresh').onclick = loadCamera;
-slider('r_rz','v_rz', v => v.toFixed(2) + '×' + (v < 1 ? '  wide' : ''),
-       v => post('/api/camera', {target:'rigcam', zoom:v}).catch(()=>{}));
-slider('r_rev','v_rev', v => String(Math.round(v)),
-       v => post('/api/camera', {target:'rigcam', ev:Math.round(v)}).catch(()=>{}));
 
 // Warmth is one axis over three gains: negative cools, positive warms, and green is left
 // alone because a green cast is a fault to fix, not a look to dial in.
@@ -792,13 +788,6 @@ function wbLabel(v){
 function wbGains(v){
   return {wbR: +(1.8 + v / 125).toFixed(3), wbG: 1.0, wbB: +(1.9 - v / 125).toFixed(3)};
 }
-slider('r_iso','v_iso', v => String(Math.round(v)),
-       v => post('/api/camera', {target:'rigcam', iso:Math.round(v)}).catch(()=>{}));
-slider('r_shut','v_shut', v => '1/' + Math.round(v),
-       v => post('/api/camera', {target:'rigcam', shutter:'1/' + Math.round(v)}).catch(()=>{}));
-slider('r_wb','v_wb', wbLabel,
-       v => post('/api/camera',
-                 Object.assign({target:'rigcam'}, wbGains(Math.round(v)))).catch(()=>{}));
 
 slider('r_x','v_x', v => v.toFixed(2), v => pushVis({xfade:v}));
 // 1 sector cannot mirror anything - the fold needs at least 2, so 0 and 1 both mean off.

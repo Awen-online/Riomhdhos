@@ -47,7 +47,10 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 ADB = r"C:\Users\mccul\Android\Sdk\platform-tools\adb.exe"
 UVCZOOM = Path(__file__).with_name("uvczoom.py")
-BRIDGE_TASK = "Riomhdhos vcam bridge"
+# One bridge per phone: Windows has a single OBS Virtual Camera, so the second feeds Unity
+# Capture instead. Both have to stop, or the phone whose bridge is still pulling keeps its
+# encoder alive and never actually sleeps.
+BRIDGE_TASKS = ("Riomhdhos vcam bridge", "Riomhdhos vcam bridge P8")
 RIGCAM = "online.awen.rigcam"
 
 
@@ -73,10 +76,10 @@ def unlocked(serial):
     return "isKeyguardShowing=false" in sh("-s", serial, "shell", "dumpsys", "window")
 
 
-def task(action):
+def task(action, name):
     try:
         subprocess.run(["powershell", "-NoProfile", "-Command",
-                        f"{action}-ScheduledTask -TaskName '{BRIDGE_TASK}' "
+                        f"{action}-ScheduledTask -TaskName '{name}' "
                         f"-ErrorAction SilentlyContinue"],
                        capture_output=True, timeout=30, creationflags=NO_WINDOW)
         return True
@@ -110,16 +113,23 @@ def hq_off(serial):
 
 def sleep_mode(wired_serial=None):
     log = []
-    log.append(("vcam bridge", "stopped" if task("Stop") else "could not stop"))
+    for t in BRIDGE_TASKS:
+        log.append((t.replace("Riomhdhos ", ""), "stopped" if task("Stop", t) else "could not stop"))
 
     for s in devices():
         m = model(s)
-        is_wired = (s == wired_serial)
-        if not is_wired:
-            sh("-s", s, "shell", "am", "force-stop", RIGCAM)
-            log.append((m, "RigCam stopped"))
-        else:
-            log.append((m, "high quality: " + (hq_off(s) or "unknown")))
+        # ⚠️ BOTH PHONES RUN RIGCAM NOW. This used to stop RigCam on the WiFi phone only and
+        # tap High Quality off on the wired one, because the wired one reached OBS through
+        # DeviceAsWebcam. It does not any more - it runs RigCam over an adb forward - so
+        # skipping it left its camera and encoder running through every "sleep", which is
+        # exactly the drain this command exists to stop, on the phone that runs out first.
+        sh("-s", s, "shell", "am", "force-stop", RIGCAM)
+        log.append((m, "RigCam stopped"))
+        if s == wired_serial and unlocked(s):
+            # Harmless if DeviceAsWebcam is not in use, and worth doing in case it is.
+            st = hq_off(s)
+            if st and st != "already off":
+                log.append((m, "high quality: " + st))
         # ⚠️ THIS is the one that has been costing the most. stay_on_while_plugged_in was
         # pinned to 3 so ADB work would not be interrupted by the lockscreen, and it has
         # been holding both displays lit ever since.
@@ -136,13 +146,13 @@ def show_mode(wired_serial=None):
         sh("-s", s, "shell", "settings", "put", "global", "stay_on_while_plugged_in", "3")
         sh("-s", s, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
         log.append((m, "awake, screen held on"))
-        if s != wired_serial:
-            sh("-s", s, "shell", "am", "start", "-n", f"{RIGCAM}/.MainActivity")
-            log.append((m, "RigCam started"))
+        sh("-s", s, "shell", "am", "start", "-n", f"{RIGCAM}/.MainActivity")
+        log.append((m, "RigCam started"))
     # ⚠️ The bridge last, once RigCam has something to serve - it retries anyway, but
     # starting it into a dead stream just burns a reconnect cycle.
     time.sleep(3)
-    log.append(("vcam bridge", "started" if task("Start") else "could not start"))
+    for t in BRIDGE_TASKS:
+        log.append((t.replace("Riomhdhos ", ""), "started" if task("Start", t) else "could not start"))
     # ⚠️ High Quality is deliberately NOT restored. It costs ~170 mA and the phone that
     # carries it is the one that runs out first; turning it back on should be a decision,
     # not a side effect.

@@ -85,6 +85,14 @@ CAM_SOURCES = ["Pixel 8", "Pixel 6 (vcam)"]
 # Camera state is fetched on demand, when the panel is opened or refreshed.
 # ---------------------------------------------------------------------------------------
 RIGCAM = "http://127.0.0.1:8090"       # via `adb forward tcp:8090 tcp:8090`, or a LAN IP
+# ⚠️ BOTH PHONES RUN RIGCAM NOW. The Pixel 8 used to reach OBS through GrapheneOS
+# DeviceAsWebcam over UVC, which offered zoom presets and a High Quality toggle and NOTHING
+# else - no exposure, no white balance. That is why the two cameras could not be matched:
+# grading in OBS got black level within 5 but left mid-tones at 152 against 98. With both on
+# RigCam they take the SAME explicit ISO, shutter and WB gains, so they match by construction
+# and cannot drift apart mid-set. Keyed by label because the UI has to say which phone it is
+# about, and the two are physically hard to tell apart on a dark stage.
+RIGCAMS = {}                           # {"Pixel 6": url, "Pixel 8": url}
 UVCZOOM = HERE.parent / "uvczoom.py"
 POWER = HERE.parent / "power.py"
 UVC_ZOOMS = ("0.5", "1.0", "2.0")
@@ -185,13 +193,19 @@ def devices_snapshot():
     return data
 
 
-def rigcam_call(path, timeout=2.5):
-    """Talk to the RigCam app. Never raises - an unreachable phone is a normal state."""
+def rigcam_call(path, timeout=2.5, base=None):
+    """Talk to a RigCam app. Never raises - an unreachable phone is a normal state."""
     try:
-        with urllib.request.urlopen(RIGCAM + path, timeout=timeout) as r:
+        with urllib.request.urlopen((base or RIGCAM) + path, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8"))
     except Exception as e:
         return {"offline": True, "error": type(e).__name__}
+
+
+def rigcams_state():
+    """Every phone at once. Sequential is fine: each call is a 2.5 s ceiling on localhost or
+    the LAN, and this endpoint is already on-demand rather than in the 1 Hz poll."""
+    return {label: rigcam_call("/api/state", base=url) for label, url in RIGCAMS.items()}
 
 
 def uvc_call(*args, timeout=30):
@@ -557,6 +571,7 @@ class Handler(BaseHTTPRequestHandler):
                 uvc = uvc_call("--state")
                 self._json({
                     "rigcam": rigcam_call("/api/state"),
+                    "rigcams": rigcams_state(),
                     "uvc": {"reachable": uvc["ok"], "selected": uvc_selected(uvc["out"]),
                             "zooms": list(UVC_ZOOMS), "detail": uvc["out"]},
                     "devices": devices_snapshot(),
@@ -658,6 +673,13 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"uvc": r}, 200 if r["ok"] else 502); return
 
                 if target == "rigcam":
+                    # Which phone. Unknown label is an error, NOT a silent fall-back to the
+                    # default one - sending an exposure change to the wrong camera mid-set is
+                    # worse than doing nothing, and far harder to notice.
+                    phone = body.get("phone")
+                    if phone is not None and phone not in RIGCAMS:
+                        self._json({"error": f"unknown phone '{phone}'"}, 400); return
+                    base = RIGCAMS.get(phone) if phone else None
                     # Allowlist: only these reach the phone, and each is range-clamped there.
                     q = {}
                     for k in ("zoom", "linearZoom", "ev", "aeLock", "awbLock", "torch",
@@ -674,8 +696,8 @@ class Handler(BaseHTTPRequestHandler):
                             q[k] = str(v).lower() if isinstance(v, bool) else str(v)
                     if not q:
                         self._json({"error": "nothing to do"}, 400); return
-                    self._json({"rigcam": rigcam_call(
-                        "/api/set?" + urllib.parse.urlencode(q))}); return
+                    self._json({"phone": phone, "rigcam": rigcam_call(
+                        "/api/set?" + urllib.parse.urlencode(q), base=base)}); return
 
                 self._json({"error": "target must be uvc or rigcam"}, 400); return
 
@@ -858,6 +880,9 @@ def main():
                     help="adb serial of the WIRED phone (required when two are attached)")
     ap.add_argument("--rigcam", default="http://127.0.0.1:8090",
                     help="RigCam base URL (adb forward gives 127.0.0.1:8090)")
+    ap.add_argument("--phone", action="append", default=[], metavar="LABEL=URL",
+                    help="a RigCam phone, repeatable: --phone \"Pixel 6=http://...:8090\". "
+                         "The label is what the Cams tab shows, so use the phone's name.")
     ap.add_argument("--samplerate", type=int, default=44100)
     ap.add_argument("--blocksize", type=int, default=1024)
     ap.add_argument("--no-audio", action="store_true",
@@ -866,10 +891,18 @@ def main():
 
     threading.Thread(target=clock_thread, daemon=True).start()
 
-    global SOURCE, RIGCAM, UVC_SERIAL
+    global SOURCE, RIGCAM, UVC_SERIAL, RIGCAMS
     SOURCE = args.source
     RIGCAM = args.rigcam
     UVC_SERIAL = args.uvc_serial
+    for spec in args.phone:
+        label, _, url = spec.partition("=")
+        if not url:
+            sys.exit(f"--phone wants LABEL=URL, got {spec!r}")
+        RIGCAMS[label.strip()] = url.strip().rstrip("/")
+    # One phone given the old way still works, so nothing that already runs has to change.
+    if not RIGCAMS:
+        RIGCAMS["Phone"] = RIGCAM
     # ⚠️ DO NOT DIE IF OBS IS CLOSED. This used to be a hard `client()` at startup - "fail
     # now, not on the phone's first tap" - which meant closing OBS took the whole dashboard
     # down with it, including the Phones card, the battery readings and the camera controls,
