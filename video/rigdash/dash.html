@@ -543,9 +543,26 @@ function renderDevices(){
     // Role is decided by which serial the dashboard was told is the wired one - never
     // guessed, because guessing sent the wired controls to the wrong phone once already.
     const role = d.role === 'wired' ? 'WIRED · UVC' : 'WIFI · RigCam';
-    const batt = (d.level ? d.level + '%' : '?')
+    // ⚠️ Runtime, coloured, not just a percentage. These phones draw ~500 mA while
+    // streaming, so '14%' and '45%' can both mean 'dies during the set' - or not. The
+    // number a performer needs is HOURS LEFT, and it needs to shout when it is short.
+    const chg = d.charging === true, drain = d.charging === false;
+    const hrs = (d.hours != null)
+      ? (chg ? d.hours + ' h to full' : d.hours + ' h left')
+      : '';
+    const urgent = drain && d.hours != null && d.hours < 2;
+    const low    = drain && d.hours != null && d.hours < 4;
+    const col = urgent ? 'var(--bad)' : (low ? 'var(--accent)' : (chg ? 'var(--ok)' : 'inherit'));
+    const rate = (d.mA != null)
+      ? (d.mA > 0 ? '+' + d.mA + ' mA' : d.mA + ' mA')
+      : '';
+    const batt = '<span style="color:' + col + '">' + (d.level != null ? d.level + '%' : '?')
+               + (hrs ? '  ·  ' + hrs : '') + '</span>'
+               + (rate ? '  ·  ' + rate : '')
+               + (d.supplyMA ? ' of ' + d.supplyMA + ' mA' : '')
+               + (d.tempC ? '  ·  ' + d.tempC + '°C' : '')
                + (d.healthPct ? '  ·  health ' + d.healthPct + '%' : '')
-               + (d.cycles ? '  ·  ' + d.cycles + ' cycles' : '');
+               + (d.cycles ? '  ·  ' + d.cycles + ' cyc' : '');
     const where = d.ip ? d.ip : (d.usb ? 'usb: ' + d.usb : '—');
     const vb = d.verifiedboot === 'yellow'
         ? '<span style="color:var(--ok)">verified yellow</span>'   // correct for GrapheneOS

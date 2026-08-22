@@ -114,6 +114,10 @@ def device_info(serial):
         'echo usb=$(getprop sys.usb.config);'
         'echo ip=$(ip -f inet addr show wlan0 2>/dev/null | grep -o "inet [0-9.]*" | head -1 | cut -d" " -f2);'
         'echo level=$(dumpsys battery | grep -m1 "  level:" | tr -dc "0-9");'
+        'echo status=$(dumpsys battery | grep -m1 "  status:" | tr -dc "0-9");'
+        'echo tempc=$(dumpsys battery | grep -m1 "  temperature:" | tr -dc "0-9");'
+        'echo maxcur=$(dumpsys battery | grep -m1 "Max charging current" | tr -dc "0-9");'
+        'echo now=$(cat /sys/class/power_supply/battery/current_now 2>/dev/null);'
         'echo cycles=$(cat /sys/class/power_supply/battery/cycle_count 2>/dev/null);'
         'echo full=$(cat /sys/class/power_supply/battery/charge_full 2>/dev/null);'
         'echo design=$(cat /sys/class/power_supply/battery/charge_full_design 2>/dev/null);'
@@ -134,6 +138,32 @@ def device_info(serial):
         d["healthPct"] = round(100 * int(d["full"]) / int(d["design"]))
     except Exception:
         d["healthPct"] = None
+    # ⚠️ RUNTIME, NOT JUST PERCENTAGE. A phone at 45% is fine or nearly dead depending on
+    # what it is drawing, and these draw a LOT while streaming - measured -505 mA with the
+    # screen held awake. "45%" alone has told nobody anything useful; "4.0 h left" has.
+    try:
+        d["tempC"] = round(int(d["tempc"]) / 10.0, 1)
+    except Exception:
+        d["tempC"] = None
+    try:
+        ua = int(d["now"])                       # microamps; negative means discharging
+        d["mA"] = round(ua / 1000.0)
+        mah_now = int(d["full"]) / 1000.0 * int(d["level"]) / 100.0
+        if ua < 0:
+            d["hours"] = round(mah_now / (abs(ua) / 1000.0), 1)
+            d["charging"] = False
+        elif ua > 0:
+            headroom = int(d["full"]) / 1000.0 - mah_now
+            d["hours"] = round(headroom / (ua / 1000.0), 1)
+            d["charging"] = True
+        else:
+            d["hours"], d["charging"] = None, None
+    except Exception:
+        d["mA"], d["hours"], d["charging"] = None, None, None
+    try:
+        d["supplyMA"] = round(int(d["maxcur"]) / 1000)
+    except Exception:
+        d["supplyMA"] = None
     d["role"] = "wired" if serial == UVC_SERIAL else "wifi"
     return d
 
@@ -467,6 +497,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    def _obs_or_none(self):
+        """The OBS client, or None. Callers report the outage instead of crashing."""
+        try:
+            return client()
+        except (Exception, SystemExit):
+            return None
+
     def do_GET(self):
         p = urlparse(self.path).path
         try:
@@ -504,7 +541,14 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/state":
                 with _lock:
                     audio = dict(STATE)
-                cl = client()
+                cl = self._obs_or_none()
+                if cl is None:
+                    # Everything that does not need OBS still answers.
+                    self._json({"audio": audio, "obs": False, "code": CODE_HASH,
+                                "source": SOURCE, "scenes": [], "moods": MOODS,
+                                "cameraFilters": {}, "filters": [],
+                                "error": "OBS is not running"})
+                    return
                 sl = cl.get_scene_list()
                 st = cl.get_stats()
                 v = cl.get_video_settings()
@@ -766,7 +810,21 @@ def main():
     SOURCE = args.source
     RIGCAM = args.rigcam
     UVC_SERIAL = args.uvc_serial
-    client()                                    # fail now, not on the phone's first tap
+    # ⚠️ DO NOT DIE IF OBS IS CLOSED. This used to be a hard `client()` at startup - "fail
+    # now, not on the phone's first tap" - which meant closing OBS took the whole dashboard
+    # down with it, including the Phones card, the battery readings and the camera controls,
+    # none of which need OBS at all. A control surface that vanishes when one of the things
+    # it controls is shut is worse than one that reports the outage.
+    # ⚠️ (Exception, SystemExit), NOT just Exception. obsctl.connect() reports a missing
+    # OBS by calling sys.exit() with a friendly message - and SystemExit inherits from
+    # BaseException, so `except Exception` sails straight past it and the process still
+    # dies. The guard looked right and did nothing.
+    try:
+        client()
+        print("OBS: connected", flush=True)
+    except (Exception, SystemExit) as e:
+        print(f"OBS: NOT connected ({type(e).__name__}) - serving everything else; "
+              "scene and filter controls will report it", flush=True)
 
     if not args.no_audio:
         devs = sd.query_devices()
