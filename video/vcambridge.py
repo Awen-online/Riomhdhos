@@ -130,6 +130,58 @@ def adb_forward(serial, url, remote=8090):
         return f"failed ({type(e).__name__})"
 
 
+def unlocked_functions(dumpsys_text):
+    """Parse `screen_unlocked_functions` out of `dumpsys usb`. Pure, so it can be tested
+    without a phone attached - which matters, see the warning in no_webcam_handover."""
+    m = re.search(r"screen_unlocked_functions=(\S+)", dumpsys_text or "")
+    return (m.group(1) if m else "0").strip()
+
+
+def no_webcam_handover(serial):
+    """Stop the phone switching USB to webcam mode, which steals the camera from RigCam.
+
+    WARNING: THIS IS THE FAILURE THAT LOOKS LIKE A DEAD CAMERA AND ISN'T. Android's
+    `screen_unlocked_functions` is the "Default USB configuration" developer option. Set to
+    0x80 (UVC) it flips USB into webcam mode every time the screen unlocks, which starts
+    com.android.DeviceAsWebcam - a PRIVILEGED system app. RigCam then loses the camera to it
+    the moment it is backgrounded:
+
+        EVICT device 0 client held by online.awen.rigcam
+          - Evicted by com.android.DeviceAsWebcam
+
+    and reports `streaming: true` with an empty lastError while nalsOut stops advancing. A
+    silent freeze, with the phone insisting it is fine.
+
+    WARNING: ONLY EVER CLEAR THIS, NEVER SET IT. `svc usb setScreenUnlockedFunctions <value>`
+    renegotiates the USB gadget and DROPPED THE PHONE OFF USB ENTIRELY - gone from adb and
+    from Windows device enumeration, recoverable only by rebooting the handset. Clearing it
+    (blank argument) was measured NOT to disturb the live connection. That asymmetry is the
+    whole reason this function takes no value argument: there is no safe reason for this
+    program to ever set one.
+
+    WARNING: AND DO NOT "FIX" THE HANDOVER BY DISABLING DeviceAsWebcam. `pm disable-user` on
+    it took USB data down the same way, because the gadget still pointed at a webcam function
+    whose provider had just been removed.
+
+    Checked every reconnect because it is a user-facing toggle: one tap in developer options
+    puts it back, and it may not survive a reboot.
+    """
+    try:
+        d = subprocess.run([ADB, "-s", serial, "shell", "dumpsys", "usb"],
+                           capture_output=True, text=True, timeout=20,
+                           creationflags=NO_WINDOW).stdout
+        cur = unlocked_functions(d)
+        if cur in ("0", "0x0", ""):
+            return "ok (no webcam handover)"
+        subprocess.run([ADB, "-s", serial, "shell", "svc", "usb",
+                        "setScreenUnlockedFunctions"],
+                       capture_output=True, text=True, timeout=20,
+                       creationflags=NO_WINDOW)
+        return f"cleared screen_unlocked_functions={cur} (was handing the camera away)"
+    except Exception as e:
+        return f"not checked ({type(e).__name__})"
+
+
 def probe_size(api):
     """Ask the phone what it is sending, so we do not guess and letterbox."""
     try:
@@ -192,6 +244,7 @@ def main():
         # the reconnect loop that already exists for the stream heals the tunnel too.
         if args.adb_serial:
             print(f"    adb forward: {adb_forward(args.adb_serial, args.url)}", flush=True)
+            print(f"    usb mode:    {no_webcam_handover(args.adb_serial)}", flush=True)
         size = fixed or probe_size(args.api)
         if not size:
             print("phone not answering; retrying in 5s", flush=True)
