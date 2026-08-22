@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""
+power - put the phones to sleep so they recharge, and wake them for a show.
+
+⚠️ WHY THIS EXISTS: both phones DRAIN while acting as cameras, and neither port negotiates
+more than 500 mA. Measured with OBS closed and nothing consuming either feed:
+
+    Pixel 8   14%   -214 mA    2.6 h left
+    Pixel 6   43%   -574 mA    3.1 h left
+
+Closing OBS barely helped, because the load is not OBS - it is the phones themselves:
+their screens held awake, their camera pipelines running, and the encoder on the WiFi one.
+A camera that cannot survive a set is not a camera, so this turns all of that off in one
+action and turns it back on in another.
+
+    python power.py sleep     # let them recharge
+    python power.py show      # back to streaming
+    python power.py status
+
+WHAT SLEEP ACTUALLY DOES, in the order that matters:
+
+  1. stops the vcam bridge, so nothing pulls the WiFi stream and keeps its encoder alive
+  2. force-stops RigCam, releasing the camera on the WiFi phone
+  3. turns High Quality mode OFF on the wired phone - it disables power optimisation and
+     measured -232 mA -> -404 mA when it was switched on
+  4. clears stay_on_while_plugged_in, which was pinned to 3 for ADB work and is why both
+     screens have been lit continuously
+  5. puts both screens to sleep now rather than waiting for a timeout
+
+⚠️ Step 3 needs the phone UNLOCKED, because it is a UI tap on DeviceAsWebcam - there is no
+API for it. If the phone is locked it is skipped and reported, rather than failing the
+whole operation: the other four steps are worth having on their own.
+"""
+
+import argparse
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ADB = r"C:\Users\mccul\Android\Sdk\platform-tools\adb.exe"
+UVCZOOM = Path(__file__).with_name("uvczoom.py")
+BRIDGE_TASK = "Riomhdhos vcam bridge"
+RIGCAM = "online.awen.rigcam"
+
+
+def sh(*args, timeout=25):
+    try:
+        return subprocess.run([ADB, *args], capture_output=True, text=True,
+                              timeout=timeout).stdout.strip()
+    except Exception as e:
+        return f"<{type(e).__name__}>"
+
+
+def devices():
+    out = sh("devices")
+    return [l.split()[0] for l in out.splitlines()[1:]
+            if l.strip() and l.split()[-1] == "device"]
+
+
+def model(serial):
+    return sh("-s", serial, "shell", "getprop", "ro.product.model") or serial
+
+
+def unlocked(serial):
+    return "isKeyguardShowing=false" in sh("-s", serial, "shell", "dumpsys", "window")
+
+
+def task(action):
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-Command",
+                        f"{action}-ScheduledTask -TaskName '{BRIDGE_TASK}' "
+                        f"-ErrorAction SilentlyContinue"],
+                       capture_output=True, timeout=30)
+        return True
+    except Exception:
+        return False
+
+
+def hq_state(serial):
+    """'on', 'off', or None if it cannot be read (locked phone, no UI)."""
+    try:
+        r = subprocess.run([sys.executable, str(UVCZOOM), "--serial", serial, "--state"],
+                           capture_output=True, text=True, timeout=45).stdout
+    except Exception:
+        return None
+    if "Switch High Quality off" in r:
+        return "on"            # the button offers to switch it OFF, so it is ON
+    if "Switch High Quality on" in r:
+        return "off"
+    return None
+
+
+def hq_off(serial):
+    if not unlocked(serial):
+        return "skipped (phone locked - HQ is a UI tap)"
+    if hq_state(serial) != "on":
+        return "already off"
+    subprocess.run([sys.executable, str(UVCZOOM), "--serial", serial, "--hq"],
+                   capture_output=True, timeout=45)
+    return "turned off"
+
+
+def sleep_mode(wired_serial=None):
+    log = []
+    log.append(("vcam bridge", "stopped" if task("Stop") else "could not stop"))
+
+    for s in devices():
+        m = model(s)
+        is_wired = (s == wired_serial)
+        if not is_wired:
+            sh("-s", s, "shell", "am", "force-stop", RIGCAM)
+            log.append((m, "RigCam stopped"))
+        else:
+            log.append((m, "high quality: " + (hq_off(s) or "unknown")))
+        # ⚠️ THIS is the one that has been costing the most. stay_on_while_plugged_in was
+        # pinned to 3 so ADB work would not be interrupted by the lockscreen, and it has
+        # been holding both displays lit ever since.
+        sh("-s", s, "shell", "settings", "put", "global", "stay_on_while_plugged_in", "0")
+        sh("-s", s, "shell", "input", "keyevent", "KEYCODE_SLEEP")
+        log.append((m, "screen released and asleep"))
+    return log
+
+
+def show_mode(wired_serial=None):
+    log = []
+    for s in devices():
+        m = model(s)
+        sh("-s", s, "shell", "settings", "put", "global", "stay_on_while_plugged_in", "3")
+        sh("-s", s, "shell", "input", "keyevent", "KEYCODE_WAKEUP")
+        log.append((m, "awake, screen held on"))
+        if s != wired_serial:
+            sh("-s", s, "shell", "am", "start", "-n", f"{RIGCAM}/.MainActivity")
+            log.append((m, "RigCam started"))
+    # ⚠️ The bridge last, once RigCam has something to serve - it retries anyway, but
+    # starting it into a dead stream just burns a reconnect cycle.
+    time.sleep(3)
+    log.append(("vcam bridge", "started" if task("Start") else "could not start"))
+    # ⚠️ High Quality is deliberately NOT restored. It costs ~170 mA and the phone that
+    # carries it is the one that runs out first; turning it back on should be a decision,
+    # not a side effect.
+    log.append(("note", "high quality left OFF - re-enable from the Cams tab if wanted"))
+    return log
+
+
+def status():
+    rows = []
+    for s in devices():
+        stay = sh("-s", s, "shell", "settings", "get", "global",
+                  "stay_on_while_plugged_in")
+        awake = "Awake" in sh("-s", s, "shell", "dumpsys", "power")
+        rig = bool(sh("-s", s, "shell", "pidof", RIGCAM))
+        rows.append({"serial": s, "model": model(s), "stayOn": stay,
+                     "screenAwake": awake, "rigcam": rig})
+    return rows
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("mode", choices=["sleep", "show", "status"])
+    ap.add_argument("--wired-serial", default=None,
+                    help="the USB phone; it keeps its webcam, the other runs RigCam")
+    args = ap.parse_args()
+
+    if args.mode == "status":
+        for r in status():
+            print(f"  {r['model']:<9} stay_on={r['stayOn']:<4} "
+                  f"screen={'awake' if r['screenAwake'] else 'asleep'}  "
+                  f"rigcam={'running' if r['rigcam'] else 'stopped'}")
+        return
+    fn = sleep_mode if args.mode == "sleep" else show_mode
+    for who, what in fn(args.wired_serial):
+        print(f"  {who:<12} {what}")
+
+
+if __name__ == "__main__":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    main()

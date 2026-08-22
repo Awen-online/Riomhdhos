@@ -228,6 +228,15 @@
        slider for the wired camera would look uniform and be a lie. -->
   <h2>Phones</h2>
   <div class="card" id="devlist"><span class="sub">—</span></div>
+  <div class="card">
+    <div class="row"><span class="k">Power mode</span><span class="v" id="v_pwr">—</span></div>
+    <div class="g2" id="pwrbtns"></div>
+    <div class="note">⚠️ Both phones DRAIN while streaming and neither port gives more than
+      500 mA. <b>Recharge</b> stops RigCam, turns High Quality off, releases the screens and
+      puts them to sleep. <b>Show ready</b> brings it all back — but leaves High Quality off,
+      because it costs ~170 mA on the phone that runs out first.<br><br>
+      Recharge takes the cameras down. That is the point, and the checks on Rig will say so.</div>
+  </div>
 
   <h2>Wired camera</h2>
   <div class="card">
@@ -535,6 +544,34 @@ function camBtn(box, label, icon, on, handler){
   box.append(b);
 }
 
+function renderPower(){
+  const box = $('pwrbtns'); if (!box) return;
+  box.innerHTML = '';
+  const p = (CAM && CAM.power && CAM.power.out) || '';
+  // The state comes from the phones themselves, not from what we last asked for - a mode
+  // that reports its own intention rather than reality is how you end up on stage with a
+  // camera you believed was awake.
+  const asleep = /screen=asleep/.test(p);
+  const stayOff = /stay_on=0/.test(p);
+  const rig = /rigcam=running/.test(p);
+  $('v_pwr').textContent = (asleep || stayOff) && !rig ? 'recharging'
+                         : (rig ? 'show ready' : 'mixed');
+  camBtn(box, 'Recharge', CAM_ICON.lock, (asleep || stayOff) && !rig,
+         () => powerPost('sleep'));
+  camBtn(box, 'Show ready', CAM_ICON.one, rig, () => powerPost('show'));
+}
+
+async function powerPost(mode){
+  $('v_pwr').textContent = mode === 'sleep' ? 'putting to sleep…' : 'waking…';
+  try {
+    await post('/api/power', {mode});
+    await loadCamera();          // battery and state both change a lot here
+  } catch(e){
+    $('err').textContent = e.message;
+    $('v_pwr').textContent = 'failed';
+  }
+}
+
 function renderDevices(){
   const box = $('devlist');
   const ds = (CAM && CAM.devices) || [];
@@ -636,6 +673,7 @@ function renderCamera(){
            () => camPost({target:'rigcam', fps:f}));
   $('v_fps').textContent = r.fps ? r.fps + ' fps' : '—';
   renderDevices();
+  renderPower();
 }
 
 async function camPost(body){

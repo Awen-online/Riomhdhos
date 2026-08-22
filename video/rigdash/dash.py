@@ -79,6 +79,7 @@ CAM_SOURCES = ["Pixel 8", "Pixel 6 (vcam)"]
 # ---------------------------------------------------------------------------------------
 RIGCAM = "http://127.0.0.1:8090"       # via `adb forward tcp:8090 tcp:8090`, or a LAN IP
 UVCZOOM = HERE.parent / "uvczoom.py"
+POWER = HERE.parent / "power.py"
 UVC_ZOOMS = ("0.5", "1.0", "2.0")
 # ⚠️ The wired phone is named explicitly. Two phones are attached in normal use and the
 # wired-camera controls MUST NOT land on the WiFi one - doing so launches DeviceAsWebcam
@@ -200,6 +201,23 @@ def uvc_call(*args, timeout=30):
         return {"ok": p.returncode == 0, "out": out[-400:]}
     except subprocess.TimeoutExpired:
         return {"ok": False, "out": "timed out - is the phone awake and unlocked?"}
+    except Exception as e:
+        return {"ok": False, "out": f"{type(e).__name__}: {e}"}
+
+
+def power_call(mode, timeout=120):
+    """sleep / show / status, via video/power.py."""
+    if not POWER.exists():
+        return {"ok": False, "out": "power.py not found"}
+    cmd = [sys.executable, str(POWER), mode]
+    if UVC_SERIAL:
+        cmd += ["--wired-serial", UVC_SERIAL]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return {"ok": r.returncode == 0,
+                "out": (r.stdout or r.stderr or "").strip()[-800:]}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "out": "timed out - is a phone locked or unplugged?"}
     except Exception as e:
         return {"ok": False, "out": f"{type(e).__name__}: {e}"}
 
@@ -536,6 +554,7 @@ class Handler(BaseHTTPRequestHandler):
                             "zooms": list(UVC_ZOOMS), "detail": uvc["out"]},
                     "devices": devices_snapshot(),
                     "wiredSerial": UVC_SERIAL,
+                    "power": power_call("status", timeout=60),
                 }); return
 
             if p == "/api/state":
@@ -589,7 +608,23 @@ class Handler(BaseHTTPRequestHandler):
         try:
             n = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(n) or b"{}")
-            cl = client()
+
+            # ⚠️ ROUTES THAT NEED NO OBS ARE HANDLED BEFORE CONNECTING TO IT. This used to
+            # be an unconditional `cl = client()` right here, so with OBS closed EVERY post
+            # died - including /api/power, whose whole job is putting the phones to sleep
+            # and has nothing to do with OBS. The connection was refused, SystemExit escaped
+            # the handler, and the client got no response at all: not an error, silence.
+            if p == "/api/power":
+                mode = body.get("mode")
+                if mode not in ("sleep", "show"):
+                    self._json({"error": "mode must be sleep or show"}, 400); return
+                r = power_call(mode)
+                _dev_cache["at"] = 0          # battery figures are about to change a lot
+                self._json({"mode": mode, "result": r}, 200 if r["ok"] else 502); return
+
+            cl = self._obs_or_none()
+            if cl is None:
+                self._json({"error": "OBS is not running", "obs": False}, 503); return
 
             if p == "/api/mood":
                 name = str(body.get("mood", "")).upper()
