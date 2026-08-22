@@ -34,6 +34,13 @@ import time
 import urllib.request
 from pathlib import Path
 
+# WARNING: WINDOWS SPAWNS A CONSOLE WINDOW FOR EVERY CHILD CONSOLE PROCESS. adb.exe and
+# powershell.exe are console applications, so each call flashed a black terminal on the
+# desktop - and opening the Cams tab fires several at once, which is unusable during a
+# show. CREATE_NO_WINDOW keeps them headless; it does not exist off Windows, hence getattr.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 RIG_HOST = "192.168.1.232"
 RIG_PORT = 8765
 OSC_PORT = 8000
@@ -328,7 +335,7 @@ def check_phone():
 
     def sh(*a, timeout=15):
         return subprocess.run([adb] + list(a), capture_output=True, text=True,
-                              timeout=timeout).stdout.strip()
+                              timeout=timeout, creationflags=NO_WINDOW).stdout.strip()
 
     devs = [l for l in sh("devices").splitlines()[1:] if "\tdevice" in l]
     if not devs:
@@ -393,7 +400,7 @@ def _host_usb_roles():
              "Get-PnpDevice -ErrorAction SilentlyContinue | "
              "Where-Object { $_.InstanceId -match 'VID_18D1' -and $_.Status -eq 'OK' } | "
              "ForEach-Object { $_.Class }"],
-            capture_output=True, text=True, timeout=25).stdout.lower()
+            capture_output=True, text=True, timeout=25, creationflags=NO_WINDOW).stdout.lower()
         if "camera" in out: roles.add("camera")
         if "net" in out:    roles.add("net")
     except Exception:
@@ -439,7 +446,7 @@ def check_cameras(dash="http://127.0.0.1:8770"):
              "Get-CimInstance Win32_Process -Filter \"Name='python.exe' or "
              "Name='pythonw.exe'\" | Where-Object { $_.CommandLine -like '*vcambridge*' } "
              "| Select-Object -First 1 -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=25).stdout.strip()
+            capture_output=True, text=True, timeout=25, creationflags=NO_WINDOW).stdout.strip()
     except Exception:
         out = ""
     if out.isdigit():

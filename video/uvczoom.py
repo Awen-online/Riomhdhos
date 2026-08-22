@@ -32,6 +32,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+# WARNING: WINDOWS SPAWNS A CONSOLE WINDOW FOR EVERY CHILD CONSOLE PROCESS. adb.exe and
+# powershell.exe are console applications, so each call flashed a black terminal on the
+# desktop - and opening the Cams tab fires several at once, which is unusable during a
+# show. CREATE_NO_WINDOW keeps them headless; it does not exist off Windows, hence getattr.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 ADB = r"C:\Users\mccul\Android\Sdk\platform-tools\adb.exe"
 PREVIEW = "com.android.DeviceAsWebcam/com.android.deviceaswebcam.DeviceAsWebcamPreview"
 
@@ -43,7 +50,7 @@ ZOOM_IDS = {"0.5": "zoom_ui_toggle_option_low",
 
 def adb(*args, serial=None):
     cmd = [ADB] + (["-s", serial] if serial else []) + list(args)
-    return subprocess.run(cmd, capture_output=True, text=True).stdout
+    return subprocess.run(cmd, capture_output=True, text=True, creationflags=NO_WINDOW).stdout
 
 
 def only_device():

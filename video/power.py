@@ -38,6 +38,13 @@ import sys
 import time
 from pathlib import Path
 
+# WARNING: WINDOWS SPAWNS A CONSOLE WINDOW FOR EVERY CHILD CONSOLE PROCESS. adb.exe and
+# powershell.exe are console applications, so each call flashed a black terminal on the
+# desktop - and opening the Cams tab fires several at once, which is unusable during a
+# show. CREATE_NO_WINDOW keeps them headless; it does not exist off Windows, hence getattr.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 ADB = r"C:\Users\mccul\Android\Sdk\platform-tools\adb.exe"
 UVCZOOM = Path(__file__).with_name("uvczoom.py")
 BRIDGE_TASK = "Riomhdhos vcam bridge"
@@ -47,7 +54,7 @@ RIGCAM = "online.awen.rigcam"
 def sh(*args, timeout=25):
     try:
         return subprocess.run([ADB, *args], capture_output=True, text=True,
-                              timeout=timeout).stdout.strip()
+                              timeout=timeout, creationflags=NO_WINDOW).stdout.strip()
     except Exception as e:
         return f"<{type(e).__name__}>"
 
@@ -71,7 +78,7 @@ def task(action):
         subprocess.run(["powershell", "-NoProfile", "-Command",
                         f"{action}-ScheduledTask -TaskName '{BRIDGE_TASK}' "
                         f"-ErrorAction SilentlyContinue"],
-                       capture_output=True, timeout=30)
+                       capture_output=True, timeout=30, creationflags=NO_WINDOW)
         return True
     except Exception:
         return False
@@ -81,7 +88,7 @@ def hq_state(serial):
     """'on', 'off', or None if it cannot be read (locked phone, no UI)."""
     try:
         r = subprocess.run([sys.executable, str(UVCZOOM), "--serial", serial, "--state"],
-                           capture_output=True, text=True, timeout=45).stdout
+                           capture_output=True, text=True, timeout=45, creationflags=NO_WINDOW).stdout
     except Exception:
         return None
     if "Switch High Quality off" in r:
@@ -97,7 +104,7 @@ def hq_off(serial):
     if hq_state(serial) != "on":
         return "already off"
     subprocess.run([sys.executable, str(UVCZOOM), "--serial", serial, "--hq"],
-                   capture_output=True, timeout=45)
+                   capture_output=True, timeout=45, creationflags=NO_WINDOW)
     return "turned off"
 
 

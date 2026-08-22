@@ -53,6 +53,13 @@ sys.path.insert(0, str(VISUALS))
 import obsctl                                  # noqa: E402  credential handling + logger pinning
 from server import Analyser, BANDS             # noqa: E402  the analyser is already tested
 
+# WARNING: WINDOWS SPAWNS A CONSOLE WINDOW FOR EVERY CHILD CONSOLE PROCESS. adb.exe and
+# powershell.exe are console applications, so each call flashed a black terminal on the
+# desktop - and opening the Cams tab fires several at once, which is unusable during a
+# show. CREATE_NO_WINDOW keeps them headless; it does not exist off Windows, hence getattr.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 SOURCE = "Webcam"
 # The wired camera and the virtual-camera bridge for the WiFi one. Both are dshow sources,
 # so both take the same filters.
@@ -96,7 +103,7 @@ _DEV_TTL = 120.0
 def adb_devices():
     try:
         out = subprocess.run([ADB, "devices"], capture_output=True, text=True,
-                             timeout=10).stdout
+                             timeout=10, creationflags=NO_WINDOW).stdout
     except Exception:
         return []
     return [l.split()[0] for l in out.splitlines()[1:]
@@ -126,7 +133,7 @@ def device_info(serial):
     d = {"serial": serial}
     try:
         out = subprocess.run([ADB, "-s", serial, "shell", script],
-                             capture_output=True, text=True, timeout=20).stdout
+                             capture_output=True, text=True, timeout=20, creationflags=NO_WINDOW).stdout
         for line in out.splitlines():
             if "=" in line:
                 k, v = line.split("=", 1)
@@ -196,7 +203,7 @@ def uvc_call(*args, timeout=30):
         if UVC_SERIAL:
             cmd += ["--serial", UVC_SERIAL]
         p = subprocess.run(cmd,
-                           capture_output=True, text=True, timeout=timeout)
+                           capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW)
         out = (p.stdout or p.stderr or "").strip()
         return {"ok": p.returncode == 0, "out": out[-400:]}
     except subprocess.TimeoutExpired:
@@ -213,7 +220,7 @@ def power_call(mode, timeout=120):
     if UVC_SERIAL:
         cmd += ["--wired-serial", UVC_SERIAL]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW)
         return {"ok": r.returncode == 0,
                 "out": (r.stdout or r.stderr or "").strip()[-800:]}
     except subprocess.TimeoutExpired:
