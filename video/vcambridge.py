@@ -38,11 +38,57 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
 import numpy as np
 import pyvirtualcam
+
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
+
+
+def match_obs_source(w, h, name):
+    """Point the OBS capture source at the size we are actually sending.
+
+    WARNING: A DSHOW SOURCE PINNED TO THE WRONG RESOLUTION SHOWS BLACK, SILENTLY. res_type=1
+    means a custom resolution, so the source asks the device for exactly that and gets
+    nothing when the device offers something else. Observed: RigCam at 720p, the source still
+    pinned to 1920x1080 from an earlier session, bridge healthy and feeding, OBS black - and
+    nothing anywhere reported an error. Changing the phone's resolution is a normal thing to
+    do from the Cams tab, so this has to follow it rather than wait to be noticed mid-show.
+
+    Never raises: OBS being closed is a normal state for this process.
+    """
+    try:
+        import obsctl
+        c = obsctl.connect(timeout=5)
+        want = f"{w}x{h}"
+        for inp in c.get_input_list(None).inputs:
+            if inp["inputKind"] != "dshow_input":
+                continue
+            cur = c.get_input_settings(inp["inputName"]).input_settings
+            dev = str(cur.get("video_device_id", ""))
+            if "OBS Virtual Camera" not in dev:
+                continue
+            # WARNING: A FULL DEVICE RE-OPEN, EVERY TIME - AND A SCENE-ITEM TOGGLE IS NOT ONE.
+            # If OBS opened this source while the virtual camera had no producer (which is
+            # normal: the task starts the bridge 90 s after logon, and OBS is often up first)
+            # the source stays BLACK even once frames arrive. Disabling and re-enabling the
+            # scene item does not clear it - measured, still black - because the underlying
+            # device was never closed. Clearing video_device_id closes it; restoring opens it
+            # fresh. The property cascade matters: device first, THEN res_type, then
+            # resolution, or the resolution is applied to a device that is not open yet.
+            time.sleep(0.5)
+            c.set_input_settings(inp["inputName"], {"video_device_id": ""}, True)
+            time.sleep(2)
+            c.set_input_settings(inp["inputName"], {"video_device_id": dev}, True)
+            time.sleep(2)
+            c.set_input_settings(inp["inputName"], {"res_type": 1, "resolution": want}, True)
+            return f"'{inp['inputName']}' re-opened at {want}"
+        return "no OBS Virtual Camera source found"
+    except Exception as e:
+        return f"OBS not updated ({type(e).__name__})"
 
 
 def probe_size(api):
@@ -66,6 +112,10 @@ def main():
     ap.add_argument("--size", default=None, help="WxH; probed from the phone if omitted")
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--backend", default="obs")
+    ap.add_argument("--obs-source", default=None,
+                    help="capture source to keep in step; found by device if omitted")
+    ap.add_argument("--no-obs-match", action="store_true",
+                    help="do not touch OBS settings")
     args = ap.parse_args()
 
     ff = shutil.which("ffmpeg") or r"C:\Users\mccul\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe"
@@ -91,11 +141,19 @@ def main():
         session += 1
         print(f"[{session}] {w}x{h} from {args.url}", flush=True)
 
+
         # ⚠️ Every flag here is about not accumulating frames. `-fflags nobuffer` and
         # `-flags low_delay` stop the demuxer and decoder holding frames back. Do NOT add
         # `-probesize 32 -analyzeduration 0`: they leave ffmpeg unable to estimate the frame
         # rate and buy nothing, because the latency this tool targets is downstream in OBS.
-        cmd = [ff, "-hide_banner", "-loglevel", "error",
+        # ⚠️ -nostdin IS NOT OPTIONAL HERE. ffmpeg reads stdin for keyboard commands and treats
+        # EOF as quit. This process is spawned without a console - by the scheduled task, and
+        # by anything that runs it non-interactively - so its stdin is a closed or null handle
+        # and ffmpeg can exit the moment it reads one. It exits CLEANLY and SILENTLY: status 0,
+        # nothing on stderr, and the bridge simply reported "stream ended" a second after
+        # starting, over and over, which reads as a network fault rather than a self-inflicted
+        # one. stdin is pinned to DEVNULL as well so the handle is never inherited at all.
+        cmd = [ff, "-hide_banner", "-nostdin", "-loglevel", "error",
                "-fflags", "nobuffer", "-flags", "low_delay",
                "-f", "h264", "-i", args.url,
                # ⚠️ NV12, NOT rgb24. RGB is 3 bytes per pixel; at 1080p30 that is 6.2 MB a
@@ -111,7 +169,7 @@ def main():
         # capacity does not drop frames, it QUEUES them: measured 1494 ms at 1080p against
         # 428 ms at 720p. The latency was the backlog in front of a decoder that could not
         # quite keep up.
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, bufsize=0)
         frame_bytes = w * h * 3 // 2      # NV12
         # ⚠️ ONE BUFFER, REUSED, FILLED IN PLACE. The previous loop accumulated a list of
@@ -148,6 +206,18 @@ def main():
                     # reintroduce exactly the queue this tool exists to remove.
                     cam.send(arr)
                     shown += 1
+                    # ⚠️ RE-OPEN THE OBS SOURCE ONLY ONCE FRAMES ARE ACTUALLY FLOWING. Doing it
+                    # at session start re-opens a device that still has no producer, which is
+                    # the very state that leaves the source black - measured, black either
+                    # way. 30 frames is about a second of real video, so by here the sink has
+                    # been fed and a fresh open finds a live device. On a thread because the
+                    # re-open sleeps several seconds and the feed must not stall behind it.
+                    if shown == 30 and not args.no_obs_match:
+                        threading.Thread(
+                            target=lambda: print(f"    OBS source: "
+                                                 f"{match_obs_source(w, h, args.obs_source)}",
+                                                 flush=True),
+                            daemon=True).start()
                     now = time.time()
                     if now - last_report >= 30:
                         print(f"    {shown} frames, {shown / (now - t0):.1f} fps", flush=True)
