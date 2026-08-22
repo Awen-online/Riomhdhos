@@ -616,8 +616,13 @@ class Handler(BaseHTTPRequestHandler):
             # the handler, and the client got no response at all: not an error, silence.
             if p == "/api/power":
                 mode = body.get("mode")
+                # 'normal' is what the button says; 'show' is what power.py has always
+                # called it. Accept both rather than leave a label that does not match the
+                # wire - that mismatch is exactly where a stale client starts 400ing.
+                if mode == "normal":
+                    mode = "show"
                 if mode not in ("sleep", "show"):
-                    self._json({"error": "mode must be sleep or show"}, 400); return
+                    self._json({"error": "mode must be sleep or normal"}, 400); return
                 r = power_call(mode)
                 _dev_cache["at"] = 0          # battery figures are about to change a lot
                 self._json({"mode": mode, "result": r}, 200 if r["ok"] else 502); return
