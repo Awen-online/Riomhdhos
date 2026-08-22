@@ -1,7 +1,12 @@
 <!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Ríomhdhos video</title>
+<title>Ríastrad</title>
+<!-- Riastrad: the warp-spasm, Cu Chulainn's battle-frenzy - the moment he becomes something
+     else to look at. The right name for the part of the rig that is pure spectacle. The
+     favicon is an inline data URI because dash.py serves exactly one file: a separate icon
+     would need a route, and a route that 404s costs a request on every load forever. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f1116'/%3E%3Cg fill='none' stroke='%23e8a87c' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M16 5.5 A10.5 10.5 0 0 1 16 26.5'/%3E%3Cpath d='M16 10 A6 6 0 0 0 16 22'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='2.6' fill='%23e8a87c'/%3E%3C/svg%3E">
 <!--
   Organised by WHEN a control is touched, not by which subsystem it belongs to.
 
@@ -560,8 +565,20 @@ async function powerPost(mode){
 function renderDevices(){
   const box = $('devlist');
   const ds = (CAM && CAM.devices) || [];
-  if (!ds.length){ box.innerHTML = '<span class="sub">no phones on adb</span>'; return; }
+  if (!ds.length){ box.innerHTML = '<span class="sub">no phones configured</span>'; return; }
   box.innerHTML = ds.map(d => {
+    // A configured phone adb cannot see: say so plainly, and say what to do about it. Every
+    // other field on this row would be a lie for a phone that is not there, so none are shown.
+    if (d.absent){
+      const mk = PHONE_ICON[d.model] || PHONE_FALLBACK;
+      return '<div style="margin:2px 0 12px">'
+        + '<div class="hdr"><span class="nm" style="display:flex;align-items:center;gap:8px">'
+        + '<span class="phoneic">' + mk + '</span>' + esc(d.model || '?') + '</span>'
+        + '<span class="sub" style="color:var(--bad)">NOT CONNECTED</span></div>'
+        + '<div class="sub">adb cannot see this phone. Replug the USB-C cable; if it stays '
+        + 'away, check Developer options &rsaquo; Default USB configuration says '
+        + '<b>File transfer</b> rather than Webcam.</div></div>';
+    }
     // Role is decided by which serial the dashboard was told is the wired one - never
     // guessed, because guessing sent the wired controls to the wrong phone once already.
     // Both phones run RigCam now; only the transport differs. Saying UVC here was left over
@@ -960,11 +977,18 @@ setInterval(() => {
 
 async function refresh(){
   const s = await (await fetch('/api/state')).json();
-  MOODS = s.moods; PATTERNS = s.patterns; BLENDS = s.blendModes; SCENES = s.scenes;
-  curMood = s.audio.mood; curScene = s.currentScene;
-  VIS = {patternA:s.audio.patternA|0, patternB:s.audio.patternB|0,
-         xfade:s.audio.xfade||0, kaleido:s.audio.kaleido||0,
-         complexity:s.audio.complexity ?? 1};
+  // ⚠️ NEVER DEREFERENCE A SUB-OBJECT OF THIS PAYLOAD BLIND. Its shape varies: with OBS
+  // closed the scene and filter fields come back empty, and during the dashboard's own
+  // startup a request can land before the audio block exists at all. `s.audio.mood` then
+  // throws a TypeError, which the catch below reported as "cannot reach OBS" - a red banner
+  // naming the wrong component, for a dashboard that was working and an OBS that was fine.
+  const a = s.audio || {};
+  MOODS = s.moods || []; PATTERNS = s.patterns || [];
+  BLENDS = s.blendModes || []; SCENES = s.scenes || [];
+  curMood = a.mood; curScene = s.currentScene;
+  VIS = {patternA:a.patternA|0, patternB:a.patternB|0,
+         xfade:a.xfade||0, kaleido:a.kaleido||0,
+         complexity:a.complexity ?? 1};
   $('b_scene').textContent = curScene;
   renderMoods(); renderScenes(); renderDecks(); renderBlend(s.blend);
   CAMFX = s.cameraFilters || {};
@@ -972,15 +996,18 @@ async function refresh(){
   renderFilters(CAMFX[FXCAM] || s.filters || []);
   renderHealth(s.health); renderPresets(s.presets || []);
   const set = (id, valId, v, fmt) => { $(id).value = v; $(valId).textContent = fmt(v); };
-  set('r_int','v_int', s.audio.intensity ?? 1, v => Number(v).toFixed(2));
-  set('r_echo','v_echo', s.audio.echo ?? 0, v => Number(v).toFixed(2));
+  set('r_int','v_int', a.intensity ?? 1, v => Number(v).toFixed(2));
+  set('r_echo','v_echo', a.echo ?? 0, v => Number(v).toFixed(2));
   set('r_x','v_x', VIS.xfade, v => Number(v).toFixed(2));
   set('r_kal','v_kal', VIS.kaleido, v => v < 2 ? 'off' : v + ' fold');
   set('r_cx','v_cx', VIS.complexity, v => Number(v).toFixed(2));
-  set('r_et','v_et', s.audio.echoTime ?? 1, v => Number(v).toFixed(2) + '×');
-  set('r_vr','v_vr', s.audio.vReact ?? 0, v => Number(v).toFixed(2));
+  set('r_et','v_et', a.echoTime ?? 1, v => Number(v).toFixed(2) + '×');
+  set('r_vr','v_vr', a.vReact ?? 0, v => Number(v).toFixed(2));
 }
-refresh().catch(e => $('err').textContent = 'cannot reach OBS: ' + e.message);
+// Say what actually failed. A TypeError in here is a bug in this page, not a dead OBS, and
+// labelling it "cannot reach OBS" sends you to restart the wrong thing.
+refresh().catch(e => $('err').textContent =
+  (e instanceof TypeError ? 'dashboard error: ' : 'cannot reach the dashboard: ') + e.message);
 // Health only. A full refresh would fight whatever slider is under a thumb.
 // A tap clears it; otherwise the next successful call does.
 $('err').onclick = () => { $('err').textContent = ''; };

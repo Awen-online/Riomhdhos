@@ -189,6 +189,15 @@ def devices_snapshot():
     if now - _dev_cache["at"] < _DEV_TTL and _dev_cache["data"]:
         return _dev_cache["data"]
     data = [device_info(x) for x in adb_devices()]
+    # WARNING: A PHONE THAT IS DOWN MUST STILL APPEAR. This list used to be exactly what adb
+    # could see, so a configured phone that dropped off USB simply VANISHED from the Phones
+    # card - which reads as "never set up" rather than "this one is broken", and sends you
+    # looking for a configuration bug instead of a cable. Anything named with --phone that
+    # adb cannot see gets a placeholder row instead of silence.
+    seen = {d.get("model") for d in data}
+    for label in RIGCAMS:
+        if label not in seen:
+            data.append({"model": label, "serial": None, "absent": True})
     _dev_cache.update(at=now, data=data)
     return data
 
