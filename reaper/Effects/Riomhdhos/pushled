@@ -20,9 +20,13 @@ desc:Riomhdhos Push LEDs + display
 
 options:gmem=riomhdhos
 
-slider1:0<0,11,1{C,C#,D,D#,E,F,F#,G,G#,A,A#,B}>Root (match pushbrain)
-slider2:0<0,3,1{minor (aeolian),dorian,major,minor pentatonic}>Scale (match pushbrain)
-slider3:3<1,8,1>Row step (match pushbrain)
+// ⚠️ These three are now only a FALLBACK. The scale moves at runtime from the Push's
+// own SCALES page, so pushbrain publishes it through gmem[44..48] and that always wins.
+// Two plugins each holding their own copy of the scale is exactly the duplicated state
+// that made the lit "root" pads disagree with the notes actually played.
+slider1:0<0,11,1{C,C#,D,D#,E,F,F#,G,G#,A,A#,B}>Root (fallback; gmem wins)
+slider2:0<0,15,1{minor (aeolian),dorian,major (ionian),minor pentatonic,major pentatonic,mixolydian,lydian,phrygian,locrian,harmonic minor,melodic minor,blues,whole tone,chromatic,phrygian dominant,hirajoshi}>Scale (fallback; gmem wins)
+slider3:3<1,8,1>Row step (fallback; gmem wins)
 // Octave now arrives from pushbrain via gmem[62] - no longer something to keep
 // matching by hand. This slider is only the fallback if nothing has published yet.
 slider4:2<0,7,1>Octave offset (fallback; gmem wins)
@@ -81,26 +85,46 @@ slider30:1<0,127,1>Button colour: available/idle
 // no way to tell "loaded" from "running" without one. This plugin had none, which is
 // exactly the gap that cost an hour on 2026-08-09. Read it from the console: 0 means
 // @init never executed and everything below this line is dead.
+// In the chromatic layout a pad can be OUT of the scale - which in-key playing never
+// allows. It still plays, so it must not be dark: dark means "does nothing here"
+// everywhere else on this panel. Dim says "reachable, but outside the key".
+slider32:1<0,127,1>Colour: out of scale
 slider31:0<0,99,1>-alive
 
 @init
 slider31 = 1; sliderchange(slider31);
 buf = 90000; txt = 91000; sc = 92000;
 lastmood = -1; lastcfg = -1; dirty = 1; curoct = 2; lastpc = -1; phold = 0; lastview = -1; lastnc = -1; lastmc2 = -1;
+sroot = slider1; sscale = slider2; srstep = slider3; slayout = 0; scstep = 5; lastscfg = -1;
 
-function loadscale() local(b)(
-  b = slider2;
-  b == 0 ? ( sclen = 7; sc[0]=0; sc[1]=2; sc[2]=3; sc[3]=5; sc[4]=7; sc[5]=8;  sc[6]=10; ) :
-  b == 1 ? ( sclen = 7; sc[0]=0; sc[1]=2; sc[2]=3; sc[3]=5; sc[4]=7; sc[5]=9;  sc[6]=10; ) :
-  b == 2 ? ( sclen = 7; sc[0]=0; sc[1]=2; sc[2]=4; sc[3]=5; sc[4]=7; sc[5]=9;  sc[6]=11; ) :
-           ( sclen = 5; sc[0]=0; sc[1]=3; sc[2]=5; sc[3]=7; sc[4]=10; );
+// Same 12-bit masks as pushbrain, in the same order - the two must agree note for
+// note or the panel lights one grid while the pads play another.
+function scalemask(b)(
+  b==0  ? 1453 : b==1  ? 1709 : b==2  ? 2741 : b==3  ? 1193 :
+  b==4  ?  661 : b==5  ? 1717 : b==6  ? 2773 : b==7  ? 1451 :
+  b==8  ? 1387 : b==9  ? 2477 : b==10 ? 2733 : b==11 ? 1257 :
+  b==12 ? 1365 : b==13 ? 4095 : b==14 ? 1459 : 397;
+);
+
+function loadscale() local(m, i)(
+  m = scalemask(sscale);
+  scmask = m;
+  sclen = 0; i = 0;
+  loop(12,
+    (m & (1 << i)) ? ( sc[sclen] = i; sclen += 1; );
+    i += 1;
+  );
 );
 
 function gridnote(p) local(idx, row, col, deg, oct)(
   idx = p - 36; row = (idx / 8) | 0; col = idx - row*8;
-  deg = row * slider3 + col;
-  oct = (deg / sclen) | 0;
-  12 * (curoct + oct) + slider1 + sc[deg - oct*sclen];
+  slayout ? (
+    12 * curoct + sroot + row * scstep + col;
+  ) : (
+    deg = row * srstep + col;
+    oct = (deg / sclen) | 0;
+    12 * (curoct + oct) + sroot + sc[deg - oct*sclen];
+  );
 );
 
 function lcdsend(ln, n) local(bp, i)(
@@ -113,6 +137,32 @@ function lcdsend(ln, n) local(bp, i)(
 );
 
 function clr(n)( i = 0; loop(n, txt[i] = 32; i += 1; ); );
+
+// Text as STRINGS, not as character codes. Everything above predates needing sixteen
+// scale names on screen, and spelling "phrygian dominant" as seventeen txt[o+n]=NNN
+// assignments is seventeen chances to typo a letter that nobody would catch on a
+// four-line LCD.
+function puttxt(o, str) local(i, n)(
+  n = strlen(str); i = 0;
+  loop(n, txt[o+i] = str_getchar(str, i); i += 1; );
+  n;
+);
+function putnum(o, v) local(n)(
+  v >= 10 ? ( txt[o] = 48 + ((v/10)|0); txt[o+1] = 48 + (v%10); n = 2; )
+          : ( txt[o] = 48 + v; n = 1; );
+  n;
+);
+function notename(pc)(
+  pc==0?"C"  : pc==1?"C#" : pc==2?"D"  : pc==3?"D#" : pc==4?"E"   : pc==5?"F" :
+  pc==6?"F#" : pc==7?"G"  : pc==8?"G#" : pc==9?"A"  : pc==10?"A#" : "B";
+);
+// Shortened where the full name would cross a display segment break at 17/34/51.
+function scalename(b)(
+  b==0?"minor"        : b==1?"dorian"       : b==2?"major"       : b==3?"minor pent" :
+  b==4?"major pent"   : b==5?"mixolydian"   : b==6?"lydian"      : b==7?"phrygian" :
+  b==8?"locrian"      : b==9?"harmonic min" : b==10?"melodic min": b==11?"blues" :
+  b==12?"whole tone"  : b==13?"chromatic"   : b==14?"phryg dom"  : "hirajoshi";
+);
 
 // write the mood name at the start of txt, return its length
 function moodtxt(m) local(n)(
@@ -182,6 +232,7 @@ function redraw_seq() local(v, s, p, on, head, col) (
   midisend(0, 0xB0, 51, slider24);
   midisend(0, 0xB0, 86, slider23);
   midisend(0, 0xB0, 85, slider14);            // panic stays available in every view
+  midisend(0, 0xB0, 58, slider30);            // SCALES reachable from here too
 
   // transport for this view only: RUN lit while running, CLEAR always available
   midisend(0, 0xB0, 102, gmem[2101] > 0.5 ? slider14 : slider30);
@@ -205,6 +256,9 @@ function redraw_seq() local(v, s, p, on, head, col) (
     );
     v += 1;
   );
+  // SEQ wrote no LCD at all, so the bottom line kept naming whichever view you came
+  // from - the one line whose entire job is saying where you are.
+  bottomline(2);
 );
 
 // line 3: "<CONTROL>   <value>" - what just moved and where it landed
@@ -229,9 +283,12 @@ function paramline(id, val) local(n, a, b, c)(
 function bottomline(vw)(
   clr(68);
   txt[0]=82;txt[1]=105;txt[2]=111;txt[3]=109;txt[4]=104;txt[5]=100;txt[6]=104;txt[7]=111;txt[8]=115;
-  vw == 1 ?
-    ( txt[60]=77;txt[61]=73;txt[62]=88;txt[63]=69;txt[64]=82; ) :      // MIXER
-    ( txt[60]=78;txt[61]=79;txt[62]=84;txt[63]=69; );                  // NOTE
+  // SEQ and SCALES used to fall through to "NOTE" here, so two of the four views
+  // named themselves wrongly on the one line whose whole job is saying where you are.
+  vw == 1 ? puttxt(60, "MIXER") :
+  vw == 2 ? puttxt(60, "SEQ") :
+  vw == 3 ? puttxt(60, "SCALES") :
+            puttxt(60, "NOTE");
   lcdsend(0x1B, 68);
 );
 
@@ -320,6 +377,7 @@ function redraw_mixer(m) local(p, row, col, lit, lvl, mut, islot)(
     ) : midisend(0, 0x90, p, 0);
     p += 1;
   );
+  midisend(0, 0xB0, 58, slider30);              // SCALES reachable from here too
   // mood select stays on the top row in every view
   p = 0;
   loop(4, midisend(0, 0x90, 92 + p, p == m ? slider5 : slider6); p += 1; );
@@ -338,9 +396,67 @@ function redraw_mixer(m) local(p, row, col, lit, lvl, mut, islot)(
   bottomline(1);
 );
 
-function redraw(m) local(p, n, rootpc)(
+// SCALES VIEW: the settings themselves, laid out as pads. Reading top-down like the
+// mixer and the sequencer:
+//   row 8 / 7   root note as a piano - black keys above the gaps in the white row
+//   row 6 / 5   the sixteen scales, eight to a row
+//   row 4       row step 1-8: how far the grid climbs from one row to the next
+//   row 3       in key | chromatic
+// The two bottom rows stay dark. There is nothing to put there yet, and dark is this
+// panel's word for exactly that.
+function redraw_scales() local(p, row, col, pc, v, n)(
+  p = 0; loop(120, midisend(0, 0xB0, p, 0); p += 1; );
+  midisend(0, 0xB0, 85, slider14);                       // panic, in every view
+  midisend(0, 0xB0, 58, slider23);                       // SCALES lit: you are here
+  midisend(0, 0xB0, 50, slider24);
+  midisend(0, 0xB0, 51, slider24);
+  midisend(0, 0xB0, 86, slider30);
+  midisend(0, 0xB0, 56, gmem[53] > 0.5 ? slider14 : slider30);
+  midisend(0, 0xB0, 54, curoct > 0 ? slider14 : slider30);
+  midisend(0, 0xB0, 55, curoct < 7 ? slider14 : slider30);
+
+  p = 36;
+  loop(64,
+    row = ((p - 36) / 8) | 0;
+    col = (p - 36) - row*8;
+    v = 0;
+    row == 7 ? (
+      pc = col==0 ? 1 : col==1 ? 3 : col==3 ? 6 : col==4 ? 8 : col==5 ? 10 : -1;
+      v = pc < 0 ? 0 : (pc == sroot ? slider7 : slider8);
+    ) :
+    row == 6 ? (
+      pc = col==0 ? 0 : col==1 ? 2 : col==2 ? 4 : col==3 ? 5 :
+           col==4 ? 7 : col==5 ? 9 : col==6 ? 11 : -1;
+      v = pc < 0 ? 0 : (pc == sroot ? slider7 : slider8);
+    ) :
+    row == 5 ? ( v = (col == sscale) ? slider11 : slider10; ) :
+    row == 4 ? ( v = ((8 + col) == sscale) ? slider11 : slider10; ) :
+    // whichever step belongs to the live layout - degrees in key, semitones chromatic
+    row == 3 ? ( v = ((col + 1) == (slayout ? scstep : srstep)) ? slider11 : slider10; ) :
+    row == 2 ? ( v = col <= 1 ? (col == slayout ? slider11 : slider10) : 0; ) :
+               ( v = 0; );
+    midisend(0, 0x90, p, v);
+    p += 1;
+  );
+
+  // line 1 names the four settings, line 2 gives their values directly underneath -
+  // each pair inside one physical display segment so nothing straddles a break
+  clr(68);
+  puttxt(0,  "ROOT"); puttxt(17, "SCALE"); puttxt(34, "ROWS"); puttxt(51, "LAYOUT");
+  lcdsend(0x18, 68);
+  clr(68);
+  puttxt(0, notename(sroot));
+  puttxt(17, scalename(sscale));
+  n = putnum(34, slayout ? scstep : srstep);
+  puttxt(34 + n + 1, slayout ? "semi" : "deg");
+  puttxt(51, slayout ? "chromatic" : "in key");
+  lcdsend(0x19, 68);
+  bottomline(3);
+);
+
+function redraw(m) local(p, n, rootpc, pcv)(
   loadscale();
-  rootpc = slider1;
+  rootpc = sroot;
 
   // Blank every button, then light only the two rows that mean something. A lit
   // button next to Push's printed labels reads as an active function, so anything
@@ -370,16 +486,25 @@ function redraw(m) local(p, n, rootpc)(
   // which view you are in
   midisend(0, 0xB0, 50, gmem[61] == 1 ? slider24 : slider23);
   midisend(0, 0xB0, 51, gmem[61] == 1 ? slider23 : slider24);
+  // SCALES is DIM here, not dark: it does something from this view, and dark is what
+  // this panel says about a button that does not.
+  midisend(0, 0xB0, 58, slider30);
 
   // --- pads -------------------------------------------------------------------
   // The whole grid below the mood row plays: rows 0-6, all 8 columns, 56 pads.
   // Layer toggles were removed from this view - they are a mixer function, and the
   // two button rows already show all six channels at all times.
   // all 64 pads play - the top row included
+  // In key, every pad is in the scale and only the root stands out. Chromatic puts
+  // notes on the grid that are OUTSIDE the key - they still play, so they are dim
+  // rather than dark, and the key stays readable while you reach past it.
   p = 36;
   loop(64,
     n = gridnote(p);
-    midisend(0, 0x90, p, ((n % 12) == rootpc) ? slider7 : slider8);
+    pcv = ((n % 12) - rootpc + 12) % 12;
+    midisend(0, 0x90, p,
+      ((n % 12) == rootpc) ? slider7 :
+      (scmask & (1 << pcv)) ? slider8 : slider32);
     p += 1;
   );
 
@@ -403,6 +528,21 @@ mm = gmem[63] - 1;
 mm < 0 ? mm = 0;
 ov = gmem[62];
 curoct = ov > 0 ? ov - 1 : slider4;
+// The scale is pushbrain's to own - it is the thing that actually plays the notes.
+// Each value carries the rig's +1 sentinel, so "nothing published yet" is tellable
+// from a real zero and the sliders here are only a cold-start fallback.
+gv = gmem[44]; sroot   = gv > 0 ? gv - 1 : slider1;
+gv = gmem[45]; sscale  = gv > 0 ? gv - 1 : slider2;
+gv = gmem[46]; srstep  = gv > 0 ? gv     : slider3;
+gv = gmem[47]; slayout = gv > 0 ? gv - 1 : 0;
+gv = gmem[48]; scstep  = gv > 0 ? gv     : 5;
+// The scale can now change without a slider moving - from the Push's own pads - so it
+// has to be part of what "something changed" means, or the grid would relight only on
+// the next unrelated event.
+// Kept OUT of cfg: every term in that expression already shares multipliers with
+// another, so folding five more in would have made a missed redraw likelier, not less.
+// A second counter costs one comparison and cannot collide with anything.
+scfg = sroot + sscale*16 + srstep*512 + slayout*8192 + scstep*16384;
 cfg = slider1 + slider2*16 + slider3*64 + slider4*512
     + slider5*4096 + slider6*524288
     + gmem[64+mm*16+12]*1 + gmem[64+mm*16+13]*2
@@ -460,9 +600,9 @@ seqrun  = gmem[2101];
 seqdirty = (vw == 2) && (seqstep != lastseqstep || seqrun != lastseqrun);
 seqdirty ? ( lastseqstep = seqstep; lastseqrun = seqrun; );
 
-(mm != lastmood || cfg != lastcfg || dirty || slider9 || vw != lastview || seqdirty) ? (
+(mm != lastmood || cfg != lastcfg || scfg != lastscfg || dirty || slider9 || vw != lastview || seqdirty) ? (
   lastview = vw;
-  vw == 2 ? redraw_seq() : vw == 1 ? redraw_mixer(mm) : redraw(mm);
-  lastmood = mm; lastcfg = cfg; dirty = 0;
+  vw == 3 ? redraw_scales() : vw == 2 ? redraw_seq() : vw == 1 ? redraw_mixer(mm) : redraw(mm);
+  lastmood = mm; lastcfg = cfg; lastscfg = scfg; dirty = 0;
   slider9 ? ( slider9 = 0; sliderchange(slider9); );
 );

@@ -34,7 +34,10 @@ options:gmem=riomhdhos
 // its own values saved in the .rpp, so changing this does NOT move a live grid - that
 // takes setting the parameter itself.
 slider1:2<0,11,1{C,C#,D,D#,E,F,F#,G,G#,A,A#,B}>Root
-slider2:2<0,3,1{minor (aeolian),dorian,major,minor pentatonic}>Scale
+// ⚠️ Indices 0-3 keep their old meaning. The running project stores this by NUMBER
+// in the .rpp, so reordering the list would silently move a saved grid to a
+// different scale - new entries are APPENDED for the same reason sliders are.
+slider2:2<0,15,1{minor (aeolian),dorian,major (ionian),minor pentatonic,major pentatonic,mixolydian,lydian,phrygian,locrian,harmonic minor,melodic minor,blues,whole tone,chromatic,phrygian dominant,hirajoshi}>Scale
 slider3:3<1,8,1>Row step (scale degrees per row)
 slider4:2<0,7,1>Octave offset  (CC54 down / CC55 up)
 slider5:1<0,1,1{off,on}>Grid sends notes
@@ -57,7 +60,9 @@ slider17:1<0,1,1{pitch bend (as-is),modulation CC1}>Touch strip
 //              Columns 5-8 stay dark until there is something to put there.
 // Mood select and PLAY-panic stay live in EVERY view: being in the wrong mode is not
 // an acceptable reason to be unable to change world or kill a stuck note.
-slider18:0<0,2,1{NOTE,MIXER,SEQ}>View
+//   3 = SCALES the key/mode/layout picker, on the SCALES button (CC58) above
+//              REPEAT. Press it again - or NOTE - to go back to playing.
+slider18:0<0,3,1{NOTE,MIXER,SEQ,SCALES}>View
 // REPEAT (CC56) = HOLD. A true note-latch, not a sustain message: CC64 is taken by
 // the brain for mood-advance, so sending sustain from here would change world instead
 // of holding notes. Suppressing note-offs also holds more reliably than sustain does -
@@ -104,6 +109,14 @@ slider32:0<-1000000,1000000,1>-tempo encoder accumulated
 // Swing is absolute 0-127 here, not a delta: nothing outside this plugin owns the
 // value yet, so there is no second copy for it to drift from.
 slider33:0<0,127,1>Swing
+// GRID LAYOUT. In key: only scale notes exist and every pad plays one, so nothing can
+// be out of key - which is what you want while telling a story over a drone. Chromatic:
+// all 12 semitones are reachable and rows are a fixed interval apart, for the moments
+// where a passing note or a modal borrowing matters more than safety.
+// Each layout keeps its OWN row step, because the useful values are not the same kind
+// of number: 3 scale degrees is a stack of thirds, 5 semitones is a stack of fourths.
+slider34:0<0,1,1{in key,chromatic}>Grid layout
+slider35:5<1,12,1>Chromatic row step (semitones)
 // Octave Down = CC54, Octave Up = CC55. The octave is published to gmem[62] so
 // `pushled` follows it directly - previously both plugins carried their own copy of
 // the octave and had to be kept matching by hand, which meant the lit "root" pads
@@ -128,29 +141,63 @@ gmem[53] = 0;
 menc = 127;                              // master encoder starts at unity
 gmem[62] = slider4 + 1;
 
-function loadscale() local(b)(
-  b = slider2;
-  b == 0 ? ( sclen = 7; sc[0]=0; sc[1]=2; sc[2]=3; sc[3]=5; sc[4]=7; sc[5]=8;  sc[6]=10; ) :
-  b == 1 ? ( sclen = 7; sc[0]=0; sc[1]=2; sc[2]=3; sc[3]=5; sc[4]=7; sc[5]=9;  sc[6]=10; ) :
-  b == 2 ? ( sclen = 7; sc[0]=0; sc[1]=2; sc[2]=4; sc[3]=5; sc[4]=7; sc[5]=9;  sc[6]=11; ) :
-           ( sclen = 5; sc[0]=0; sc[1]=3; sc[2]=5; sc[3]=7; sc[4]=10; );
+// A scale is a 12-BIT MASK of the pitch classes it contains, bit 0 = the root - not a
+// list of degrees. Sixteen scales as degree lists is sixteen lines of index-by-index
+// assignment to get wrong, and the LEDs need "is this note in the scale?" anyway, which
+// a mask answers with one test where a list needs a search. The degree table is built
+// from the mask once, at load, so gridnote() stays exactly as cheap as it was.
+function scalemask(b)(
+  b==0  ? 1453 : b==1  ? 1709 : b==2  ? 2741 : b==3  ? 1193 :
+  b==4  ?  661 : b==5  ? 1717 : b==6  ? 2773 : b==7  ? 1451 :
+  b==8  ? 1387 : b==9  ? 2477 : b==10 ? 2733 : b==11 ? 1257 :
+  b==12 ? 1365 : b==13 ? 4095 : b==14 ? 1459 : 397;
+);
+
+function loadscale() local(m, i)(
+  m = scalemask(slider2);
+  scmask = m;
+  sclen = 0; i = 0;
+  loop(12,
+    (m & (1 << i)) ? ( sc[sclen] = i; sclen += 1; );
+    i += 1;
+  );
+);
+
+// The scale now MOVES at runtime, from the Push's own pads - so `pushled` can no longer
+// carry its own copy of it. Every value the LEDs need is published here, on the rig's
+// usual +1 sentinel so an unpublished slot reads as "nothing yet" rather than as C.
+//   gmem[44] = root + 1        gmem[45] = scale + 1
+//   gmem[46] = row step        gmem[47] = layout + 1     gmem[48] = chromatic step
+function publishscale()(
+  gmem[44] = slider1 + 1;
+  gmem[45] = slider2 + 1;
+  gmem[46] = slider3;
+  gmem[47] = slider34 + 1;
+  gmem[48] = slider35;
 );
 
 // grid pad (36..91) -> a note in the chosen scale
 // the whole grid below the mood row is playable: rows 0-6, all 8 columns
 function gridnote(p) local(idx, row, col, deg, oct)(
   idx = p - 36; row = (idx / 8) | 0; col = idx - row*8;
-  deg = row * slider3 + col;
-  oct = (deg / sclen) | 0;
-  12 * (slider4 + oct) + slider1 + sc[deg - oct*sclen];
+  slider34 ? (
+    // CHROMATIC: the pad IS the semitone, rows a fixed interval apart. No octave
+    // wrapping to compute - the grid is just a piano roll folded into eight columns.
+    12 * slider4 + slider1 + row * slider35 + col;
+  ) : (
+    deg = row * slider3 + col;
+    oct = (deg / sclen) | 0;
+    12 * (slider4 + oct) + slider1 + sc[deg - oct*sclen];
+  );
 );
 
 loadscale();
+publishscale();
 
 @slider
 loadscale();
+publishscale();
 gmem[62] = slider4 + 1;
-gmem[61] = slider18;
 gmem[61] = slider18;
 
 @block
@@ -208,6 +255,43 @@ while (midirecv(mpos, m1, m2, m3)) (
         );
       );
     ) :
+    // SCALES VIEW: the pads ARE the settings. Reading top-down, the way the mixer and
+    // the sequencer already read:
+    //   row 8 / 7   root note, laid out as a piano - black keys above white
+    //   row 6 / 5   the sixteen scales, eight per row
+    //   row 4       row step: how far the grid climbs from one row to the next
+    //   row 3       in key | chromatic
+    // Nothing here sends a note. Changing the scale under your fingers is safe because
+    // note-offs are sent for the note the PAD produced, not for a freshly computed one.
+    (slider18 == 3) ? (
+      st == 0x90 && m3 > 0 ? (
+        srow = ((m2 - 36) / 8) | 0;
+        scol = (m2 - 36) - srow*8;
+        srow == 7 ? (
+          // black keys sit above the gaps in the white row, so the shape reads as a
+          // keyboard rather than as twelve identical pads
+          spc = scol==0 ? 1 : scol==1 ? 3 : scol==3 ? 6 : scol==4 ? 8 : scol==5 ? 10 : -1;
+          spc >= 0 ? ( slider1 = spc; sliderchange(slider1); );
+        ) :
+        srow == 6 ? (
+          spc = scol==0 ? 0 : scol==1 ? 2 : scol==2 ? 4 : scol==3 ? 5 :
+                scol==4 ? 7 : scol==5 ? 9 : scol==6 ? 11 : -1;
+          spc >= 0 ? ( slider1 = spc; sliderchange(slider1); );
+        ) :
+        srow == 5 ? ( slider2 = scol;     sliderchange(slider2); loadscale(); ) :
+        srow == 4 ? ( slider2 = 8 + scol; sliderchange(slider2); loadscale(); ) :
+        // one row step control, pointed at whichever layout is live - they hold
+        // separate values because a scale degree and a semitone are not the same unit
+        srow == 3 ? (
+          slider34 ? ( slider35 = scol + 1; sliderchange(slider35); )
+                   : ( slider3  = scol + 1; sliderchange(slider3);  );
+        ) :
+        srow == 2 ? (
+          scol <= 1 ? ( slider34 = scol; sliderchange(slider34); ) : 0;
+        ) : 0;
+        publishscale();
+      ) : 0;
+    ) :
     // NB: an EMPTY block "( )" is a compile error in EEL2 and silently stops the
     // whole plugin running while still showing its sliders - needs a statement.
     (m2 >= 36 && m2 <= 99) ? (
@@ -264,6 +348,16 @@ while (midirecv(mpos, m1, m2, m3)) (
   // thing it can mean here without lying about what it does.
   (st == 0xB0 && m2 == 86 && m3 > 0) ? (
     slider18 = 2; sliderchange(slider18); gmem[61] = slider18;
+  ) :
+
+  // SCALES (CC58), the button above REPEAT. This one IS a toggle, unlike NOTE and
+  // SESSION: it is a settings page rather than a way of playing, so there is only one
+  // place it can sensibly go back to - and a second press being "done" is what the
+  // hand expects. NOTE and SESSION still leave it directly, so it can never trap you.
+  (st == 0xB0 && m2 == 58 && m3 > 0) ? (
+    slider18 = slider18 == 3 ? 0 : 3;
+    sliderchange(slider18);
+    gmem[61] = slider18;
   ) :
 
   (st == 0xB0 && (m2 == 50 || m2 == 51) && m3 > 0) ? (
