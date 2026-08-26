@@ -34,6 +34,7 @@ before running this, or they will fight over it.
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -209,7 +210,42 @@ def main():
                     help="phone serial; re-establishes the adb forward each reconnect")
     ap.add_argument("--no-obs-match", action="store_true",
                     help="do not touch OBS settings")
+    # ⚠️ A scheduled task runs this with pythonw and NO console, so everything it prints -
+    # including "phone not answering" and the frame counters that prove it is alive - goes
+    # nowhere. That is how a stalled bridge looked identical to a healthy one and had to be
+    # re-run by hand to find out which it was. Give the task a log.
+    ap.add_argument("--log", default=None, metavar="PATH",
+                    help="append output here as well as stdout (for the scheduled task)")
     args = ap.parse_args()
+
+    if args.log:
+        os.makedirs(os.path.dirname(os.path.abspath(args.log)), exist_ok=True)
+        class _Tee:
+            """Timestamped, line-buffered, and it never lets a logging failure kill the
+            bridge: the show does not stop because a disk is full."""
+            def __init__(self, stream, path):
+                self.stream, self.path = stream, path
+            def write(self, text):
+                try:
+                    if self.stream: self.stream.write(text)
+                except Exception:
+                    pass
+                try:
+                    with open(self.path, "a", encoding="utf-8") as f:
+                        for line in text.splitlines(True):
+                            if line.strip():
+                                f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + line)
+                            else:
+                                f.write(line)
+                except Exception:
+                    pass
+            def flush(self):
+                try:
+                    if self.stream: self.stream.flush()
+                except Exception:
+                    pass
+        sys.stdout = _Tee(sys.stdout, args.log)
+        sys.stderr = _Tee(sys.stderr, args.log)
 
     # WARNING: THE PIXEL FORMAT IS DICTATED BY THE SINK, NOT BY PREFERENCE. The OBS Virtual
     # Camera takes NV12, which is why this tool uses it: 1.5 bytes per pixel instead of 3,
