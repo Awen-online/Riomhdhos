@@ -106,29 +106,62 @@ local function isVolumeName(pn)
   return hit and toks <= 2
 end
 
-local function slotVolumeParams(tr, kfx, slot)
-  local bounds = instrumentBounds(tr, kfx)
-  local b = bounds[slot + 1]
-  if not b then return {} end
+-- ⚠⚠ A mood can carry MORE THAN ONE Kontakt. Adding a library as its own instance
+-- is the obvious way to add a sound, and the surface used to look at the FIRST Kontakt
+-- only: on 2026-08-25 a Kontakt 7 organ added to THE CAIRN landed ahead of the existing
+-- Kontakt 8 and took the whole column, so the two instruments already in that rack
+-- disappeared from the grid - which reads as "the new one is not mapped" when in fact
+-- everything else had been hidden by it.
+--
+-- Instruments are therefore collected across EVERY Kontakt on the track, in FX order
+-- and then rack order, and a slot is addressed by (fx, parameter) rather than by a rack
+-- index into one plugin.
+local function kontaktFxOf(tr)
+  local out = {}
+  if not tr then return out end
+  for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
+    local ok, nm = reaper.TrackFX_GetFXName(tr, fx, "")
+    if ok and norm(nm):find("KONTAKT") and not norm(nm):find("LAYERMIXER") then
+      out[#out+1] = fx
+    end
+  end
+  return out
+end
+
+local function trackInstruments(tr)
+  local out = {}
+  for _, fx in ipairs(kontaktFxOf(tr)) do
+    for _, b in ipairs(instrumentBounds(tr, fx)) do
+      out[#out+1] = { fx = fx, start = b.start, stop = b.stop }
+    end
+  end
+  return out
+end
+
+-- Returns the FX the slot lives in and the parameters carrying its level. The fx comes
+-- back with the params because they are only meaningful together - reading a parameter
+-- index against the wrong instance silently touches an unrelated control.
+local function slotVolumeParams(tr, slot)
+  local inst = trackInstruments(tr)[slot + 1]
+  if not inst then return nil, {} end
   local exact, others = nil, {}
-  for p = b.start, b.stop do
-    local ok, pn = reaper.TrackFX_GetParamName(tr, kfx, p, "")
+  for p = inst.start, inst.stop do
+    local ok, pn = reaper.TrackFX_GetParamName(tr, inst.fx, p, "")
     if ok and pn and pn ~= "" then
-      if pn == "Volume" then exact = p            -- a real master wins outright
+      -- ⚠️ Case-insensitively. The Salmesykkel organ spells it "VOLUME", so the
+      -- exact-match rule missed it and the shape rule then matched "REV VOL",
+      -- "DLY VOL" and "LFO VOL" as well - a mute would have zeroed the reverb and
+      -- delay sends alongside the level, changing the sound rather than silencing it.
+      if pn:lower() == "volume" then exact = p     -- a real master wins outright
       elseif isVolumeName(pn) then others[#others+1] = p end
     end
   end
-  if exact then return { exact } end
-  if #others > 0 then return others end
-  return {}      -- library exposes no volume at all; needs a manual host-automation assign
+  if exact then return inst.fx, { exact } end
+  if #others > 0 then return inst.fx, others end
+  -- library exposes no volume at all; needs a manual host-automation assign
+  return inst.fx, {}
 end
 
-local function kontaktOfStrict(tr)
-  for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
-    local ok, nm = reaper.TrackFX_GetFXName(tr, fx, "")
-    if ok and norm(nm):find("KONTAKT") and not norm(nm):find("LAYERMIXER") then return fx end
-  end
-end
 local lastMaster = -1
 local lastBtnCount = -1
 
@@ -358,15 +391,9 @@ local function publishStates()
       -- mixer's own description said "4 Kontakt layers", so a substring match found
       -- it too - and because this loop kept the last match rather than the first, it
       -- counted the mixer's parameters instead of the instrument's.
-      local kfx, n = nil, 0
-      for fx = 0, reaper.TrackFX_GetCount(tr) - 1 do
-        local ok, nm = reaper.TrackFX_GetFXName(tr, fx, "")
-        if ok and norm(nm):find("KONTAKT") and not norm(nm):find("LAYERMIXER") then
-          kfx = fx
-          break
-        end
-      end
-      if kfx then n = math.min(4, #instrumentBounds(tr, kfx)) end
+      -- Every Kontakt on the track counts, not just the first one - see
+      -- trackInstruments. The grid still tops out at its four rows.
+      local n = math.min(4, #trackInstruments(tr))
       reaper.TrackFX_SetParam(led, ledFx, idx, n)
     end
   end
@@ -375,11 +402,10 @@ local function publishStates()
   local imask = 0
   for col = 1, 4 do
     local tr = trackByFragment(COLUMN_TRACK[col])
-    local kfx = tr and kontaktOfStrict(tr)
-    if kfx then
+    if tr then
       for slot = 0, 3 do
-        local vps = slotVolumeParams(tr, kfx, slot)
-        if #vps > 0 then
+        local kfx, vps = slotVolumeParams(tr, slot)
+        if kfx and #vps > 0 then
           local m = true
           for _, vp in ipairs(vps) do
             if reaper.TrackFX_GetParamNormalized(tr, kfx, vp) > 0.001 then m = false end
@@ -524,9 +550,9 @@ local function body()
             local mood = math.floor(idx / 4)
             local slot = idx % 4
             local tr   = trackByFragment(COLUMN_TRACK[mood + 1])
-            local kfx  = tr and kontaktOfStrict(tr)
+            local kfx, vps = nil, {}
+            if tr then kfx, vps = slotVolumeParams(tr, slot) end
             if kfx then
-              local vps = slotVolumeParams(tr, kfx, slot)
               if #vps > 0 then
                 -- ⚠️ Decide muted/unmuted by READING the parameters, never from an
                 -- in-memory table. A cached flag desyncs the moment anything else
