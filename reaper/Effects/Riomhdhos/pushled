@@ -218,6 +218,29 @@ function paramtxt(id) local(n)(
   n;
 );
 
+// ⚠️ Defined HERE, above its first caller. EEL2 resolves a function only from its
+// definition onward, so calling this from redraw_seq while it sat lower in the file
+// was a COMPILE ERROR - which in JSFX means the whole plugin quietly stops running
+// while still reporting every slider through the API. The panel simply kept whatever
+// the previous instance had drawn on it.
+
+// Bottom line: wordmark on the left, current view on the right. The view name earns
+// that space more than the wordmark did - the same pads mean different things in each
+// view and there is no screen to glance at.
+// NOTE: no fada. SysEx data bytes are 7-bit, so only ASCII 32-126 can be rendered -
+// "Riomhdhos" is representable, the accented form is not.
+function bottomline(vw)(
+  clr(68);
+  txt[0]=82;txt[1]=105;txt[2]=111;txt[3]=109;txt[4]=104;txt[5]=100;txt[6]=104;txt[7]=111;txt[8]=115;
+  // SEQ and SCALES used to fall through to "NOTE" here, so two of the four views
+  // named themselves wrongly on the one line whose whole job is saying where you are.
+  vw == 1 ? puttxt(60, "MIXER") :
+  vw == 2 ? puttxt(60, "SEQ") :
+  vw == 3 ? puttxt(60, "SCALES") :
+            puttxt(60, "NOTE");
+  lcdsend(0x1B, 68);
+);
+
 // SEQ view. Row = voice, column = step, voice 1 on top - the same reading order as the
 // rack and the mixer, so "top" means the same thing in all three views.
 //
@@ -275,22 +298,6 @@ function paramline(id, val) local(n, a, b, c)(
   lcdsend(0x1A, n);
 );
 
-// Bottom line: wordmark on the left, current view on the right. The view name earns
-// that space more than the wordmark did - the same pads mean different things in each
-// view and there is no screen to glance at.
-// NOTE: no fada. SysEx data bytes are 7-bit, so only ASCII 32-126 can be rendered -
-// "Riomhdhos" is representable, the accented form is not.
-function bottomline(vw)(
-  clr(68);
-  txt[0]=82;txt[1]=105;txt[2]=111;txt[3]=109;txt[4]=104;txt[5]=100;txt[6]=104;txt[7]=111;txt[8]=115;
-  // SEQ and SCALES used to fall through to "NOTE" here, so two of the four views
-  // named themselves wrongly on the one line whose whole job is saying where you are.
-  vw == 1 ? puttxt(60, "MIXER") :
-  vw == 2 ? puttxt(60, "SEQ") :
-  vw == 3 ? puttxt(60, "SCALES") :
-            puttxt(60, "NOTE");
-  lcdsend(0x1B, 68);
-);
 
 // "C#4 v104 +2" on the right of line 2, beside the mood name. Kept off line 3 so a
 // knob move and a played note do not overwrite each other.
