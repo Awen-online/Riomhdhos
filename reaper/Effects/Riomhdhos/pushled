@@ -127,6 +127,25 @@ function gridnote(p) local(idx, row, col, deg, oct)(
   );
 );
 
+// The 64 pads as the instrument they are. In key, every pad is in the scale and only
+// the root stands out. Chromatic puts notes on the grid that are OUTSIDE the key -
+// they still play, so they are dim rather than dark, and the key stays readable while
+// you reach past it.
+// Shared by NOTE and SCALES: on the settings page the grid IS the preview, so it has
+// to be painted by the same code or the preview would drift from the thing it previews.
+function paintgrid() local(p, n, pcv)(
+  loadscale();
+  p = 36;
+  loop(64,
+    n = gridnote(p);
+    pcv = ((n % 12) - sroot + 12) % 12;
+    midisend(0, 0x90, p,
+      ((n % 12) == sroot) ? slider7 :
+      (scmask & (1 << pcv)) ? slider8 : slider32);
+    p += 1;
+  );
+);
+
 function lcdsend(ln, n) local(bp, i)(
   bp = 0;
   buf[bp]=0xF0; bp+=1; buf[bp]=0x47; bp+=1; buf[bp]=0x7F; bp+=1; buf[bp]=0x15; bp+=1;
@@ -156,12 +175,13 @@ function notename(pc)(
   pc==0?"C"  : pc==1?"C#" : pc==2?"D"  : pc==3?"D#" : pc==4?"E"   : pc==5?"F" :
   pc==6?"F#" : pc==7?"G"  : pc==8?"G#" : pc==9?"A"  : pc==10?"A#" : "B";
 );
-// Shortened where the full name would cross a display segment break at 17/34/51.
+// One display column is EIGHT characters wide - the ninth is the gap that keeps a
+// label off the segment break at 17/34/51 - so every name here is trimmed to fit.
 function scalename(b)(
-  b==0?"minor"        : b==1?"dorian"       : b==2?"major"       : b==3?"minor pent" :
-  b==4?"major pent"   : b==5?"mixolydian"   : b==6?"lydian"      : b==7?"phrygian" :
-  b==8?"locrian"      : b==9?"harmonic min" : b==10?"melodic min": b==11?"blues" :
-  b==12?"whole tone"  : b==13?"chromatic"   : b==14?"phryg dom"  : "hirajoshi";
+  b==0?"minor"    : b==1?"dorian"   : b==2?"major"    : b==3?"min pent" :
+  b==4?"maj pent" : b==5?"mixolyd"  : b==6?"lydian"   : b==7?"phrygian" :
+  b==8?"locrian"  : b==9?"harm min" : b==10?"mel min" : b==11?"blues" :
+  b==12?"whole"   : b==13?"chroma"  : b==14?"phryg dm": "hirajosh";
 );
 
 // write the mood name at the start of txt, return its length
@@ -403,15 +423,14 @@ function redraw_mixer(m) local(p, row, col, lit, lvl, mut, islot)(
   bottomline(1);
 );
 
-// SCALES VIEW: the settings themselves, laid out as pads. Reading top-down like the
-// mixer and the sequencer:
-//   row 8 / 7   root note as a piano - black keys above the gaps in the white row
-//   row 6 / 5   the sixteen scales, eight to a row
-//   row 4       row step 1-8: how far the grid climbs from one row to the next
-//   row 3       in key | chromatic
-// The two bottom rows stay dark. There is nothing to put there yet, and dark is this
-// panel's word for exactly that.
-function redraw_scales() local(p, row, col, pc, v, n)(
+// SCALES VIEW: the four settings sit on ENCODERS 1-4, under the display columns that
+// name them - line 1 labels them, line 2 shows their values directly underneath, and
+// the label finally points at the control it names.
+//
+// The pads stay the instrument. They paint the grid being built and they play it, so
+// the mode is chosen by ear rather than by reading its name off a list of sixteen.
+// Encoders 5-8 keep the meaning they have everywhere else.
+function redraw_scales() local(p, n)(
   p = 0; loop(120, midisend(0, 0xB0, p, 0); p += 1; );
   midisend(0, 0xB0, 85, slider14);                       // panic, in every view
   midisend(0, 0xB0, 58, slider23);                       // SCALES lit: you are here
@@ -422,41 +441,22 @@ function redraw_scales() local(p, row, col, pc, v, n)(
   midisend(0, 0xB0, 54, curoct > 0 ? slider14 : slider30);
   midisend(0, 0xB0, 55, curoct < 7 ? slider14 : slider30);
 
-  p = 36;
-  loop(64,
-    row = ((p - 36) / 8) | 0;
-    col = (p - 36) - row*8;
-    v = 0;
-    row == 7 ? (
-      pc = col==0 ? 1 : col==1 ? 3 : col==3 ? 6 : col==4 ? 8 : col==5 ? 10 : -1;
-      v = pc < 0 ? 0 : (pc == sroot ? slider7 : slider8);
-    ) :
-    row == 6 ? (
-      pc = col==0 ? 0 : col==1 ? 2 : col==2 ? 4 : col==3 ? 5 :
-           col==4 ? 7 : col==5 ? 9 : col==6 ? 11 : -1;
-      v = pc < 0 ? 0 : (pc == sroot ? slider7 : slider8);
-    ) :
-    row == 5 ? ( v = (col == sscale) ? slider11 : slider10; ) :
-    row == 4 ? ( v = ((8 + col) == sscale) ? slider11 : slider10; ) :
-    // whichever step belongs to the live layout - degrees in key, semitones chromatic
-    row == 3 ? ( v = ((col + 1) == (slayout ? scstep : srstep)) ? slider11 : slider10; ) :
-    row == 2 ? ( v = col <= 1 ? (col == slayout ? slider11 : slider10) : 0; ) :
-               ( v = 0; );
-    midisend(0, 0x90, p, v);
-    p += 1;
-  );
+  paintgrid();
 
-  // line 1 names the four settings, line 2 gives their values directly underneath -
-  // each pair inside one physical display segment so nothing straddles a break
-  clr(68);
-  puttxt(0,  "ROOT"); puttxt(17, "SCALE"); puttxt(34, "ROWS"); puttxt(51, "LAYOUT");
+  // line 1: the first four columns are renamed, the rest keep the names they have in
+  // every other view - because those four encoders keep the meaning they have there
+  enclabels();
+  puttxt(colof(0), "ROOT"); puttxt(colof(1), "SCALE");
+  puttxt(colof(2), "ROWS"); puttxt(colof(3), "LAYOUT");
   lcdsend(0x18, 68);
+
+  // line 2: the values, each under its own label
   clr(68);
-  puttxt(0, notename(sroot));
-  puttxt(17, scalename(sscale));
-  n = putnum(34, slayout ? scstep : srstep);
-  puttxt(34 + n + 1, slayout ? "semi" : "deg");
-  puttxt(51, slayout ? "chromatic" : "in key");
+  puttxt(colof(0), notename(sroot));
+  puttxt(colof(1), scalename(sscale));
+  n = putnum(colof(2), slayout ? scstep : srstep);
+  puttxt(colof(2) + n + 1, slayout ? "semi" : "deg");
+  puttxt(colof(3), slayout ? "chrom" : "in key");
   lcdsend(0x19, 68);
   bottomline(3);
 );
@@ -502,18 +502,7 @@ function redraw(m) local(p, n, rootpc, pcv)(
   // Layer toggles were removed from this view - they are a mixer function, and the
   // two button rows already show all six channels at all times.
   // all 64 pads play - the top row included
-  // In key, every pad is in the scale and only the root stands out. Chromatic puts
-  // notes on the grid that are OUTSIDE the key - they still play, so they are dim
-  // rather than dark, and the key stays readable while you reach past it.
-  p = 36;
-  loop(64,
-    n = gridnote(p);
-    pcv = ((n % 12) - rootpc + 12) % 12;
-    midisend(0, 0x90, p,
-      ((n % 12) == rootpc) ? slider7 :
-      (scmask & (1 << pcv)) ? slider8 : slider32);
-    p += 1;
-  );
+  paintgrid();
 
   // --- display ----------------------------------------------------------------
   // line 1 = the eight encoder names, so what you are turning is named directly

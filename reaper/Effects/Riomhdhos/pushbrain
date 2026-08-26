@@ -62,6 +62,10 @@ slider17:1<0,1,1{pitch bend (as-is),modulation CC1}>Touch strip
 // an acceptable reason to be unable to change world or kill a stuck note.
 //   3 = SCALES the key/mode/layout picker, on the SCALES button (CC58) above
 //              REPEAT. Press it again - or NOTE - to go back to playing.
+//              The four settings live on ENCODERS 1-4, under the display columns
+//              that name them. The pads stay the instrument: they show the grid
+//              being built and play it, so the scale is chosen by ear, not by
+//              reading its name off a list.
 slider18:0<0,3,1{NOTE,MIXER,SEQ,SCALES}>View
 // REPEAT (CC56) = HOLD. A true note-latch, not a sustain message: CC64 is taken by
 // the brain for mood-advance, so sending sustain from here would change world instead
@@ -255,43 +259,6 @@ while (midirecv(mpos, m1, m2, m3)) (
         );
       );
     ) :
-    // SCALES VIEW: the pads ARE the settings. Reading top-down, the way the mixer and
-    // the sequencer already read:
-    //   row 8 / 7   root note, laid out as a piano - black keys above white
-    //   row 6 / 5   the sixteen scales, eight per row
-    //   row 4       row step: how far the grid climbs from one row to the next
-    //   row 3       in key | chromatic
-    // Nothing here sends a note. Changing the scale under your fingers is safe because
-    // note-offs are sent for the note the PAD produced, not for a freshly computed one.
-    (slider18 == 3) ? (
-      st == 0x90 && m3 > 0 ? (
-        srow = ((m2 - 36) / 8) | 0;
-        scol = (m2 - 36) - srow*8;
-        srow == 7 ? (
-          // black keys sit above the gaps in the white row, so the shape reads as a
-          // keyboard rather than as twelve identical pads
-          spc = scol==0 ? 1 : scol==1 ? 3 : scol==3 ? 6 : scol==4 ? 8 : scol==5 ? 10 : -1;
-          spc >= 0 ? ( slider1 = spc; sliderchange(slider1); );
-        ) :
-        srow == 6 ? (
-          spc = scol==0 ? 0 : scol==1 ? 2 : scol==2 ? 4 : scol==3 ? 5 :
-                scol==4 ? 7 : scol==5 ? 9 : scol==6 ? 11 : -1;
-          spc >= 0 ? ( slider1 = spc; sliderchange(slider1); );
-        ) :
-        srow == 5 ? ( slider2 = scol;     sliderchange(slider2); loadscale(); ) :
-        srow == 4 ? ( slider2 = 8 + scol; sliderchange(slider2); loadscale(); ) :
-        // one row step control, pointed at whichever layout is live - they hold
-        // separate values because a scale degree and a semitone are not the same unit
-        srow == 3 ? (
-          slider34 ? ( slider35 = scol + 1; sliderchange(slider35); )
-                   : ( slider3  = scol + 1; sliderchange(slider3);  );
-        ) :
-        srow == 2 ? (
-          scol <= 1 ? ( slider34 = scol; sliderchange(slider34); ) : 0;
-        ) : 0;
-        publishscale();
-      ) : 0;
-    ) :
     // NB: an EMPTY block "( )" is a compile error in EEL2 and silently stops the
     // whole plugin running while still showing its sliders - needs a statement.
     (m2 >= 36 && m2 <= 99) ? (
@@ -466,16 +433,28 @@ while (midirecv(mpos, m1, m2, m3)) (
       gmem[52] = swng + 1;
       gmem[59] = swng; gmem[60] = 25; gmem[58] += 1;   // label id 23 = SWING
     ) :
+    // ⚠️ This SUPERSEDES "encoders keep doing what they do in note view - having them
+    // change meaning per view is a trap". That reasoning holds for the PLAYING views,
+    // where a knob under your hand must always mean the same thing. SCALES is a
+    // settings page, and the display's four labelled columns sit physically above
+    // these encoders - so on that page the knobs are the settings, and everywhere else
+    // they are still the MiniLab's knobs. Encoders 5-8 never change meaning at all.
     (m2 >= 71 && m2 <= 78) ? (
       e = m2 - 71;
       d = m3 < 64 ? m3 : m3 - 128;
-      enc[e] = max(0, min(127, enc[e] + d));
-      slider18 == 1 ? (
-        // encoders keep doing what they do in note view - the knobs were never the
-        // problem, and having them change meaning per view is a trap
-        tcc = e==0?86 : e==1?87 : e==2?89 : e==3?90 : e==4?110 : e==5?111 : e==6?116 : 117;
-        midisend(mpos, 0xB0, tcc, enc[e] | 0);
+      (slider18 == 3 && e <= 3) ? (
+        // root WRAPS - pitch classes are a circle, and stopping at B would be a lie.
+        // Everything else clamps: running out of scales should feel like an end.
+        e == 0 ? ( slider1 = (slider1 + d + 1200) % 12; sliderchange(slider1); ) :
+        e == 1 ? ( slider2 = max(0, min(15, slider2 + d)); sliderchange(slider2); loadscale(); ) :
+        e == 2 ? (
+          slider34 ? ( slider35 = max(1, min(12, slider35 + d)); sliderchange(slider35); )
+                   : ( slider3  = max(1, min(8,  slider3  + d)); sliderchange(slider3);  );
+        ) :
+        ( slider34 = max(0, min(1, slider34 + d)); sliderchange(slider34); );
+        publishscale();
       ) : (
+        enc[e] = max(0, min(127, enc[e] + d));
         tcc = e==0?86 : e==1?87 : e==2?89 : e==3?90 : e==4?110 : e==5?111 : e==6?116 : 117;
         midisend(mpos, 0xB0, tcc, enc[e] | 0);
       );
