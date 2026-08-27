@@ -1002,6 +1002,20 @@ function renderFilters(filters){
   }
 }
 function renderHealth(h){
+  // ⚠️ OBS BEING CLOSED IS A NORMAL STATE, and /api/state deliberately still answers
+  // without it - just without a `health` block. Reading through that absent block threw a
+  // TypeError halfway down refresh(), so everything after this line never ran: presets,
+  // every slider, the whole rest of the page. The visible symptom was
+  // "dashboard error: Cannot read properties of undefined (reading 'budgetMs')" - a field
+  // nobody has heard of, naming neither the cause nor OBS.
+  if (!h){
+    $('health').innerHTML =
+      '<div class="row"><span class="k">Frame</span>'
+      + '<span class="v sub">OBS is not running</span></div>'
+      + '<div class="row"><span class="k">Output</span><span class="v sub">&mdash;</span></div>';
+    $('b_stats').textContent = 'OBS closed';
+    return;
+  }
   const pct = h.budgetMs ? (h.renderMs / h.budgetMs * 100) : 0;
   // Coloured by headroom, because the number only means something against the budget:
   // 16 ms is comfortable at 30 fps and over budget at 60.
