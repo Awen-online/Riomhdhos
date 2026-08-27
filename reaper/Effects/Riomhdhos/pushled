@@ -185,6 +185,71 @@ function scalename(b)(
 );
 
 // write the mood name at the start of txt, return its length
+// CHORD NAMING. The display could already say "C#4 v104 +2" - one note, and a count of
+// the others - which tells you a chord is down without telling you WHICH. On a scale-locked
+// grid the useful question is what harmony you just landed on.
+//
+// Shapes are intervals from the root in the same 12-bit form the scales use, so the test is
+// one comparison per root rather than a search.
+function shapemask(i)(
+  i==0  ?  145 : i==1  ?  137 : i==2  ?   73 : i==3  ?  273 : i==4  ?  161 : i==5  ?  133 :
+  i==6  ? 1169 : i==7  ? 2193 : i==8  ? 1161 : i==9  ? 1097 : i==10 ?  585 : i==11 ?  657 :
+  i==12 ?  649 : i==13 ?  149 : i==14 ? 1173 : i==15 ? 1165 : i==16 ? 2197 : i==17 ? 129 : 0;
+);
+function shapename(i)(
+  i==0  ? ""     : i==1  ? "m"    : i==2  ? "dim"  : i==3  ? "aug"  : i==4  ? "sus4" :
+  i==5  ? "sus2" : i==6  ? "7"    : i==7  ? "maj7" : i==8  ? "m7"   : i==9  ? "m7b5" :
+  i==10 ? "dim7" : i==11 ? "6"    : i==12 ? "m6"   : i==13 ? "add9" : i==14 ? "9"    :
+  i==15 ? "m9"   : i==16 ? "maj9" : i==17 ? "5"    : "";
+);
+
+// Writes the chord name at `o` and returns its length, or 0 if these notes are not a chord
+// this knows - in which case the display keeps the note-and-count it always had, which is
+// still true. Naming something wrong would be worse than naming nothing.
+function chordtxt(o, mask, bass) local(root, rel, i, best, bestroot, n, bpc)(
+  best = -1; bestroot = -1; bpc = bass % 12;
+  root = 0;
+  loop(12,
+    (mask & (1 << root)) ? (
+      rel = ((mask >> root) | (mask << (12 - root))) & 4095;
+      i = 0;
+      loop(18,
+        rel == shapemask(i) ? (
+          // ⚠️ C6 and Am7 are the SAME FOUR NOTES, and so are every other 6/m7 pair. The
+          // bass is the only thing the pads can tell us about which one you meant, and on
+          // a grid you play upward from the root, so it is usually right.
+          (best < 0 || (root == bpc && bestroot != bpc)) ? ( best = i; bestroot = root; );
+        );
+        i += 1;
+      );
+    );
+    root += 1;
+  );
+  best < 0 ? 0 : (
+    n = puttxt(o, notename(bestroot));
+    n += puttxt(o + n, shapename(best));
+    // an inversion is worth saying: Dm/F is a different thing to play over than Dm
+    bestroot != bpc ? ( txt[o + n] = 47; n += 1; n += puttxt(o + n, notename(bpc)); );
+    n;
+  );
+);
+
+// note + chord on their own line, for the views whose line 2 is busy saying something else
+function chordline() local(n, note, heldn)(
+  clr(68);
+  heldn = gmem[55];
+  heldn > 0 ? (
+    note = gmem[56];
+    n = puttxt(0, notename(note % 12));
+    txt[n] = 48 + max(0, min(9, ((note / 12) | 0) - 1)); n += 1;
+    (heldn > 1 && gmem[49] > 0 && gmem[50] > 0) ? (
+      txt[n] = 32; n += 1;
+      n += chordtxt(n, gmem[49] - 1, gmem[50] - 1);
+    );
+  );
+  lcdsend(0x1A, 68);
+);
+
 function moodtxt(m) local(n)(
   m==0 ? ( txt[0]=67;txt[1]=79;txt[2]=83;txt[3]=77;txt[4]=79;txt[5]=83; n=6; ) :
   m==1 ? ( txt[0]=84;txt[1]=72;txt[2]=69;txt[3]=32;txt[4]=67;txt[5]=65;txt[6]=73;txt[7]=82;txt[8]=78; n=9; ) :
@@ -344,6 +409,9 @@ function noteline(m, note, vel, heldn) local(n, pc, oc, a, b, c)(
     heldn > 1 ? (
       txt[n]=32; n += 1; txt[n]=43; n += 1;                          // ' +'
       txt[n] = 48 + min(9, heldn - 1); n += 1;
+      // ...and WHICH chord, in the last display segment. The count says how many notes
+      // are down; this says what they are. Offset 60 keeps all of it inside segment four.
+      (gmem[49] > 0 && gmem[50] > 0) ? chordtxt(60, gmem[49] - 1, gmem[50] - 1);
     );
   );
   lcdsend(0x19, 68);
@@ -556,7 +624,11 @@ cfg = slider1 + slider2*16 + slider3*64 + slider4*512
 nc = gmem[54];
 nc != lastnc ? (
   lastnc = nc;
-  gmem[61] == 0 ? noteline(mm, gmem[56], gmem[57], gmem[55]);
+  // NOTE view has room on line 2 beside the mood. SCALES view does not - its line 2 is the
+  // four settings - so there the chord takes line 3, on the same timeout as any other
+  // readout. That is the view where you are auditioning a mode, so it is worth having.
+  gmem[61] == 0 ? noteline(mm, gmem[56], gmem[57], gmem[55]) :
+  gmem[61] == 3 ? ( chordline(); phold = srate * slider16; );
 );
 
 // an instrument mute announces itself on the same line as parameter changes

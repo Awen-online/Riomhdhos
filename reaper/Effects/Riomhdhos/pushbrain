@@ -172,6 +172,29 @@ function loadscale() local(m, i)(
 // usual +1 sentinel so an unpublished slot reads as "nothing yet" rather than as C.
 //   gmem[44] = root + 1        gmem[45] = scale + 1
 //   gmem[46] = row step        gmem[47] = layout + 1     gmem[48] = chromatic step
+// WHAT IS HELD, not just what was last pressed. The display could already name one note
+// and count the rest ("+2"), which says a chord is down without saying WHICH - and on a
+// scale-locked grid the useful question is what harmony you just landed on.
+//
+// The pitch classes go out as a 12-BIT MASK and the lowest note separately, so `pushled`
+// can name the chord and spot an inversion. Reading it off `padnote[]` rather than keeping
+// a second tally means LATCHED notes count too - they are held, whatever the pad is doing -
+// and it cannot drift out of step with the notes actually sounding, which a parallel
+// counter always eventually does.
+//   gmem[49] = pitch-class mask + 1     gmem[50] = lowest held note + 1
+function publishheld() local(i, mask, low)(
+  mask = 0; low = 999; i = 36;
+  loop(64,
+    padnote[i] >= 0 ? (
+      mask |= 1 << (padnote[i] % 12);
+      padnote[i] < low ? low = padnote[i];
+    );
+    i += 1;
+  );
+  gmem[49] = mask + 1;
+  gmem[50] = low < 999 ? low + 1 : 0;
+);
+
 function publishscale()(
   gmem[44] = slider1 + 1;
   gmem[45] = slider2 + 1;
@@ -197,6 +220,7 @@ function gridnote(p) local(idx, row, col, deg, oct)(
 
 loadscale();
 publishscale();
+publishheld();
 
 @slider
 loadscale();
@@ -270,6 +294,7 @@ while (midirecv(mpos, m1, m2, m3)) (
           midisend(mpos, 0x90, n, m3);
           held += 1;
           gmem[55] = held; gmem[56] = n; gmem[57] = m3; gmem[54] += 1;
+          publishheld();
         ) : (
           // release the note this pad actually produced - the scale may have been
           // changed while it was held, so recomputing here would strand a note on
@@ -279,6 +304,7 @@ while (midirecv(mpos, m1, m2, m3)) (
               midisend(mpos, 0x80, padnote[m2], 0); padnote[m2] = -1;
               held = max(0, held - 1);
               gmem[55] = held; gmem[54] += 1;
+              publishheld();
             );
           );
         );
@@ -304,6 +330,7 @@ while (midirecv(mpos, m1, m2, m3)) (
         i += 1;
       );
       gmem[55] = held; gmem[54] += 1;
+      publishheld();
     );
   ) :
 
