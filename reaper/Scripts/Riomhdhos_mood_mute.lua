@@ -88,7 +88,14 @@ local function applyMood(mood, instant)
     elseif instant or MUTE_DELAY <= 0 then
       pendingMute[m] = nil
       setMute(tr, true)
+    -- ⚠️ VALIDATE BEFORE READING. Every other track access here was guarded and this one
+    -- was not, so re-opening the project under a running rig (a restore from an autosave,
+    -- say) left a stale pointer here and REAPER raised "argument #1 to
+    -- 'GetMediaTrackInfo_Value' (MediaTrack expected)" - as a MODAL dialog, which stalls
+    -- every defer script in the session: this one, the mood watchdog, the remote console,
+    -- the autosave. The rig looked dead and could not be reached to find out why.
     elseif pendingMute[m] == nil
+       and reaper.ValidatePtr2(0, tr, "MediaTrack*")
        and reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") == 0 then
       pendingMute[m] = now + MUTE_DELAY
     end
@@ -149,7 +156,7 @@ reaper.atexit(function()
 end)
 
 ------------------------------------------------------------------ main loop
-local function loop()
+local function body()
   -- stand down if a newer copy has started
   if (tonumber(reaper.GetExtState("Riomhdhos", "moodmute_gen")) or MY_GEN) > MY_GEN then
     unmuteAll()
@@ -190,7 +197,23 @@ local function loop()
     end
     servicePending(now)
   end
+  return true
+end
 
+-- ⚠️ NOTHING IN A DEFER LOOP MAY RAISE. An uncaught error here is a modal dialog, and a
+-- modal dialog stalls every other defer script in the session - so one stale pointer takes
+-- the console and the watchdog down with it and leaves no way in. Log and keep going.
+local function loop()
+  local ok, err = pcall(body)
+  if not ok then
+    reaper.SetExtState("Riomhdhos", "moodmute_err", tostring(err), false)
+    reaper.SetExtState("Riomhdhos", "moodmute_errcount",
+      tostring((tonumber(reaper.GetExtState("Riomhdhos", "moodmute_errcount")) or 0) + 1), false)
+    -- a bad pointer means the project changed under us; drop everything and re-resolve
+    ctrlTr, moodTracks, pendingMute, lastMood = nil, {}, {}, nil
+  elseif err == nil then
+    return          -- body() returned without a value: it stood down deliberately
+  end
   reaper.defer(loop)
 end
 
