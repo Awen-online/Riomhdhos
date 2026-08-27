@@ -731,8 +731,11 @@ function renderCamera(){
     // Reset sits at the TOP of the card, above everything it undoes. RigCam forgets all of
     // this whenever it restarts, so putting the way back within reach matters more than
     // saving a row.
-    const rb = $(q('reset'));
-    camBtn(rb, 'Reset settings', CAM_ICON.one, false, async () => {
+    // ⚠️ NOT `rb` - that name is taken further down this same function by the resolution
+    // row, and a duplicate `const` is a SyntaxError that kills the whole script block. The
+    // page still serves and still renders; nothing on it works.
+    const resetBox = $(q('reset'));
+    camBtn(resetBox, 'Reset settings', CAM_ICON.one, false, async () => {
       $(q('state')).textContent = 'resetting…';
       try {
         const j = await post('/api/phonereset', {phone: label});
