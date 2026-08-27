@@ -45,6 +45,12 @@
      script keeps it in step if a long scene name ever wraps the bar onto two lines. */
   .tabs{position:sticky;top:40px;z-index:9;background:var(--bg);display:grid;
         grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:8px 0 10px}
+  /* A press must be a press. Without this a thumb that starts on a button and drags to
+     scroll fires it on release, and a vertical drag that begins on a slider drags the
+     SLIDER instead of the page - both of which change a live camera by accident.
+     pan-y hands vertical gestures to the scroller and keeps horizontal ones for the knob. */
+  button{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+  input[type=range]{touch-action:pan-y}
   .tabs button{padding:11px;font-size:12px;letter-spacing:.12em;text-transform:uppercase}
   .tabs button.sel{background:var(--fg);border-color:var(--fg);color:#0b0d10}
   section{display:none} section.on{display:block}
@@ -248,6 +254,19 @@
       Sleep takes the cameras down. That is the point, and the checks on Rig will say so.</div>
   </div>
 
+  <div class="card">
+    <div class="row"><span class="k">Camera bridges</span><span class="v" id="v_br">&mdash;</span></div>
+    <div id="brlist"><span class="sub">&mdash;</span></div>
+    <div class="g2" id="brbtns"></div>
+    <div class="note">&#9888;&#65039; A bridge that says <b>running</b> can still be feeding
+      nothing. When the sink goes away underneath it &mdash; OBS closed, the machine slept
+      &mdash; it blocks with the process alive and the frame counter frozen, so health here
+      is how long ago it last wrote to its log, not whether it exists.<br><br>
+      <b>Force reset</b> kills both bridges and their ffmpeg, then starts them again; each
+      re-opens its OBS source once frames are actually flowing, so give it about ten seconds
+      before the pictures come back.</div>
+  </div>
+
   <h2>Cameras</h2>
   <div id="rig_cards"></div>
   <div class="note">Both phones run RigCam now. The Pixel 8 used to come in over UVC, which
@@ -383,6 +402,30 @@ for (const [btn, sec] of TABS){
     if (sec === 'cams' && !CAM) loadCamera();
   };
 }
+
+// ⚠️ SCROLL GUARD. touch-action stops a slider being dragged by a scroll, but a BUTTON
+// still fires on release even when the finger travelled half the screen first - which on a
+// phone means grabbing the page anywhere near a control resets a camera. A click that
+// followed a moved finger is a scroll that ended over a button, and is swallowed here.
+// Keyboard activation (detail === 0) is never swallowed.
+(function(){
+  var sx = 0, sy = 0, moved = false, downAt = 0;
+  var SLOP = 12, STALE_MS = 2000;
+  addEventListener('pointerdown', function(e){
+    sx = e.clientX; sy = e.clientY; moved = false; downAt = Date.now();
+  }, true);
+  addEventListener('pointermove', function(e){
+    if (!downAt) return;
+    if (Math.abs(e.clientX - sx) > SLOP || Math.abs(e.clientY - sy) > SLOP) moved = true;
+  }, true);
+  addEventListener('pointercancel', function(){ moved = true; }, true);
+  addEventListener('click', function(e){
+    if (e.detail === 0) return;                       // keyboard or programmatic
+    if (!moved && Date.now() - downAt < STALE_MS) return;
+    if (!e.target.closest || !e.target.closest('button')) return;
+    e.preventDefault(); e.stopPropagation();
+  }, true);
+})();
 
 async function post(path, body){
   const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'},
@@ -633,6 +676,7 @@ function rigCard(label, r, idx){
   card.innerHTML =
       '<div class="row"><span class="k"><span class="phoneic">' + mark + '</span> '
     + esc(label) + '</span><span class="v" id="' + q('state') + '">-</span></div>'
+    + '<div class="g2" id="' + q('reset') + '"></div>'
     + '<div class="row"><span class="k">Zoom</span><span class="v" id="' + q('vz') + '">-</span></div>'
     + '<input type="range" id="' + q('rz') + '" min="0.5" max="8" step="0.01" value="1">'
     + '<div class="row"><span class="k">Exposure</span><span class="v" id="' + q('vev') + '">0</span></div>'
@@ -684,6 +728,24 @@ function renderCamera(){
       e.min = r.ev.min; e.max = r.ev.max; e.value = r.ev.index;
       $(q('vev')).textContent = r.ev.index;
     }
+    // Reset sits at the TOP of the card, above everything it undoes. RigCam forgets all of
+    // this whenever it restarts, so putting the way back within reach matters more than
+    // saving a row.
+    const rb = $(q('reset'));
+    camBtn(rb, 'Reset settings', CAM_ICON.one, false, async () => {
+      $(q('state')).textContent = 'resetting…';
+      try {
+        const j = await post('/api/phonereset', {phone: label});
+        $(q('state')).textContent = j.drift && j.drift.length
+            ? 'reset, ' + j.drift.length + ' did not take' : 'reset to baseline';
+        if (j.drift && j.drift.length) $('err').textContent = label + ': ' + j.drift.join(', ');
+      } catch(e){
+        $(q('state')).textContent = 'reset failed';
+        $('err').textContent = e.message;
+      }
+      await loadCamera();
+    });
+
     const lb = $(q('locks'));
     camBtn(lb, 'AE lock',  CAM_ICON.lock,  !!r.aeLock,  () => send({aeLock: !r.aeLock}));
     camBtn(lb, 'AWB lock', CAM_ICON.lock,  !!r.awbLock, () => send({awbLock: !r.awbLock}));
@@ -782,6 +844,36 @@ async function camPost(body){
   }
 }
 
+function renderBridges(){
+  const box = $('brlist'); if (!box) return;
+  const bs = (CAM && CAM.bridges) || [];
+  if (!bs.length){ box.innerHTML = '<span class="sub">no bridges configured</span>'; }
+  else {
+    box.innerHTML = bs.map(b => {
+      const col = b.health === 'feeding' ? 'var(--ok)'
+                : b.health === 'stalled' ? 'var(--bad)' : 'var(--accent)';
+      const age = b.ageS == null ? 'no log'
+                : b.ageS < 90 ? Math.round(b.ageS) + 's ago'
+                : Math.round(b.ageS / 60) + ' min ago';
+      return '<div class="hdr"><span class="nm">' + esc(b.label) + '</span>'
+           + '<span class="sub" style="color:' + col + '">' + b.health + ' &middot; ' + age + '</span></div>'
+           + '<div class="sub">' + esc(b.last || '') + '</div>';
+    }).join('');
+  }
+  const bad = bs.filter(b => b.health !== 'feeding').length;
+  $('v_br').textContent = !bs.length ? '\u2014' : (bad ? bad + ' not feeding' : 'both feeding');
+  const btns = $('brbtns'); if (!btns) return;
+  btns.innerHTML = '';
+  camBtn(btns, 'Force reset', CAM_ICON.flip, false, async () => {
+    $('v_br').textContent = 'restarting…';
+    try { await post('/api/bridges', {action: 'reset'}); }
+    catch(e){ $('err').textContent = e.message; }
+    // The bridges need a few seconds to open their sinks and re-point OBS; asking sooner
+    // would just show the state we are trying to leave.
+    setTimeout(loadCamera, 9000);
+  });
+}
+
 async function loadCamera(){
   if (camBusy) return;
   camBusy = true;
@@ -790,6 +882,7 @@ async function loadCamera(){
   try{
     CAM = await (await fetch('/api/camera')).json();
     renderCamera();
+    renderBridges();
     $('cam_note').textContent = 'Fetched on demand — a wired-camera query runs a UI dump '
       + 'and costs ~2 s, so it is deliberately not in the 1 Hz poll.';
   }catch(e){ $('cam_note').textContent = 'camera query failed: ' + e.message; }

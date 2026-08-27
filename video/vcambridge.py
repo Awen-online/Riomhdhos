@@ -216,7 +216,21 @@ def main():
     # re-run by hand to find out which it was. Give the task a log.
     ap.add_argument("--log", default=None, metavar="PATH",
                     help="append output here as well as stdout (for the scheduled task)")
+    # WARNING: THE FAILURE THIS EXISTS FOR. When the sink goes away under a running session
+    # - OBS closed, the machine slept - `cam.send()` does not raise, it BLOCKS. The process
+    # stays alive, the task stays "Running", the frame counter freezes, and the newest log
+    # line is an hour old. Nothing restarts it because, as far as Windows is concerned,
+    # nothing has failed. Exiting is the honest move: the task retries every minute, so a
+    # stall then heals itself in under one.
+    ap.add_argument("--stall-exit", type=float, default=45, metavar="SEC",
+                    help="exit if no frame is sent for this long while a session is live "
+                         "(the scheduled task then restarts us); 0 disables")
     args = ap.parse_args()
+
+    # Shared with the watchdog thread. `at` is when a frame last reached the sink, and
+    # `live` says a session is supposed to be running - so waiting for a phone that is off
+    # is never mistaken for a stall.
+    beat = {"at": time.time(), "live": False, "frames": 0}
 
     if args.log:
         os.makedirs(os.path.dirname(os.path.abspath(args.log)), exist_ok=True)
@@ -254,6 +268,18 @@ def main():
     # it does not fail, it produces a BLACK source with no error anywhere. bgr24 costs
     # 83 MB/s at 720p30 against 41, affordable at 720p; at 1080p watch the CPU, because a
     # pipeline at capacity queues rather than drops and the queue IS the latency.
+    if args.stall_exit > 0:
+        def _watchdog():
+            while True:
+                time.sleep(5)
+                if beat["live"] and time.time() - beat["at"] > args.stall_exit:
+                    print("    STALLED: no frame for %.0fs at %d frames - exiting so the "
+                          "task restarts us" % (args.stall_exit, beat["frames"]), flush=True)
+                    # os._exit, not sys.exit: the main thread is blocked inside the sink and
+                    # will never unwind. A clean shutdown that cannot happen is not clean.
+                    os._exit(3)
+        threading.Thread(target=_watchdog, daemon=True).start()
+
     if args.backend == "unitycapture":
         pix, bpp, fmt = "bgr24", 6, pyvirtualcam.PixelFormat.BGR
     else:
@@ -345,6 +371,7 @@ def main():
                                      backend=args.backend,
                                      fmt=fmt) as cam:
                 print(f"    feeding '{cam.device}'", flush=True)
+                beat["at"] = time.time(); beat["live"] = True
                 while True:
                     # ⚠️ A pipe read returns what is AVAILABLE, not what you asked for. The
                     # first short read once looked exactly like the stream ending.
@@ -362,6 +389,7 @@ def main():
                     # reintroduce exactly the queue this tool exists to remove.
                     cam.send(arr)
                     shown += 1
+                    beat["at"] = time.time(); beat["frames"] = shown
                     # ⚠️ RE-OPEN THE OBS SOURCE ONLY ONCE FRAMES ARE ACTUALLY FLOWING. Doing it
                     # at session start re-opens a device that still has no producer, which is
                     # the very state that leaves the source black - measured, black either
@@ -379,12 +407,14 @@ def main():
                         print(f"    {shown} frames, {shown / (now - t0):.1f} fps", flush=True)
                         last_report = now
         except KeyboardInterrupt:
+            beat["live"] = False
             proc.terminate()
             print("stopping")
             return
         except Exception as e:
             print(f"    session failed: {type(e).__name__}: {e}", flush=True)
         finally:
+            beat["live"] = False
             try:
                 proc.terminate()
             except Exception:

@@ -252,6 +252,157 @@ def power_call(mode, timeout=120):
         return {"ok": False, "out": f"{type(e).__name__}: {e}"}
 
 
+# ---------------------------------------------------------------- the vcam bridges
+# WARNING: A BRIDGE THAT IS "RUNNING" PROVES NOTHING. When the sink goes away underneath
+# one - OBS closed, the machine slept - it blocks inside cam.send() with the process still
+# alive, the task still Running and the newest log line an hour old. Windows sees nothing
+# wrong, so nothing restarts it. Health here is therefore FRESHNESS, read from the bridge's
+# own log, and the reset KILLS FIRST and asks the task second: a stalled bridge is blocked
+# in a C call and will not honour a polite stop.
+BRIDGE_LOGS = Path(r"C:\Users\mccul\rig\logs")
+BRIDGES = [
+    {"task": "Riomhdhos vcam bridge", "label": "Pixel 6 (WiFi)", "log": BRIDGE_LOGS / "vcam-p6.log"},
+    {"task": "Riomhdhos vcam bridge P8", "label": "Pixel 8 (USB)", "log": BRIDGE_LOGS / "vcam-p8.log"},
+]
+BRIDGE_FRESH_S = 90        # they report frames every 30 s, so this is three missed reports
+# The OBS source each bridge ends up in. The reset needs these by name - see the note in
+# bridge_reset about who is holding the sink.
+BRIDGE_SOURCES = ["Pixel 6 (vcam)", "Pixel 8"]
+
+
+def _task_state(task):
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", task, "/FO", "LIST"],
+                           capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW)
+        for line in r.stdout.splitlines():
+            if line.strip().lower().startswith("status:"):
+                return line.split(":", 1)[1].strip().lower()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _last_line(path):
+    try:
+        lines = [l.rstrip() for l in
+                 path.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()]
+        return lines[-1] if lines else ""
+    except Exception:
+        return ""
+
+
+def bridge_status():
+    out = []
+    for b in BRIDGES:
+        try:
+            age = time.time() - b["log"].stat().st_mtime
+        except Exception:
+            age = None
+        state = _task_state(b["task"])
+        last = _last_line(b["log"])
+        out.append({
+            "task": b["task"], "label": b["label"], "state": state,
+            "ageS": None if age is None else round(age, 1),
+            # feeding, stalled, or not running at all - three states, because "stalled" is
+            # the one that used to be invisible
+            # ⚠️ Freshness alone is not health: a bridge failing to open its sink writes an
+            # error every two seconds, which is the freshest log on the machine. What the
+            # last line SAYS decides it.
+            "health": (("failing" if ("session failed" in last or "STALLED" in last)
+                        else "feeding")
+                       if (age is not None and age < BRIDGE_FRESH_S and state == "running")
+                       else "stalled" if state == "running" else "stopped"),
+            "last": last[-140:],
+        })
+    return out
+
+
+def bridge_reset():
+    steps = []
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='pythonw.exe'\" | "
+          "Where-Object { $_.CommandLine -like '*vcambridge*' } | "
+          "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "
+          "Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe'\" | "
+          "Where-Object { $_.CommandLine -like '*stream.h264*' } | "
+          "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                       capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW)
+        steps.append("stopped the bridges and their ffmpeg")
+    except Exception as e:
+        steps.append(f"kill failed: {type(e).__name__}")
+    # ⚠️ AND NOW LET GO OF THE SINK. A producer killed outright does not release the OBS
+    # Virtual Camera cleanly while a CONSUMER still holds it open - and OBS's own dshow
+    # source is exactly that consumer. The restarted bridge then retries every two seconds
+    # with "virtual camera output could not be started" and never gets in. Cycling the
+    # source drops OBS's handle for a moment, which is all the new producer needs.
+    # Measured: the bridge failed 30 times in a row, then caught the sink on the first
+    # attempt after a cycle.
+    try:
+        import obsctl
+        cl = obsctl.connect(timeout=4)
+        for src in BRIDGE_SOURCES:
+            try:
+                obsctl._cycle(cl, src, settle=0.5)
+                steps.append("released " + src)
+            except Exception:
+                steps.append("could not cycle " + src)
+    except Exception:
+        # OBS closed is a perfectly normal state here - it is often WHY the reset is needed
+        steps.append("OBS not reachable - skipped releasing the sources")
+
+    for b in BRIDGES:
+        for verb in ("/End", "/Run"):
+            try:
+                subprocess.run(["schtasks", verb, "/TN", b["task"]], capture_output=True,
+                               text=True, timeout=30, creationflags=NO_WINDOW)
+            except Exception:
+                pass
+        steps.append("restarted " + b["label"])
+    # Deliberately does NOT wait for the sinks to come back. Each bridge re-opens its OBS
+    # source once frames are actually flowing, which takes several seconds, and a request
+    # that blocks that long reads as a hung dashboard. The status rows tell the truth a
+    # moment later.
+    return {"ok": True, "steps": steps}
+
+
+# ---------------------------------------------------------------- phone settings reset
+# The baseline is imported from rigsettings.py rather than restated here. Two copies of
+# "what the cameras should be set to" is exactly the drift this whole thing exists to stop.
+sys.path.insert(0, str(HERE.parent))
+try:
+    from rigsettings import BASELINE as RIG_BASELINE, VERIFY as RIG_VERIFY, close_enough as rig_close
+except Exception as _e:
+    RIG_BASELINE, RIG_VERIFY, rig_close = {}, {}, None
+
+
+def phone_reset(label):
+    """Put one phone back on the show baseline, and READ IT BACK. RigCam drops a whole
+    request when a single value is out of range for that sensor, and the two phones do not
+    have the same ranges - so an `applied` list is not evidence."""
+    url = RIGCAMS.get(label)
+    if not url:
+        return {"error": f"unknown phone {label!r}"}, 400
+    if not RIG_BASELINE or rig_close is None:
+        return {"error": "rigsettings.py could not be imported"}, 500
+    applied = rigcam_call("/api/set?" + urllib.parse.urlencode(RIG_BASELINE), base=url, timeout=20)
+    if applied.get("offline"):
+        return {"error": "phone is not answering", "detail": applied}, 502
+    time.sleep(3)                      # a resolution change rebinds the capture session
+    st = rigcam_call("/api/state", base=url, timeout=10)
+    drift = []
+    for k, want in RIG_BASELINE.items():
+        got = None
+        try:
+            got = RIG_VERIFY[k](st)
+        except Exception:
+            pass
+        if not rig_close(want, got):
+            drift.append(f"{k}={got} (want {want})")
+    return {"phone": label, "applied": applied.get("applied", []), "drift": drift,
+            "ok": not drift}, (200 if not drift else 502)
+
+
 def uvc_selected(text):
     """Pull the active zoom out of `uvczoom --state` output, or None."""
     for line in (text or "").splitlines():
@@ -586,6 +737,7 @@ class Handler(BaseHTTPRequestHandler):
                     "devices": devices_snapshot(),
                     "wiredSerial": UVC_SERIAL,
                     "power": power_call("status", timeout=60),
+                    "bridges": bridge_status(),
                 }); return
 
             if p == "/api/state":
@@ -663,6 +815,18 @@ class Handler(BaseHTTPRequestHandler):
                 r = power_call(mode)
                 _dev_cache["at"] = 0          # battery figures are about to change a lot
                 self._json({"mode": mode, "result": r}, 200 if r["ok"] else 502); return
+
+            # Neither of these touches OBS, so both sit ABOVE the guard - and the bridge
+            # reset especially, since the state it repairs is usually "OBS was just
+            # restarted and the bridges are still feeding a sink that went away".
+            if p == "/api/bridges":
+                if body.get("action") != "reset":
+                    self._json({"error": "action must be reset"}, 400); return
+                self._json(bridge_reset()); return
+
+            if p == "/api/phonereset":
+                payload, code = phone_reset(body.get("phone"))
+                self._json(payload, code); return
 
             if p == "/api/camera":
                 target = body.get("target")
