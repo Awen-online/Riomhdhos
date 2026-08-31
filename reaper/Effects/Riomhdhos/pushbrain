@@ -126,7 +126,7 @@ slider35:5<1,12,1>Chromatic row step (semitones)
 // one that walked the sixteen scales in a moment and made picking a root a game of nudges.
 // Ticks are accumulated and only spend a step when this many have gone by, so a setting
 // takes a deliberate turn. 1 restores the old one-tick-per-option behaviour.
-slider36:4<1,16,1>SCALES encoder ticks per option
+slider36:8<1,16,1>SCALES encoder ticks per option
 // Octave Down = CC54, Octave Up = CC55. The octave is published to gmem[62] so
 // `pushled` follows it directly - previously both plugins carried their own copy of
 // the octave and had to be kept matching by hand, which meant the lit "root" pads
