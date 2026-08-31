@@ -44,6 +44,24 @@ class CamService : LifecycleService() {
         engine = CameraEngine(this)
         server = StreamServer(PORT, engine)
         engine.server = server
+        // ⚠️ THE WIFI LOCK IS THE ONLY LOCK SLEEP DROPS. WIFI_MODE_FULL_HIGH_PERF exists to
+        // keep a video stream usable (packet loss went 0% -> 37.8% without it once the
+        // screen locked) - with no stream it buys nothing and costs radio power, so it goes
+        // and comes back with the camera.
+        //
+        // ⚠️ THE PARTIAL WAKE LOCK STAYS, DELIBERATELY. It is what guarantees the HTTP
+        // server still answers, and on the WiFi phone /api/wake is the ONLY way back -
+        // there is no adb to fall back on. A sleep that might not wake is worse than a
+        // sleep that saves slightly less.
+        engine.onDormancy = { asleep ->
+            if (asleep) {
+                try { wifiLock?.release() } catch (_: Exception) {}
+                notify("asleep - /api/wake to bring the camera back")
+            } else {
+                try { wifiLock?.acquire() } catch (_: Exception) {}
+                notify("http://${lanAddress() ?: "?"}:$PORT/stream.h264")
+            }
+        }
         engine.start(this)          // LifecycleService IS the LifecycleOwner
         server.start()
         RUNNING = true

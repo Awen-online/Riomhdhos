@@ -242,6 +242,12 @@ def power_call(mode, timeout=120):
     cmd = [sys.executable, str(POWER), mode]
     if UVC_SERIAL:
         cmd += ["--wired-serial", UVC_SERIAL]
+    # ⚠️ PASS THE PHONES. power.py sleeps an adb phone by force-stopping RigCam and a
+    # non-adb one over HTTP, and it cannot do the second without being told the URL. The
+    # dashboard already has them; not forwarding them is what made the Sleep button leave
+    # the WiFi phone streaming to nobody.
+    for label, url in RIGCAMS.items():
+        cmd += ["--phone", f"{label}={url}"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW)
         return {"ok": r.returncode == 0,

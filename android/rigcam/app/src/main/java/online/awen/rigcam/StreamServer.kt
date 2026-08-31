@@ -31,6 +31,8 @@ import kotlin.concurrent.thread
  *   GET /snapshot.jpg     one frame
  *   GET /api/state        JSON: what the camera supports and is currently doing
  *   GET /api/set?...      zoom, aeLock, awbLock, ev, torch, lens, quality
+ *   GET /api/sleep        release the camera and encoder; the server keeps listening
+ *   GET /api/wake         open them again
  */
 class StreamServer(
     private val port: Int,
@@ -39,6 +41,21 @@ class StreamServer(
     interface Controls {
         fun stateJson(): String
         fun apply(params: Map<String, String>): String
+        /**
+         * ⚠️ THE POINT OF THESE IS A PHONE WITH NO ADB. `power.py sleep` walks
+         * `adb devices` and force-stops RigCam, which reaches the USB phone and silently
+         * skips the WiFi one - so "sleep" left the phone measured at -574 mA running its
+         * camera and encoder all night with nothing consuming the stream. HTTP is the only
+         * channel that phone has, so sleeping has to be reachable over it.
+         *
+         * ⚠️ AND THIS IS WHY IT IS NOT `finish()`. Killing the app would save marginally
+         * more, and would be UNRECOVERABLE: nothing could start it again without picking
+         * the phone up, because there is no adb. The camera and the encoder are the drain;
+         * the HTTP server is a socket and a parked thread. So the server stays up, and
+         * `/api/wake` is what makes sleeping safe to do from the other side of the house.
+         */
+        fun sleep(): String
+        fun wake(): String
     }
 
     /** Latest encoded frame, published by the camera thread and read by every client. */
@@ -193,6 +210,10 @@ class StreamServer(
                     path.startsWith("/snapshot.jpg") -> snapshot(out)
                     path.startsWith("/api/state") -> json(out, controls.stateJson())
                     path.startsWith("/api/set") -> json(out, controls.apply(query(path)))
+                    // Before /api/state would match either: startsWith("/api/set") does not
+                    // match "/api/sleep", but keep them adjacent so that stays obvious.
+                    path.startsWith("/api/sleep") -> json(out, controls.sleep())
+                    path.startsWith("/api/wake") -> json(out, controls.wake())
                     path == "/" -> html(out)
                     else -> {
                         out.write("HTTP/1.0 404 Not Found\r\n\r\n".toByteArray())

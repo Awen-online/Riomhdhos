@@ -58,6 +58,17 @@ class CameraEngine(
     /** Set once by MainActivity. The server and the engine each need the other. */
     var server: StreamServer? = null
 
+    /**
+     * Camera and encoder deliberately released, HTTP server still listening. NOT an error
+     * state - `stateJson` publishes it so the dashboard can tell "asleep on purpose" from
+     * "the stream broke", which look identical from outside otherwise.
+     */
+    @Volatile private var dormant = false
+    fun isDormant() = dormant
+
+    /** CamService hangs the WiFi lock off this; see `sleep()`. true = going to sleep. */
+    var onDormancy: ((Boolean) -> Unit)? = null
+
     private val executor = Executors.newSingleThreadExecutor()
     private var camera: Camera? = null
     private var encoder: H264Encoder? = null
@@ -118,6 +129,11 @@ class CameraEngine(
      * Zoom, EV and the AE/AWB locks all apply without it and are the safe live controls.
      */
     private fun rebind() {
+        // ⚠️ A settings change must not wake a sleeping camera. Half of /api/set rebinds
+        // (resolution, lens, fps), so without this a stray dashboard poll would quietly
+        // undo a sleep and nobody would know until the battery was flat. Values still
+        // record themselves in the fields above; wake() binds with whatever is current.
+        if (dormant) return
         val o = owner ?: return
         val p = provider ?: return
         ContextCompat.getMainExecutor(context).execute { bind(o, p) }
@@ -283,6 +299,41 @@ class CameraEngine(
                        0, 1, 0, 1, 1, 1))
     }
 
+    /**
+     * Let go of the camera and the encoder. Everything else stays up.
+     *
+     * ⚠️ MAIN THREAD. `unbindAll` has the same requirement as `bindToLifecycle`, and this
+     * is called from an HTTP worker thread, so it has to be posted rather than run here.
+     * The reply goes back immediately - the caller is told what was ASKED for, and
+     * `/api/state` is where they read what happened.
+     */
+    override fun sleep(): String {
+        if (dormant) return """{"dormant":true,"note":"already asleep"}"""
+        dormant = true
+        val p = provider
+        ContextCompat.getMainExecutor(context).execute {
+            // Viewers first: they are decoding a stream that is about to stop existing, and
+            // an elementary stream has no way to say so. Same reason as in bind().
+            server?.dropNalClients()
+            try { p?.unbindAll() } catch (_: Exception) {}
+            encoder?.release(); encoder = null
+            camera = null
+            actualW = 0; actualH = 0
+        }
+        onDormancy?.invoke(true)
+        return """{"dormant":true}"""
+    }
+
+    override fun wake(): String {
+        if (!dormant) return """{"dormant":false,"note":"already awake"}"""
+        // Locks back BEFORE the camera opens, so the first frames are not the ones sent
+        // through a power-saving radio.
+        onDormancy?.invoke(false)
+        dormant = false
+        rebind()
+        return """{"dormant":false}"""
+    }
+
     override fun stateJson(): String {
         val c = camera
         val z = c?.cameraInfo?.zoomState?.value
@@ -290,6 +341,7 @@ class CameraEngine(
         val e = encoder
         return """
         {"streaming":${(e?.nalsOut ?: 0) > 0},
+         "dormant":$dormant,
          "resolution":"${actualW}x${actualH}",
          "facing":"${if (facing == CameraSelector.LENS_FACING_BACK) "back" else "front"}",
          "requested":"${targetSize.width}x${targetSize.height}",
@@ -321,6 +373,8 @@ class CameraEngine(
     }
 
     override fun apply(params: Map<String, String>): String {
+        // A plain "camera not bound" here sent someone hunting a fault that was a choice.
+        if (dormant) return """{"error":"dormant - /api/wake first"}"""
         val c = camera ?: return """{"error":"camera not bound"}"""
         val done = mutableListOf<String>()
 
