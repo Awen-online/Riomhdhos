@@ -20,8 +20,8 @@ action and turns it back on in another.
 WHAT SLEEP ACTUALLY DOES, in the order that matters:
 
   1. stops the vcam bridge, so nothing pulls the WiFi stream and keeps its encoder alive
-  2. asks every configured phone to sleep over HTTP, then force-stops RigCam on the ones
-     adb can see
+  2. asks every configured phone to sleep over HTTP; force-stops RigCam only on the ones
+     that did NOT answer, since dormant is the state you can undo from another room
   3. turns High Quality mode OFF on the wired phone - it disables power optimisation and
      measured -232 mA -> -404 mA when it was switched on
   4. clears stay_on_while_plugged_in, which was pinned to 3 for ADB work and is why both
@@ -159,11 +159,27 @@ def sleep_mode(wired_serial=None, phones=None):
     # ⚠️ HTTP BEFORE ADB, AND OVER EVERY PHONE - this is the half that reaches the WiFi one.
     # For a phone adb can also see this is redundant (the force-stop below is stronger), and
     # redundant is fine: it costs one request and keeps the two paths from diverging.
+    # ⚠️ REMEMBER WHICH ONES WENT DORMANT - the adb loop below must NOT force-stop those.
+    # Dormant and force-stopped both release the camera, but only dormant can be undone
+    # remotely: the HTTP server is still listening for /api/wake. Force-stopping a phone
+    # that happens to be on adb RIGHT NOW - the WiFi one is, whenever it is plugged in to
+    # be charged or updated - leaves it dead the moment the cable comes out, with no way
+    # back but picking it up. The recoverable state wins.
+    asleep = set()
     for label, url in (phones or {}).items():
-        log.append((label, "camera released: " + rigcam(url, "/api/sleep")))
+        r = rigcam(url, "/api/sleep")
+        if r in ("dormant", "already asleep"):
+            asleep.add(label)
+        log.append((label, "camera released: " + r))
 
     for s in devices():
         m = model(s)
+        if m in asleep:
+            log.append((m, "left dormant, not force-stopped - /api/wake still answers"))
+            sh("-s", s, "shell", "settings", "put", "global", "stay_on_while_plugged_in", "0")
+            sh("-s", s, "shell", "input", "keyevent", "KEYCODE_SLEEP")
+            log.append((m, "screen released and asleep"))
+            continue
         # ⚠️ BOTH PHONES RUN RIGCAM NOW. This used to stop RigCam on the WiFi phone only and
         # tap High Quality off on the wired one, because the wired one reached OBS through
         # DeviceAsWebcam. It does not any more - it runs RigCam over an adb forward - so
