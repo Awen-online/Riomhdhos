@@ -30,6 +30,10 @@ import subprocess
 import urllib.parse
 import urllib.request
 
+# Under pythonw there is no console to inherit, so a console child opens its own
+# window. CREATE_NO_WINDOW keeps them headless; it does not exist off Windows, hence getattr.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 ADB = r"C:\Users\mccul\Android\Sdk\platform-tools\adb.exe"
 
 # The show baseline. Explicit on BOTH phones, or they are not matched - see the module
@@ -91,7 +95,7 @@ def start_rigcam(serial):
         return "no serial configured"
     subprocess.run([ADB, "-s", serial, "shell", "am", "start", "-n",
                     "online.awen.rigcam/.MainActivity"],
-                   capture_output=True, text=True, timeout=30)
+                   capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW)
     return "am start sent"
 
 

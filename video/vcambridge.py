@@ -344,8 +344,16 @@ def main():
         # capacity does not drop frames, it QUEUES them: measured 1494 ms at 1080p against
         # 428 ms at 720p. The latency was the backlog in front of a decoder that could not
         # quite keep up.
+        # ⚠️ CREATE_NO_WINDOW. The bridge runs under pythonw, which has no console of its
+        # own, so every console child Windows starts gets a BRAND NEW terminal window - and
+        # with Windows Terminal as the default host that is a visible empty black window,
+        # not a flicker. ffmpeg is respawned on every stream end (a few times an hour, more
+        # when the phone hiccups), so the desktop slowly filled with empty terminals titled
+        # ffmpeg.EXE. Every other subprocess in this rig already carries this flag; this one
+        # was missed because it is a Popen rather than a run().
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, bufsize=0)
+                                stderr=subprocess.PIPE, bufsize=0,
+                                creationflags=NO_WINDOW)
         frame_bytes = w * h * bpp // 2
         # ⚠️ ONE BUFFER, REUSED, FILLED IN PLACE. The previous loop accumulated a list of
         # chunks and joined them, so every frame was copied two or three times: at 1080p30
