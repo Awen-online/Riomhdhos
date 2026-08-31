@@ -121,6 +121,12 @@ slider33:0<0,127,1>Swing
 // of number: 3 scale degrees is a stack of thirds, 5 semitones is a stack of fourths.
 slider34:0<0,1,1{in key,chromatic}>Grid layout
 slider35:5<1,12,1>Chromatic row step (semitones)
+// HOW HARD THE SCALES ENCODERS ARE TO TURN. Push encoders are not detented - they are
+// continuous, and one flick of a finger sends a stream of relative ticks. Applied one for
+// one that walked the sixteen scales in a moment and made picking a root a game of nudges.
+// Ticks are accumulated and only spend a step when this many have gone by, so a setting
+// takes a deliberate turn. 1 restores the old one-tick-per-option behaviour.
+slider36:4<1,16,1>SCALES encoder ticks per option
 // Octave Down = CC54, Octave Up = CC55. The octave is published to gmem[62] so
 // `pushled` follows it directly - previously both plugins carried their own copy of
 // the octave and had to be kept matching by hand, which meant the lit "root" pads
@@ -140,6 +146,8 @@ i = 0; loop(128, padnote[i] = -1; i += 1; );
 i = 0; loop(8, enc[i] = 64; i += 1; );   // start centred
 held = 0; gmem[54] = 0; gmem[55] = 0;
 heldpad = 5600;   // pads whose note is being latched
+sacc = 5700;      // leftover encoder ticks per SCALES setting, so a slow turn still counts
+i = 0; loop(4, sacc[i] = 0; i += 1; );
 i = 0; loop(128, heldpad[i] = 0; i += 1; );
 gmem[53] = 0;
 menc = 127;                              // master encoder starts at unity
@@ -349,6 +357,8 @@ while (midirecv(mpos, m1, m2, m3)) (
   // place it can sensibly go back to - and a second press being "done" is what the
   // hand expects. NOTE and SESSION still leave it directly, so it can never trap you.
   (st == 0xB0 && m2 == 58 && m3 > 0) ? (
+    // leftovers from the last visit would spend themselves on the first touch
+    i = 0; loop(4, sacc[i] = 0; i += 1; );
     slider18 = slider18 == 3 ? 0 : 3;
     sliderchange(slider18);
     gmem[61] = slider18;
@@ -470,16 +480,27 @@ while (midirecv(mpos, m1, m2, m3)) (
       e = m2 - 71;
       d = m3 < 64 ? m3 : m3 - 128;
       (slider18 == 3 && e <= 3) ? (
-        // root WRAPS - pitch classes are a circle, and stopping at B would be a lie.
-        // Everything else clamps: running out of scales should feel like an end.
-        e == 0 ? ( slider1 = (slider1 + d + 1200) % 12; sliderchange(slider1); ) :
-        e == 1 ? ( slider2 = max(0, min(15, slider2 + d)); sliderchange(slider2); loadscale(); ) :
-        e == 2 ? (
-          slider34 ? ( slider35 = max(1, min(12, slider35 + d)); sliderchange(slider35); )
-                   : ( slider3  = max(1, min(8,  slider3  + d)); sliderchange(slider3);  );
-        ) :
-        ( slider34 = max(0, min(1, slider34 + d)); sliderchange(slider34); );
-        publishscale();
+        // ⚠️ ACCUMULATE, do not apply. These encoders have no detents: a small turn is a
+        // burst of ticks, and one-tick-per-option ran through all sixteen scales before
+        // the hand stopped. Ticks bank up here and only spend a step once `ticks per
+        // option` of them have arrived, so the leftovers survive between messages and a
+        // slow, deliberate turn still counts - it is geared down, not sampled.
+        sacc[e] += d;
+        step = 0;
+        sacc[e] >=  slider36 ? ( step =  1; sacc[e] -= slider36; ) :
+        sacc[e] <= -slider36 ? ( step = -1; sacc[e] += slider36; );
+        step ? (
+          // root WRAPS - pitch classes are a circle, and stopping at B would be a lie.
+          // Everything else clamps: running out of scales should feel like an end.
+          e == 0 ? ( slider1 = (slider1 + step + 1200) % 12; sliderchange(slider1); ) :
+          e == 1 ? ( slider2 = max(0, min(15, slider2 + step)); sliderchange(slider2); loadscale(); ) :
+          e == 2 ? (
+            slider34 ? ( slider35 = max(1, min(12, slider35 + step)); sliderchange(slider35); )
+                     : ( slider3  = max(1, min(8,  slider3  + step)); sliderchange(slider3);  );
+          ) :
+          ( slider34 = max(0, min(1, slider34 + step)); sliderchange(slider34); );
+          publishscale();
+        );
       ) : (
         enc[e] = max(0, min(127, enc[e] + d));
         tcc = e==0?86 : e==1?87 : e==2?89 : e==3?90 : e==4?110 : e==5?111 : e==6?116 : 117;
