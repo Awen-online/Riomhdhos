@@ -184,13 +184,24 @@ def no_webcam_handover(serial):
 
 
 def probe_size(api):
-    """Ask the phone what it is sending, so we do not guess and letterbox."""
+    """Ask the phone what it is sending, so we do not guess and letterbox.
+
+    ⚠️ A DORMANT CAMERA REPORTS `0x0`, AND `(0, 0)` IS A TRUTHY TUPLE. That is how a
+    reconnect landing during `/api/sleep` got all the way through to ffmpeg: the caller's
+    `if not size` guard passed, the bridge opened a session at 0x0, and `frame_bytes` came
+    out zero - so `readinto` returned instantly forever and the log read
+    `8761852 frames, 292053.0 fps` while OBS was handed nothing. A camera that is asleep is
+    not a camera that is broken and not a camera that is ready; the only correct answer is
+    "no size yet", which the existing retry loop already knows how to wait out.
+    """
     try:
         with urllib.request.urlopen(api, timeout=4) as r:
             d = json.loads(r.read().decode())
         m = re.match(r"(\d+)x(\d+)", str(d.get("resolution", "")))
         if m:
-            return int(m.group(1)), int(m.group(2))
+            w, h = int(m.group(1)), int(m.group(2))
+            if w > 0 and h > 0:
+                return w, h
     except Exception:
         pass
     return None
@@ -309,7 +320,10 @@ def main():
             print(f"    usb mode:    {no_webcam_handover(args.adb_serial)}", flush=True)
         size = fixed or probe_size(args.api)
         if not size:
-            print("phone not answering; retrying in 5s", flush=True)
+            # Covers both cases honestly: the phone may be unreachable, or reachable and
+            # deliberately asleep. Neither is a fault, and both are cured by waiting.
+            print("no picture yet (phone unreachable, or camera asleep); retrying in 5s",
+                  flush=True)
             time.sleep(5)
             continue
         w, h = size
