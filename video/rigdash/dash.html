@@ -162,14 +162,19 @@
   <div class="stats" id="b_stats">—</div>
 </div>
 
+<!-- ⚠️ CAMS IS FIRST AND OPENS BY DEFAULT. It is the tab that answers "is anything
+     actually working" - whether each phone is streaming, whether a bridge has stalled,
+     what the batteries are doing - and that is the question being asked when the page is
+     opened cold, from a phone, usually because something looks wrong. Perform is reached
+     deliberately once a set is running; nobody opens this page mid-song by accident. -->
 <div class="tabs">
-  <button id="t_perform" class="sel"></button>
+  <button id="t_cams" class="sel"></button>
+  <button id="t_perform"></button>
   <button id="t_look"></button>
-  <button id="t_cams"></button>
   <button id="t_rig"></button>
 </div>
 
-<section id="perform" class="on">
+<section id="perform">
   <h2>Mood</h2>
   <div class="card"><div class="g2" id="moods"></div></div>
 
@@ -231,7 +236,7 @@
   </div>
 </section>
 
-<section id="cams">
+<section id="cams" class="on">
   <!-- ⚠️ CAMERAS GET THEIR OWN TAB, and it is not tidiness. They are touched at a
        DIFFERENT TIME from everything else: framing and locking exposure happens once at
        load-in, while Look is worked between songs and Perform mid-song. They also outgrew
@@ -386,7 +391,8 @@ const TAB_ICON = {
   rig:     SVG('<path d="M4 18V9M9 18V5M14 18v-7M19 18v-4"/>', 1.8),
 };
 
-const TABS = [['t_perform','perform'], ['t_look','look'], ['t_cams','cams'],
+// Order matches the strip above; cams leads because it is the landing tab.
+const TABS = [['t_cams','cams'], ['t_perform','perform'], ['t_look','look'],
               ['t_rig','rig']];
 for (const [btn, sec] of TABS){
   $(btn).innerHTML = '<span class="ic">' + TAB_ICON[sec] + '</span>' +
@@ -1118,6 +1124,12 @@ async function refresh(){
 // labelling it "cannot reach OBS" sends you to restart the wrong thing.
 refresh().catch(e => $('err').textContent =
   (e instanceof TypeError ? 'dashboard error: ' : 'cannot reach the dashboard: ') + e.message);
+// ⚠️ CAMS OPENS BY DEFAULT, SO ITS DATA MUST BE FETCHED AT LOAD. The tab handler only
+// loads on a CLICK, and the landing tab is never clicked - the page would otherwise come
+// up on an empty Cams panel until something was pressed. Deliberately NOT awaited: the
+// query costs ~2 s (a wired-camera read runs a UI dump) and the rest of the page must not
+// wait on it. It stays out of the 1 Hz poll for the same reason.
+loadCamera();
 // Health only. A full refresh would fight whatever slider is under a thumb.
 // A tap clears it; otherwise the next successful call does.
 $('err').onclick = () => { $('err').textContent = ''; };
