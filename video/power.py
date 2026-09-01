@@ -65,6 +65,25 @@ BRIDGE_TASKS = ("Riomhdhos vcam bridge", "Riomhdhos vcam bridge P8")
 RIGCAM = "online.awen.rigcam"
 
 
+def rigcam_json(url, path, timeout=8):
+    """GET a control endpoint and return (dict, None) or (None, "why not").
+
+    ⚠️ NEVER RAISES, for the same reason `rigcam` does not: a phone that is off, asleep at
+    the OS level or on another network must not take the whole command down with it.
+    """
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + path, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace")), None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, "not supported - RigCam predates this endpoint, reinstall over USB"
+        return None, f"HTTP {e.code}"
+    except urllib.error.URLError as e:
+        return None, f"unreachable ({getattr(e, 'reason', e)})"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
 def rigcam(url, path, timeout=8):
     """GET one of RigCam's control endpoints. Returns a short status string.
 
@@ -167,6 +186,17 @@ def sleep_mode(wired_serial=None, phones=None):
     # back but picking it up. The recoverable state wins.
     asleep = set()
     for label, url in (phones or {}).items():
+        # ⚠️ THE MICROPHONE TOO, AND EXPLICITLY HERE RATHER THAN INSIDE /api/sleep. Sleep
+        # deliberately does NOT silence the mic on the phone side, because "mic on, camera
+        # dormant" is the room-recording mode. But `power.py sleep` means put the RIG down
+        # to recharge, and a mic left running is the same silent battery drain this command
+        # exists to stop - just quieter and harder to notice than a camera.
+        st, err = rigcam_json(url, "/api/audio?on=false")
+        if st is not None and not st.get("on", False):
+            log.append((label, "mic off"))
+        elif err and "not supported" not in err:
+            log.append((label, "mic: " + err))
+
         r = rigcam(url, "/api/sleep")
         if r in ("dormant", "already asleep"):
             asleep.add(label)
@@ -247,16 +277,28 @@ def status(phones=None):
         rig = bool(sh("-s", s_, "shell", "pidof", RIGCAM))
         rows.append({"serial": s_, "model": model(s_), "stayOn": stay,
                      "screenAwake": awake, "rigcam": rig,
-                     "camera": "running" if rig else "stopped"})
+                     "camera": "running" if rig else "stopped", "mic": "-"})
 
     for label, url in (phones or {}).items():
-        st = rigcam(url, "/api/state")
+        body, err = rigcam_json(url, "/api/state")
+        if body is None:
+            st, mic = err, "-"
+        else:
+            st = "dormant" if body.get("dormant") else "awake"
+            a = body.get("audio") or {}
+            # A level, not just a flag: a microphone that is "on" and reading silence is the
+            # signature of Android's global mic kill switch, which returns silence rather
+            # than an error and is otherwise completely invisible.
+            mic = ("on %.3f" % a.get("rms", 0.0)) if a.get("on") else \
+                  ("off" if a else "-")
         row = next((r for r in rows if r["model"] == label), None)
         if row is None:
             rows.append({"serial": "-", "model": label, "stayOn": "-",
                          "screenAwake": None, "rigcam": st in ("awake", "dormant"),
-                         "camera": st})
-        elif st in ("awake", "dormant"):
+                         "camera": st, "mic": mic})
+        else:
+            row["mic"] = mic
+        if row is not None and st in ("awake", "dormant"):
             # ⚠️ ONLY overwrite with a REAL answer. A force-stopped app refuses the
             # connection, and replacing adb's plain "stopped" with the socket error was
             # strictly worse - it also threw away stay_on and the screen state.
@@ -287,7 +329,7 @@ def main():
         for r in status(phones):
             screen = "-" if r["screenAwake"] is None else                      ("awake" if r["screenAwake"] else "asleep")
             print(f"  {r['model']:<9} stay_on={r['stayOn']:<4} "
-                  f"screen={screen:<6} camera={r['camera']}")
+                  f"screen={screen:<6} camera={r['camera']:<9} mic={r.get('mic', '-')}")
         return
     fn = sleep_mode if args.mode == "sleep" else show_mode
     for who, what in fn(args.wired_serial, phones):

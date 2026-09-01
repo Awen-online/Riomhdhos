@@ -69,6 +69,13 @@ class CameraEngine(
     /** CamService hangs the WiFi lock off this; see `sleep()`. true = going to sleep. */
     var onDormancy: ((Boolean) -> Unit)? = null
 
+    /**
+     * The microphone, owned by CamService and reached through here only because `Controls`
+     * is the one interface the HTTP server holds. It is NOT part of the camera's state -
+     * see `setAudio`.
+     */
+    var mic: MicRecorder? = null
+
     private val executor = Executors.newSingleThreadExecutor()
     private var camera: Camera? = null
     private var encoder: H264Encoder? = null
@@ -334,6 +341,20 @@ class CameraEngine(
         return """{"dormant":false}"""
     }
 
+    /**
+     * ⚠️ INDEPENDENT OF `dormant`, DELIBERATELY. Turning the microphone on must not wake
+     * the camera, and sleeping the camera must not silence the microphone: "mic on, camera
+     * dormant" is the room-recording mode, and it is the combination that costs almost no
+     * battery. `power.py sleep` turns audio off explicitly for the same reason it stops the
+     * bridges - putting the rig down should put ALL of it down - but that is a decision
+     * made there, not a coupling baked in here.
+     */
+    override fun setAudio(on: Boolean): String {
+        val m = mic ?: return """{"error":"no recorder"}"""
+        val r = if (on) m.start() else m.stop()
+        return """{"audio":"$r","on":${m.running},"permission":${m.hasPermission()}}"""
+    }
+
     override fun stateJson(): String {
         val c = camera
         val z = c?.cameraInfo?.zoomState?.value
@@ -342,6 +363,7 @@ class CameraEngine(
         return """
         {"streaming":${(e?.nalsOut ?: 0) > 0},
          "dormant":$dormant,
+         "audio":${mic?.stateJson() ?: "null"},
          "resolution":"${actualW}x${actualH}",
          "facing":"${if (facing == CameraSelector.LENS_FACING_BACK) "back" else "front"}",
          "requested":"${targetSize.width}x${targetSize.height}",

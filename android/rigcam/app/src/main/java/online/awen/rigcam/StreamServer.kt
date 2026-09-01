@@ -33,6 +33,9 @@ import kotlin.concurrent.thread
  *   GET /api/set?...      zoom, aeLock, awbLock, ev, torch, lens, quality
  *   GET /api/sleep        release the camera and encoder; the server keeps listening
  *   GET /api/wake         open them again
+ *   GET /audio.pcm        raw 48k/16-bit mono PCM, little-endian, forever
+ *   GET /audio.wav        the same bytes behind a WAV header, so ffmpeg needs no flags
+ *   GET /api/audio?on=…   microphone on/off, INDEPENDENT of the camera
  */
 class StreamServer(
     private val port: Int,
@@ -56,6 +59,14 @@ class StreamServer(
          */
         fun sleep(): String
         fun wake(): String
+        /**
+         * ⚠️ AUDIO IS A SECOND AXIS, NOT A THIRD CAMERA STATE. The microphone is not a
+         * camera setting, so it does not belong in the dormant enum and it deliberately
+         * does NOT go through `apply()` - `apply` refuses while dormant, and mic-with-
+         * camera-dormant is the whole point: it is the room-recording shape, and the one
+         * that turns a net drain into a net charge.
+         */
+        fun setAudio(on: Boolean): String
     }
 
     /** Latest encoded frame, published by the camera thread and read by every client. */
@@ -84,8 +95,25 @@ class StreamServer(
         val q = ArrayBlockingQueue<Pair<ByteArray, Boolean>>(6)
         @Volatile var sawKeyframe = false
     }
+    /**
+     * ⚠️ THIS QUEUE DROPS THE OLDEST, WHERE THE VIDEO ONE DROPS THE NEWEST. Opposite rules,
+     * for a real reason: a video frame depends on the frames before it, so a gap costs
+     * everything up to the next keyframe and the right move is to refuse the new one.
+     * PCM blocks are independent - a late block is simply stale, and the newest audio is
+     * always the audio worth having. 50 blocks is one second of slack.
+     */
+    private class AudioClient { val q = ArrayBlockingQueue<ByteArray>(50) }
+    private val audioClients = CopyOnWriteArrayList<AudioClient>()
+
     private val nalClients = CopyOnWriteArrayList<NalClient>()
     private val tsClients = CopyOnWriteArrayList<NalClient>()
+
+    /** Called from the mic thread for every 20 ms block. */
+    fun publishAudio(block: ByteArray) {
+        for (c in audioClients) {
+            if (!c.q.offer(block)) { c.q.poll(); c.q.offer(block) }
+        }
+    }
     private var muxer = TsMuxer()
 
     /**
@@ -214,6 +242,12 @@ class StreamServer(
                     // match "/api/sleep", but keep them adjacent so that stays obvious.
                     path.startsWith("/api/sleep") -> json(out, controls.sleep())
                     path.startsWith("/api/wake") -> json(out, controls.wake())
+                    // Default to ON, so /api/audio with no query is "start listening" -
+                    // only ?on=false turns it off.
+                    path.startsWith("/api/audio") -> json(out,
+                        controls.setAudio(query(path)["on"]?.toBooleanStrictOrNull() ?: true))
+                    path.startsWith("/audio.pcm") -> streamAudio(out, wav = false)
+                    path.startsWith("/audio.wav") -> streamAudio(out, wav = true)
                     path == "/" -> html(out)
                     else -> {
                         out.write("HTTP/1.0 404 Not Found\r\n\r\n".toByteArray())
@@ -251,6 +285,56 @@ class StreamServer(
                    "Access-Control-Allow-Origin: *\r\n" +
                    "Content-Length: ${f.size}\r\n\r\n").toByteArray())
         out.write(f); out.flush()
+    }
+
+    /**
+     * PCM out, optionally behind a WAV header.
+     *
+     * ⚠️ THE HEADER SIZES ARE 0xFFFFFFFF ON PURPOSE. A WAV header states the length of a
+     * file, and this is a stream that has no end - so the RIFF and data chunks claim the
+     * maximum. ffmpeg, mpv and VLC all read that as "until the socket closes"; a player
+     * that trusts the field would think the file is 4 GB, which is the correct lie here.
+     *
+     * ⚠️ AND THE FORMAT NEVER CHANGES MID-STREAM. Same rule as `dropNalClients` for video:
+     * there is no container to announce a change of sample rate or channel count, so the
+     * only safe answer is that they are fixed for the life of the app.
+     */
+    private fun streamAudio(out: OutputStream, wav: Boolean) {
+        val ctype = if (wav) "audio/wav"
+                    else "audio/L16;rate=${MicRecorder.SAMPLE_RATE};channels=${MicRecorder.CHANNELS}"
+        out.write(("HTTP/1.0 200 OK\r\n" +
+                   "Content-Type: $ctype\r\n" +
+                   "Cache-Control: no-store\r\n" +
+                   "Access-Control-Allow-Origin: *\r\n\r\n").toByteArray())
+        if (wav) out.write(wavHeader(MicRecorder.SAMPLE_RATE, MicRecorder.CHANNELS, 16))
+        out.flush()
+        val c = AudioClient()
+        audioClients.add(c)
+        try {
+            while (running) {
+                val b = c.q.poll(2, TimeUnit.SECONDS) ?: continue
+                out.write(b)
+                out.flush()
+            }
+        } finally {
+            audioClients.remove(c)
+        }
+    }
+
+    private fun wavHeader(rate: Int, ch: Int, bits: Int): ByteArray {
+        val byteRate = rate * ch * bits / 8
+        val align = ch * bits / 8
+        val b = java.io.ByteArrayOutputStream(44)
+        fun ascii(t: String) = b.write(t.toByteArray())
+        fun i32(v: Int) {
+            b.write(v and 0xFF); b.write((v ushr 8) and 0xFF)
+            b.write((v ushr 16) and 0xFF); b.write((v ushr 24) and 0xFF)
+        }
+        fun i16(v: Int) { b.write(v and 0xFF); b.write((v ushr 8) and 0xFF) }
+        ascii("RIFF"); i32(-1); ascii("WAVE")
+        ascii("fmt "); i32(16); i16(1); i16(ch); i32(rate); i32(byteRate); i16(align); i16(bits)
+        ascii("data"); i32(-1)
+        return b.toByteArray()
     }
 
     private fun streamTo(out: OutputStream) {

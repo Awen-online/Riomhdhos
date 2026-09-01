@@ -35,6 +35,10 @@ class MainActivity : AppCompatActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val needed = mutableListOf(Manifest.permission.CAMERA)
+        // ⚠️ ASKED FOR, NEVER REQUIRED. Audio is opt-in and off by default, so a denial
+        // here must not stop the camera starting - see the `granted[CAMERA]` check above,
+        // which is the only permission `startCam` waits on.
+        needed += Manifest.permission.RECORD_AUDIO
         // ⚠️ Without POST_NOTIFICATIONS on Android 13+ the foreground-service notification is
         // suppressed. The service still runs, but there is then no way to see that it is
         // running or to stop it - a silent background process holding the camera.

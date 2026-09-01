@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.wifi.WifiManager
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
@@ -33,17 +34,39 @@ class CamService : LifecycleService() {
 
     private lateinit var server: StreamServer
     private lateinit var engine: CameraEngine
+    private lateinit var mic: MicRecorder
+    // Whether each capture is live. The WiFi lock follows "any stream", not "the camera".
+    @Volatile private var camLive = true
+    @Volatile private var micLive = false
+    @Volatile private var notifText = "starting…"
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(NOTIF_ID, notification("starting…"))
+        // ⚠️ NAME THE TYPE, DO NOT LET ANDROID INFER IT. The no-type overload asserts EVERY
+        // foregroundServiceType in the manifest, and the manifest now declares
+        // `camera|microphone`. On a phone where RECORD_AUDIO was never granted that throws
+        // and the service dies at startup - taking the CAMERA down too, over a microphone
+        // nobody asked for. startForeground accepts a SUBSET, so claim camera alone here
+        // and add microphone only once audio is actually running.
+        startForeground(NOTIF_ID, notification(notifText),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA)
         acquireLocks()
 
         engine = CameraEngine(this)
         server = StreamServer(PORT, engine)
         engine.server = server
+        mic = MicRecorder(this) { block -> server.publishAudio(block) }
+        engine.mic = mic
+        mic.onStateChange = { on ->
+            micLive = on
+            // The FGS type has to follow the microphone, or Android 14 kills the service
+            // the first time it notices audio running under a camera-only declaration.
+            updateForegroundType()
+            syncLocks()
+            notify(if (on) "$notifText · MIC LIVE" else notifText)
+        }
         // ⚠️ THE WIFI LOCK IS THE ONLY LOCK SLEEP DROPS. WIFI_MODE_FULL_HIGH_PERF exists to
         // keep a video stream usable (packet loss went 0% -> 37.8% without it once the
         // screen locked) - with no stream it buys nothing and costs radio power, so it goes
@@ -54,19 +77,44 @@ class CamService : LifecycleService() {
         // there is no adb to fall back on. A sleep that might not wake is worse than a
         // sleep that saves slightly less.
         engine.onDormancy = { asleep ->
-            if (asleep) {
-                try { wifiLock?.release() } catch (_: Exception) {}
-                notify("asleep - /api/wake to bring the camera back")
-            } else {
-                try { wifiLock?.acquire() } catch (_: Exception) {}
-                notify("http://${lanAddress() ?: "?"}:$PORT/stream.h264")
-            }
+            camLive = !asleep
+            syncLocks()
+            notifText = if (asleep) "asleep - /api/wake to bring the camera back"
+                        else "http://${lanAddress() ?: "?"}:$PORT/stream.h264"
+            notify(if (micLive) "$notifText · MIC LIVE" else notifText)
         }
         engine.start(this)          // LifecycleService IS the LifecycleOwner
         server.start()
         RUNNING = true
 
-        notify("http://${lanAddress() ?: "?"}:$PORT/stream.h264")
+        notifText = "http://${lanAddress() ?: "?"}:$PORT/stream.h264"
+        notify(notifText)
+    }
+
+    /**
+     * ⚠️ THE LOCK FOLLOWS ANY STREAM, NOT THE CAMERA. It used to be released whenever the
+     * camera went dormant, which was right when dormant meant nothing was being sent. A
+     * dormant camera STREAMING AUDIO over WiFi is a stream, and without the high-perf lock
+     * it walks straight into the measured 37.8% packet loss that arrives the moment the
+     * screen locks - silently, because a lossy PCM stream just sounds bad.
+     */
+    private fun syncLocks() {
+        try {
+            if (camLive || micLive) wifiLock?.acquire() else wifiLock?.release()
+        } catch (_: Exception) {}
+    }
+
+    private fun updateForegroundType() {
+        var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+        if (micLive && mic.hasPermission()) {
+            type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        }
+        try {
+            startForeground(NOTIF_ID, notification(notifText), type)
+        } catch (e: Exception) {
+            // Never let this kill the service: the camera is the thing worth protecting.
+            android.util.Log.e("RigCam", "startForeground type change failed", e)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -82,6 +130,7 @@ class CamService : LifecycleService() {
 
     override fun onDestroy() {
         RUNNING = false
+        if (::mic.isInitialized) mic.stop()
         if (::server.isInitialized) server.stop()
         try { wifiLock?.release() } catch (_: Exception) {}
         try { wakeLock?.release() } catch (_: Exception) {}

@@ -16,6 +16,13 @@
          quietly - startForeground throws and the service dies immediately. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Optional at runtime: audio is off by default and a denial must never stop the
+         camera. See CamService.updateForegroundType - the service claims CAMERA alone at
+         startup and only adds MICROPHONE once the mic is genuinely running, because the
+         no-type startForeground overload asserts every type declared below and would kill
+         the service outright on a phone that never granted this. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
@@ -39,6 +46,6 @@
         <service
             android:name=".CamService"
             android:exported="false"
-            android:foregroundServiceType="camera" />
+            android:foregroundServiceType="camera|microphone" />
     </application>
 </manifest>
