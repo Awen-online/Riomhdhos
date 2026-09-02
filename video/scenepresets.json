@@ -41,6 +41,7 @@
     },
     "ROOM (Pixel 8)": {
       "Pixel 8": {
+        "zoom": 1.0,
         "filters": {
           "Erase background": false
         }
