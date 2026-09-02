@@ -445,10 +445,54 @@ function debounced(key, ms, fn){
   clearTimeout(window['_d_'+key]);
   window['_d_'+key] = setTimeout(fn, ms);
 }
+function cancelDebounced(key){ clearTimeout(window['_d_'+key]); }
+
+/**
+ * A slider that will not commit a value it was never deliberately given.
+ *
+ * ⚠️ `touch-action: pan-y` WAS NOT ENOUGH, and the reason is subtle. It stops a vertical
+ * drag from moving the knob - but `oninput` on a range input fires the moment a finger
+ * LANDS on the track, because a tap jumps the thumb to that position. So scrolling the
+ * page with a finger that merely grazed a slider set a value and committed it 110 ms
+ * later. Nothing was being dragged; the touch alone was enough.
+ *
+ * So arming is separate from moving. A touch starts DISARMED: the label follows the
+ * thumb so the control still feels alive, but nothing is SENT until the gesture proves
+ * itself a horizontal drag (moved more across than down, past the slop). If the finger
+ * lifts still disarmed, it was a scroll - the value is put back and any pending send is
+ * cancelled. Mouse and keyboard are armed immediately; they were never the problem.
+ */
 function slider(id, valId, fmt, onChange, ms){
-  $(id).oninput = () => {
-    const v = parseFloat($(id).value);
+  const el = $(id);
+  const SLOP = 10;
+  let armed = true, startVal = null, sx = 0, sy = 0;
+
+  el.addEventListener('pointerdown', e => {
+    startVal = parseFloat(el.value);
+    sx = e.clientX; sy = e.clientY;
+    armed = e.pointerType !== 'touch';
+  });
+  el.addEventListener('pointermove', e => {
+    if (armed || startVal === null) return;
+    const dx = Math.abs(e.clientX - sx), dy = Math.abs(e.clientY - sy);
+    if (dx > SLOP && dx > dy) armed = true;
+  });
+  const settle = () => {
+    if (!armed && startVal !== null){
+      el.value = startVal;
+      $(valId).textContent = fmt(startVal);
+      cancelDebounced(id);
+    }
+    startVal = null;
+    armed = true;                 // back to the mouse/keyboard default
+  };
+  for (const ev of ['pointerup','pointercancel','lostpointercapture'])
+    el.addEventListener(ev, settle);
+
+  el.oninput = () => {
+    const v = parseFloat(el.value);
     $(valId).textContent = fmt(v);
+    if (!armed) return;
     // Debounced: a drag fires continuously, and dozens of round-trips a second buys
     // nothing visible while giving the render thread more to contend with.
     debounced(id, ms || 110, () => onChange(v).catch(e => $('err').textContent = e.message));
@@ -551,6 +595,10 @@ function renderBlend(cur){
    do not await a response before accepting the next drag - a laggy phone must not make the
    control feel stuck. */
 const CAM_ICON = {
+  // A magnifier that gains a bar or a cross, and a reticle for "back to 1x".
+  zoomOut: SVG('<circle cx="10.5" cy="10.5" r="6.5"/><path d="M7.5 10.5h6M20 20l-4.6-4.6"/>'),
+  zoomIn:  SVG('<circle cx="10.5" cy="10.5" r="6.5"/><path d="M7.5 10.5h6M10.5 7.5v6M20 20l-4.6-4.6"/>'),
+  zoomOne: SVG('<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2" fill="currentColor" stroke="none"/>'),
   wide:  SVG('<path d="M3 8.5A2.5 2.5 0 0 1 5.5 6h13A2.5 2.5 0 0 1 21 8.5v7A2.5 2.5 0 0 1 18.5 18h-13A2.5 2.5 0 0 1 3 15.5z"/><path d="M7.5 12h9M7.5 12l2.5-2.5M7.5 12l2.5 2.5M16.5 12L14 9.5M16.5 12L14 14.5"/>'),
   one:   SVG('<circle cx="12" cy="12" r="6.5"/><path d="M12 8.5v7"/>'),
   tight: SVG('<circle cx="11" cy="11" r="6"/><path d="M15.5 15.5L21 21"/>'),
@@ -684,6 +732,9 @@ function rigCard(label, r, idx){
     + esc(label) + '</span><span class="v" id="' + q('state') + '">-</span></div>'
     + '<div class="g2" id="' + q('reset') + '"></div>'
     + '<div class="row"><span class="k">Zoom</span><span class="v" id="' + q('vz') + '">-</span></div>'
+    // Buttons ABOVE the slider, because on a phone they are the control that gets used:
+    // a thumb can hit a 44px button while scrolling past, and cannot place a slider knob.
+    + '<div class="g3" id="' + q('zbtn') + '"></div>'
     + '<input type="range" id="' + q('rz') + '" min="0.5" max="8" step="0.01" value="1">'
     + '<div class="row"><span class="k">Exposure</span><span class="v" id="' + q('vev') + '">0</span></div>'
     + '<input type="range" id="' + q('rev') + '" min="-24" max="24" step="1" value="0">'
@@ -801,6 +852,27 @@ function renderCamera(){
 
     // Sliders bind by id, so they attach AFTER the card is in the document.
     const P = extra => Object.assign({target:'rigcam', phone:label}, extra);
+
+    // ⚠️ ZOOM STEPS MULTIPLY, THEY DO NOT ADD. Zoom is a ratio: +0.25 is a huge move at
+    // 0.7x and imperceptible at 6x, so a fixed increment feels broken at both ends.
+    // x1.25 per press is a constant-feeling step and crosses this phone's whole range
+    // (0.67x to 7x on the Pixel 6) in about ten presses.
+    const zb = $(q('zbtn'));
+    const zmin = (r.zoom && r.zoom.min) || 1, zmax = (r.zoom && r.zoom.max) || 1;
+    const zcur = (r.zoom && r.zoom.ratio) || 1;
+    const setZoom = next => {
+      const z = Math.min(zmax, Math.max(zmin, next));
+      // Move the slider and the readout NOW. A camera query takes ~2 s, and a control
+      // that looks dead for two seconds gets pressed again.
+      const el = $(q('rz'));
+      if (el) el.value = z;
+      $(q('vz')).textContent = z.toFixed(2) + '\u00d7' + (z < 1 ? '  wide' : '');
+      return post('/api/camera', P({zoom: z}));
+    };
+    camBtn(zb, 'out', CAM_ICON.zoomOut, false, () => setZoom(zcur / 1.25));
+    camBtn(zb, '1\u00d7', CAM_ICON.zoomOne, Math.abs(zcur - 1) < 0.01, () => setZoom(1));
+    camBtn(zb, 'in',  CAM_ICON.zoomIn,  false, () => setZoom(zcur * 1.25));
+
     slider(q('rz'), q('vz'), v => v.toFixed(2) + '\u00d7' + (v < 1 ? '  wide' : ''),
            v => post('/api/camera', P({zoom:v})).catch(()=>{}));
     slider(q('rev'), q('vev'), v => String(Math.round(v)),
