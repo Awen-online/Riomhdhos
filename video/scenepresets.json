@@ -1,0 +1,37 @@
+{
+  "_readme": [
+    "Per-scene camera defaults, applied when the OBS PROGRAM scene changes.",
+    "",
+    "WHY THIS FILE EXISTS: OBS filters live on the SOURCE, not the scene, so a filter",
+    "toggled in one scene is toggled in all of them - and zoom is not an OBS property at",
+    "all, it is a setting on the phone. Neither can be made scene-dependent by OBS alone.",
+    "This is applied by dash.py's scene watcher instead.",
+    "",
+    "Only the keys present are applied. Omit 'zoom' to leave zoom alone; omit a filter",
+    "name to leave that filter alone. A scene with no entry here is never touched.",
+    "",
+    "Edit by hand, or set a look up in OBS and press Capture on the Cams tab."
+  ],
+
+  "enabled": true,
+
+  "scenes": {
+    "BROWSER": {
+      "Pixel 8": {
+        "zoom": 1.5,
+        "filters": { "Focal blur": true, "Erase background": false }
+      }
+    },
+
+    "BOTH CAMS": {
+      "Pixel 8": {
+        "zoom": 1.0,
+        "filters": { "Focal blur": true, "Erase background": false }
+      },
+      "Pixel 6": {
+        "zoom": 1.0,
+        "filters": { "Focal blur": true, "Erase background": false }
+      }
+    }
+  }
+}

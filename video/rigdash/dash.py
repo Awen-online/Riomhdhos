@@ -656,6 +656,155 @@ def _current_blend(cl, scene):
         return None
 
 
+# ---------------------------------------------------------------- scene presets
+# ⚠️ WHY THIS IS NOT JUST "PUT FILTERS ON THE SCENE". OBS filters belong to the SOURCE,
+# and both cameras are one input shared by every scene - so a filter toggled in BOTH CAMS
+# is toggled in BROWSER too. Duplicating the source is not available either: DirectShow
+# allows exactly one consumer per device. And zoom is not an OBS property at all, it is a
+# setting on the phone reached over HTTP. One watcher covers both.
+PRESETS = HERE.parent / "scenepresets.json"
+_presets_cache = {"mtime": 0.0, "data": None}
+
+
+def load_presets():
+    """Re-read on mtime change, so hand edits apply without restarting the dashboard."""
+    try:
+        m = PRESETS.stat().st_mtime
+    except OSError:
+        return {"enabled": False, "scenes": {}}
+    if _presets_cache["data"] is None or m != _presets_cache["mtime"]:
+        try:
+            with open(PRESETS, encoding="utf-8") as fh:
+                data = json.load(fh)
+            data.setdefault("enabled", True)
+            data.setdefault("scenes", {})
+            _presets_cache.update(mtime=m, data=data)
+        except Exception as e:
+            print(f"scenepresets: unreadable ({e}); presets disabled", flush=True)
+            return {"enabled": False, "scenes": {}}
+    return _presets_cache["data"]
+
+
+def save_presets(data):
+    data.setdefault("enabled", True)
+    data.setdefault("scenes", {})
+    tmp = PRESETS.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+    tmp.replace(PRESETS)              # atomic: never leave a half-written config
+    _presets_cache["data"] = None
+    return load_presets()
+
+
+def obs_source_for(phone):
+    """'Pixel 6' -> 'Pixel 6 (vcam)'. The OBS source name and the phone label differ."""
+    for n in CAM_SOURCES:
+        if n == phone or n.startswith(phone):
+            return n
+    return None
+
+
+def apply_preset(scene):
+    """Apply one scene's preset. Returns a list of human-readable steps taken.
+
+    ⚠️ NEVER RAISES PAST THE CALLER. This runs from a watcher thread during a live scene
+    change; a phone that is asleep or an OBS mid-restart must not kill the watcher and
+    must not stop the OTHER camera being set.
+    """
+    preset = (load_presets().get("scenes") or {}).get(scene)
+    if not preset:
+        return []
+    steps = []
+    for phone, want in preset.items():
+        src = obs_source_for(phone)
+        for name, on in (want.get("filters") or {}).items():
+            if src is None:
+                steps.append(f"{phone}: no OBS source")
+                continue
+            try:
+                client().set_source_filter_enabled(src, name, bool(on))
+                steps.append(f"{src}: {name} {'on' if on else 'off'}")
+            except Exception as e:
+                steps.append(f"{src}: {name} failed ({type(e).__name__})")
+        if "zoom" in want:
+            url = RIGCAMS.get(phone)
+            if not url:
+                steps.append(f"{phone}: no rigcam url")
+            else:
+                try:
+                    # ⚠️ Zoom is a round trip to the phone and takes ~1-2 s to settle. A
+                    # preset suits a deliberate scene change, not a fast cut.
+                    # rigcam_call takes a path, not params - build the query.
+                    q = urllib.parse.urlencode({"zoom": want["zoom"]})
+                    r = rigcam_call("/api/set?" + q, base=url)
+                    if isinstance(r, dict) and r.get("offline"):
+                        steps.append(f"{phone}: zoom unreachable ({r.get('error')})")
+                    else:
+                        steps.append(f"{phone}: zoom {want['zoom']}")
+                except Exception as e:
+                    steps.append(f"{phone}: zoom failed ({type(e).__name__})")
+    return steps
+
+
+def capture_preset(scene):
+    """Snapshot what the cameras are doing RIGHT NOW into this scene's preset.
+
+    The useful way to author these: get the look right in OBS and on the phones by hand,
+    then press Capture. Hand-writing zoom ratios and filter names is how they drift.
+    """
+    data = load_presets()
+    entry = {}
+    for phone, url in RIGCAMS.items():
+        src = obs_source_for(phone)
+        one = {}
+        st = rigcam_call("/api/state", base=url)
+        if isinstance(st, dict) and not st.get("offline") and st.get("zoom"):
+            one["zoom"] = round(float(st["zoom"].get("ratio", 1.0)), 3)
+        if src:
+            try:
+                fl = client().get_source_filter_list(src).filters
+                one["filters"] = {f["filterName"]: bool(f["filterEnabled"]) for f in fl
+                                  if f["filterKind"] in ALLOWED}
+            except Exception:
+                pass
+        if one:
+            entry[phone] = one
+    data.setdefault("scenes", {})[scene] = entry
+    save_presets(data)
+    return entry
+
+
+def scene_preset_thread(poll_s=1.0):
+    """Watch the PROGRAM scene and apply presets on change.
+
+    ⚠️ POLLED, NOT EVENT-SUBSCRIBED, deliberately. An EventClient is a second websocket
+    with its own reconnect story, and this rig restarts OBS regularly. A 1 Hz poll inside
+    a try/except reconnects for free and cannot wedge.
+
+    ⚠️ AND IT DOES NOT FIRE ON THE FIRST OBSERVATION. Applying a preset at startup would
+    silently overwrite whatever was set up by hand before the dashboard came up. The first
+    scene it sees is recorded, not acted on.
+    """
+    last = None
+    while True:
+        try:
+            cfg = load_presets()
+            cur = client().get_current_program_scene().scene_name
+            if last is None:
+                last = cur                      # record, do not apply
+            elif cur != last:
+                last = cur
+                if cfg.get("enabled"):
+                    steps = apply_preset(cur)
+                    if steps:
+                        print(f"scene preset '{cur}': " + "; ".join(steps), flush=True)
+        except Exception:
+            # OBS closed or mid-restart. Try again next tick.
+            pass
+        time.sleep(poll_s)
+
+
 def camera_sources():
     """Every camera that exists and can carry filters.
 
@@ -757,6 +906,24 @@ class Handler(BaseHTTPRequestHandler):
                     "bridges": bridge_status(),
                 }); return
 
+            if p == "/api/scenepresets":
+                cl = self._obs_or_none()
+                scenes = []
+                cur = None
+                if cl:
+                    try:
+                        sl = cl.get_scene_list()
+                        scenes = [x["sceneName"] for x in sl.scenes]
+                        cur = sl.current_program_scene_name
+                    except Exception:
+                        pass
+                self._json({
+                    "presets": load_presets(),
+                    "obsScenes": scenes,
+                    "currentScene": cur,
+                    "phones": list(RIGCAMS.keys()),
+                }); return
+
             if p == "/api/state":
                 with _lock:
                     audio = dict(STATE)
@@ -836,6 +1003,35 @@ class Handler(BaseHTTPRequestHandler):
             # Neither of these touches OBS, so both sit ABOVE the guard - and the bridge
             # reset especially, since the state it repairs is usually "OBS was just
             # restarted and the bridges are still feeding a sink that went away".
+            if p == "/api/scenepresets":
+                act = body.get("action")
+                if act == "enable":
+                    data = load_presets()
+                    data["enabled"] = bool(body.get("enabled", True))
+                    self._json({"presets": save_presets(data)}); return
+                if act == "save":
+                    data = load_presets()
+                    scene, entry = body.get("scene"), body.get("entry")
+                    if not scene:
+                        self._json({"error": "scene required"}, 400); return
+                    if entry is None:
+                        data.get("scenes", {}).pop(scene, None)
+                    else:
+                        data.setdefault("scenes", {})[scene] = entry
+                    self._json({"presets": save_presets(data)}); return
+                # capture and apply both need OBS.
+                if not self._obs_or_none():
+                    self._json({"error": "OBS is not running", "obs": False}, 503); return
+                if act == "capture":
+                    scene = body.get("scene") or client().get_current_program_scene().scene_name
+                    self._json({"scene": scene, "entry": capture_preset(scene),
+                                "presets": load_presets()}); return
+                if act == "apply":
+                    scene = body.get("scene") or client().get_current_program_scene().scene_name
+                    self._json({"scene": scene, "steps": apply_preset(scene)}); return
+                self._json({"error": "action must be save, capture, apply or enable"}, 400)
+                return
+
             if p == "/api/bridges":
                 if body.get("action") != "reset":
                     self._json({"error": "action must be reset"}, 400); return
@@ -1128,6 +1324,7 @@ def main():
     # is indistinguishable from "never started" - which is exactly how three stale servers
     # went unnoticed while every test hit old code.
     threading.Thread(target=video_thread, args=(SOURCE,), daemon=True).start()
+    threading.Thread(target=scene_preset_thread, daemon=True).start()
     # A CONTENT HASH OF THIS FILE, printed at startup and served at /api/state.
     #
     # Stale servers holding the port have now cost real time THREE times in one session:

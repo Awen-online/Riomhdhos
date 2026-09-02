@@ -74,6 +74,11 @@
   .pill.on{background:var(--ok);border-color:var(--ok);color:#06210f}
   .g2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
   .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+  /* One scene per block, separated so the buttons underneath clearly belong to
+     the scene above them and not the next one. */
+  .sprow{padding:10px 0 12px;border-top:1px solid var(--line)}
+  .sprow:first-child{border-top:0;padding-top:2px}
+  .sprow .g3{margin-top:8px}
   .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
   .g3 button,.g4 button{padding:10px 3px;font-size:11.5px;font-weight:500}
   .g2 button.sel,.g3 button.sel,.g4 button.sel{background:var(--accent);
@@ -270,6 +275,22 @@
       <b>Force reset</b> kills both bridges and their ffmpeg, then starts them again; each
       re-opens its OBS source once frames are actually flowing, so give it about ten seconds
       before the pictures come back.</div>
+  </div>
+
+  <h2>Scene presets</h2>
+  <div class="card">
+    <div class="row"><span class="k">On scene change</span><span class="v" id="v_sp">&mdash;</span></div>
+    <div class="g2" id="spmaster"></div>
+    <div id="splist"><span class="sub">&mdash;</span></div>
+    <div class="note">&#9888;&#65039; OBS filters belong to the <b>source</b>, not the scene, so
+      a filter toggled in one scene is toggled in all of them &mdash; and zoom is not an OBS
+      property at all, it is a setting on the phone. Neither can be made scene-dependent by
+      OBS alone, so the dashboard watches the program scene and applies these instead.<br><br>
+      Set a look up by hand in OBS and on the phones, then press <b>Capture</b> on that
+      scene. <b>Apply</b> runs it now without changing scene.<br><br>
+      Zoom takes a second or two to reach the phone, so presets suit a deliberate scene
+      change rather than a fast cut. A scene with no preset is never touched, and nothing is
+      applied when the dashboard starts &mdash; only on an actual change.</div>
   </div>
 
   <h2>Cameras</h2>
@@ -942,6 +963,72 @@ async function camPost(body){
   }
 }
 
+/* ---- scene presets ---------------------------------------------------------------- */
+let SP = null;
+
+async function loadPresets(){
+  try {
+    SP = await (await fetch('/api/scenepresets')).json();
+    renderPresets();
+  } catch(e){ $('err').textContent = 'scene presets: ' + e.message; }
+}
+
+async function spPost(body){
+  try {
+    const j = await post('/api/scenepresets', body);
+    if (j.presets) SP.presets = j.presets;
+    if (j.steps) $('v_sp').textContent = j.steps.length ? j.steps.join(' \u00b7 ') : 'nothing to apply';
+    renderPresets();
+  } catch(e){ $('err').textContent = e.message; }
+}
+
+function presetSummary(entry){
+  if (!entry || !Object.keys(entry).length) return '&mdash;';
+  return Object.entries(entry).map(([phone, w]) => {
+    const bits = [];
+    if (w.zoom !== undefined) bits.push((+w.zoom).toFixed(2) + '\u00d7');
+    for (const [n, on] of Object.entries(w.filters || {}))
+      bits.push((on ? '' : 'no ') + n.toLowerCase());
+    return '<b>' + esc(phone) + '</b> ' + esc(bits.join(', '));
+  }).join('<br>');
+}
+
+function renderPresets(){
+  if (!SP) return;
+  const on = !!(SP.presets && SP.presets.enabled);
+  $('v_sp').textContent = on ? 'active' : 'off';
+
+  const mb = $('spmaster'); mb.innerHTML = '';
+  camBtn(mb, on ? 'on' : 'off', CAM_ICON.one, on,
+         () => spPost({action:'enable', enabled: !on}));
+  camBtn(mb, 'Capture this scene', CAM_ICON.zoomOne, false,
+         () => spPost({action:'capture'}));
+
+  const box = $('splist'); box.innerHTML = '';
+  const scenes = SP.obsScenes && SP.obsScenes.length
+        ? SP.obsScenes : Object.keys((SP.presets||{}).scenes || {});
+  if (!scenes.length){ box.innerHTML = '<span class="sub">OBS is not running</span>'; return; }
+
+  for (const name of scenes){
+    const entry = ((SP.presets||{}).scenes || {})[name];
+    const live = name === SP.currentScene;
+    const row = document.createElement('div');
+    row.className = 'sprow';
+    row.innerHTML =
+      '<div class="hdr"><span class="nm">' + esc(name) + '</span>'
+      + '<span class="sub"' + (live ? ' style="color:var(--ok)"' : '') + '>'
+      + (live ? 'on air' : (entry ? 'preset set' : 'no preset')) + '</span></div>'
+      + (entry ? '<div class="sub">' + presetSummary(entry) + '</div>' : '');
+    const btns = document.createElement('div');
+    btns.className = 'g3';
+    camBtn(btns, 'Capture', CAM_ICON.zoomOne, false, () => spPost({action:'capture', scene:name}));
+    camBtn(btns, 'Apply', CAM_ICON.one, false, () => spPost({action:'apply', scene:name}));
+    camBtn(btns, 'Clear', CAM_ICON.flip, false, () => spPost({action:'save', scene:name, entry:null}));
+    row.append(btns);
+    box.append(row);
+  }
+}
+
 function renderBridges(){
   const box = $('brlist'); if (!box) return;
   const bs = (CAM && CAM.bridges) || [];
@@ -981,6 +1068,7 @@ async function loadCamera(){
     CAM = await (await fetch('/api/camera')).json();
     renderCamera();
     renderBridges();
+    loadPresets();          // not awaited: it must not delay the camera panel
     $('cam_note').textContent = 'Fetched on demand — a wired-camera query runs a UI dump '
       + 'and costs ~2 s, so it is deliberately not in the 1 Hz poll.';
   }catch(e){ $('cam_note').textContent = 'camera query failed: ' + e.message; }
