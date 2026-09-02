@@ -70,6 +70,56 @@ SETTLE_S = 1.4          # the sensor needs a beat, and OBS averages its own fram
 MEASURE_WITH_FILTERS_OFF = True
 
 
+# ⚠️ ISO LIVES HERE, NOT IN rigsettings.BASELINE, AND THE SPLIT IS THE POINT.
+#
+# The baseline holds what is a property of the RIG - resolution, fps, bitrate, shutter,
+# white balance, manual mode itself. Those are identical on both phones, never change with
+# where you are, and forcing them identical is what makes the two cameras cut together.
+#
+# ISO is a property of the ROOM. It was hardcoded to 800 in the baseline, which was always
+# going to be wrong somewhere and today was wrong by a stop and a half. A per-phone
+# constant would just be two numbers that are both wrong in the next space. So autoexpose
+# owns exposure, writes it here, and rigsettings reads it back after a restart.
+CALIBRATION = HERE / "exposure.json"
+
+
+def load_calibration():
+    try:
+        with open(CALIBRATION, encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_calibration(results, target):
+    """Merge and write atomically. Calibrating ONE phone must not erase the other's."""
+    data = load_calibration()
+    data["_readme"] = [
+        "Per-phone exposure, measured by autoexpose.py and re-applied by rigsettings.py.",
+        "",
+        "ISO is not in rigsettings' BASELINE because it is a property of the room, not of",
+        "the rig. Re-run 'python autoexpose.py --all' whenever the lighting changes.",
+        "A phone with no entry here keeps whatever ISO it already has - rigsettings will",
+        "say so rather than substituting a guess.",
+    ]
+    data["target"] = target
+    phones = data.setdefault("phones", {})
+    for r in results:
+        phones[r["label"]] = {
+            "iso": int(r["iso"]),
+            "shutterNs": int(r["shutterNs"]),
+            "luma": round(r.get("luma", 0.0), 1),
+            "calibrated": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+    tmp = CALIBRATION.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+        fh.write("\n")
+    tmp.replace(CALIBRATION)
+    return CALIBRATION
+
+
 def rigcam(url, path, timeout=6):
     try:
         with urllib.request.urlopen(url.rstrip("/") + path, timeout=timeout) as r:
@@ -164,7 +214,8 @@ def calibrate(cl, label, url, source, target, dry_run=False):
     final = rigcam(url, "/api/state").get("manual", {})
     print(f"  {label}: iso {final.get('iso')} @ 1/{round(1e9 / max(1, shutter))}, "
           f"manual={final.get('exposure')}")
-    return {"label": label, "iso": final.get("iso"), "shutterNs": shutter}
+    return {"label": label, "iso": final.get("iso"), "shutterNs": shutter,
+            "luma": luma if luma is not None else 0.0}
 
 
 def main():
@@ -193,6 +244,10 @@ def main():
     results = [r for r in (
         calibrate(cl, label, url, src, args.target, args.dry_run)
         for label, (url, src) in cams.items()) if r]
+
+    if results and not args.dry_run:
+        where = save_calibration(results, args.target)
+        print(f"\nwrote {where.name} - rigsettings will re-apply these after a restart")
 
     if len(results) == 2:
         a, b = results

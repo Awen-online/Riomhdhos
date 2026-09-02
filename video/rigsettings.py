@@ -29,6 +29,7 @@ import time
 import subprocess
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 # Under pythonw there is no console to inherit, so a console child opens its own
 # window. CREATE_NO_WINDOW keeps them headless; it does not exist off Windows, hence getattr.
@@ -47,7 +48,12 @@ BASELINE = {
     # that the state field shows silently gets you the 500 kbps FLOOR, at 1080p, and the
     # picture just looks bad with every field reporting success.
     "bitrate": "16000000",
-    "iso": "800",
+    # ⚠️ NO `iso` HERE, DELIBERATELY. It used to be pinned at 800, which made every phone
+    # bright in a room that was not the one it was chosen in - measured 2026-09-02 at mean
+    # luma 175-183 against a 110 target. Resolution, fps, bitrate, shutter and white
+    # balance are properties of the RIG and must be identical on both phones; ISO is a
+    # property of the ROOM. It is measured by autoexpose.py and read back from
+    # exposure.json below, so a restart restores the calibration rather than a constant.
     "shutterNs": "16666666",
     "manualExposure": "true",
     "wbR": "1.8",
@@ -72,6 +78,33 @@ VERIFY = {
     "wbB": lambda s: str(s.get("manual", {}).get("wbB")),
     "manualWb": lambda s: str(s.get("manual", {}).get("wb")).lower(),
 }
+
+
+CALIBRATION = Path(__file__).resolve().parent / "exposure.json"
+
+
+def load_calibration():
+    """Per-phone ISO measured by autoexpose.py. Missing is a normal state, not an error."""
+    try:
+        with open(CALIBRATION, encoding="utf-8") as fh:
+            return (json.load(fh) or {}).get("phones") or {}
+    except Exception:
+        return {}
+
+
+def settings_for(label, cal=None):
+    """The baseline, plus this phone's calibrated ISO when there is one.
+
+    ⚠️ NO FALLBACK ISO. If a phone has never been calibrated its exposure is left exactly
+    as it is and the caller says so out loud. Substituting a plausible default is how 800
+    became the number that was wrong everywhere.
+    """
+    cal = load_calibration() if cal is None else cal
+    out = dict(BASELINE)
+    entry = cal.get(label) or {}
+    if entry.get("iso"):
+        out["iso"] = str(int(entry["iso"]))
+    return out
 
 
 def get_state(url, timeout=6):
@@ -116,13 +149,15 @@ def check(label, url):
         print(f"  {label:10s} NOT ANSWERING at {url}")
         return None
     bad = []
-    for k, want in BASELINE.items():
+    for k, want in settings_for(label).items():
         got = VERIFY[k](s)
         if not close_enough(want, got):
             bad.append(f"{k}={got} (want {want})")
     res = s.get("resolution")
     m = s.get("manual", {})
     mode = "manual" if (m.get("exposure") and m.get("wb")) else "AUTO exp/WB"
+    if not (load_calibration().get(label) or {}).get("iso"):
+        mode += f"  iso {m.get('iso')} NOT CALIBRATED - run autoexpose.py"
     print(f"  {label:10s} {res} @{s.get('fps')} {mode}"
           + ("" if not bad else "\n" + "".join(f"      drift: {b}\n" for b in bad)).rstrip())
     return bad
@@ -183,8 +218,10 @@ def main():
             continue
         if label in failed:
             continue
-        r = apply(url, BASELINE)
-        print(f"  {label:10s} applied {len(r.get('applied', []))} settings")
+        want = settings_for(label)
+        r = apply(url, want)
+        note = "" if "iso" in want else "  (no calibration - ISO left alone)"
+        print(f"  {label:10s} applied {len(r.get('applied', []))} settings{note}")
 
     # ⚠️ Read it back. RigCam drops a whole request if one value is out of range for the
     # sensor, and the two phones do NOT have the same ranges (Pixel 6 ISO 44-11377,

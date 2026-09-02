@@ -1,0 +1,25 @@
+{
+  "_readme": [
+    "Per-phone exposure, measured by autoexpose.py and re-applied by rigsettings.py.",
+    "",
+    "ISO is not in rigsettings' BASELINE because it is a property of the room, not of",
+    "the rig. Re-run 'python autoexpose.py --all' whenever the lighting changes.",
+    "A phone with no entry here keeps whatever ISO it already has - rigsettings will",
+    "say so rather than substituting a guess."
+  ],
+  "target": 110.0,
+  "phones": {
+    "Pixel 8": {
+      "iso": 269,
+      "shutterNs": 16666666,
+      "luma": 105.8,
+      "calibrated": "2026-09-02T12:06:58"
+    },
+    "Pixel 6": {
+      "iso": 147,
+      "shutterNs": 16666666,
+      "luma": 105.1,
+      "calibrated": "2026-09-02T12:06:58"
+    }
+  }
+}
