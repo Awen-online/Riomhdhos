@@ -18,8 +18,8 @@
       "Pixel 8": {
         "zoom": 1.5,
         "filters": {
-          "Focal blur": false,
-          "Erase background": true
+          "Focal blur": true,
+          "Erase background": false
         }
       }
     },
