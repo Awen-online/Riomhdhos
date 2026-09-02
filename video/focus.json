@@ -1,0 +1,18 @@
+{
+  "_readme": [
+    "Per-phone focus, measured by autofocus.py. Dioptres = 1/metres, 0 = infinity.",
+    "Re-run 'python autofocus.py --all' if a camera moves or the subject distance changes."
+  ],
+  "phones": {
+    "Pixel 8": {
+      "dioptres": 0.317,
+      "sharpness": 899.1,
+      "calibrated": "2026-09-02T13:31:54"
+    },
+    "Pixel 6": {
+      "dioptres": 3.175,
+      "sharpness": 995.5,
+      "calibrated": "2026-09-02T13:32:24"
+    }
+  }
+}

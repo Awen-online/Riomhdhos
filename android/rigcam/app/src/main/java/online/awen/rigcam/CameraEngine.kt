@@ -111,6 +111,16 @@ class CameraEngine(
     @Volatile private var wbR = 1.8f
     @Volatile private var wbG = 1.0f
     @Volatile private var wbB = 1.9f
+    // ⚠️ NOTHING SET CONTROL_AF_MODE UNTIL NOW, which meant CameraX's default - continuous
+    // autofocus - ran unopposed. On a camera pointed at a person who moves, continuous AF
+    // re-racks constantly: measured as visible focus cycling in recordings on 2026-09-02.
+    // Every other sensor control here was already manual-capable; focus was the gap.
+    //
+    // ⚠️ DIOPTRES, NOT METRES. LENS_FOCUS_DISTANCE is 1/metres: 0.0 is INFINITY and the
+    // maximum is the closest the lens can go. That inversion is worth stating loudly
+    // because "focus = 0" reading as "focused on nothing" is the obvious wrong guess.
+    @Volatile private var manualFocus = false
+    @Volatile private var focusDioptres = 0f
     @Volatile private var faceTrack = false
     @Volatile private var stabilize = false
     @Volatile private var facesSeen = 0
@@ -240,6 +250,21 @@ class CameraEngine(
                                       CaptureRequest.CONTROL_AWB_MODE_AUTO)
         }
 
+        if (manualFocus) {
+            // AF OFF is not optional. Exactly like the exposure path: with an auto mode
+            // still running, the lens key is accepted and then quietly overridden, and
+            // /api/set reports success while nothing changes.
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE,
+                                      CaptureRequest.CONTROL_AF_MODE_OFF)
+            b.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, focusDioptres)
+        } else {
+            // CONTINUOUS_VIDEO rather than CONTINUOUS_PICTURE: the video variant moves the
+            // lens smoothly and does not fire the sharp hunt-and-settle that the stills
+            // mode does. Still autofocus, but the less twitchy kind.
+            b.setCaptureRequestOption(CaptureRequest.CONTROL_AF_MODE,
+                                      CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+        }
+
         b.setCaptureRequestOption(CaptureRequest.STATISTICS_FACE_DETECT_MODE,
             if (faceTrack) CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE
             else CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF)
@@ -288,6 +313,14 @@ class CameraEngine(
     }
 
     /** What the sensor will actually accept - read from the device, never assumed. */
+    /** Closest focus the lens can reach, in dioptres. 0 means fixed-focus optics. */
+    private fun minFocusDistance(): Float = try {
+        Camera2CameraInfo.from(camera!!.cameraInfo)
+            .getCameraCharacteristic(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+    } catch (e: Exception) {
+        0f
+    }
+
     private fun isoRange(): android.util.Range<Int>? = try {
         Camera2CameraInfo.from(camera!!.cameraInfo)
             .getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
@@ -388,6 +421,8 @@ class CameraEngine(
                    "isoMin":${isoRange()?.lower ?: 0},"isoMax":${isoRange()?.upper ?: 0},
                    "shutterMinNs":${shutterRange()?.lower ?: 0},
                    "shutterMaxNs":${shutterRange()?.upper ?: 0}},
+         "focus":{"manual":$manualFocus,"dioptres":$focusDioptres,
+                  "maxDioptres":${minFocusDistance()}},
          "faceTrack":$faceTrack,"faces":$facesSeen,"stabilize":$stabilize,
          "aeLock":$aeLock,"awbLock":$awbLock,
          "torch":${c?.cameraInfo?.torchState?.value == 1}}
@@ -444,6 +479,19 @@ class CameraEngine(
         params["wbB"]?.toFloatOrNull()?.let { wbB = it; manualWb = true; done += "wbB=$it" }
         params["manualWb"]?.toBooleanStrictOrNull()?.let { manualWb = it; done += "manualWb=$it" }
         params["faceTrack"]?.toBooleanStrictOrNull()?.let { faceTrack = it; done += "faceTrack=$it" }
+        params["manualFocus"]?.toBooleanStrictOrNull()?.let {
+            manualFocus = it; done += "manualFocus=$it"
+        }
+        params["focusDioptres"]?.toFloatOrNull()?.let {
+            // Clamp to what the LENS reports, never to a guess - the two phones differ, and
+            // an out-of-range key is dropped silently along with the whole request.
+            val maxD = minFocusDistance()
+            focusDioptres = it.coerceIn(0f, if (maxD > 0f) maxD else 10f)
+            // Setting a distance means you want that distance, exactly as setting an ISO
+            // implies manual exposure. Anything else accepts the value and ignores it.
+            manualFocus = true
+            done += "focusDioptres=$focusDioptres"
+        }
         params["stabilize"]?.toBooleanStrictOrNull()?.let { stabilize = it; done += "stabilize=$it" }
         params["aeLock"]?.toBooleanStrictOrNull()?.let { aeLock = it; done += "aeLock=$it" }
         params["awbLock"]?.toBooleanStrictOrNull()?.let { awbLock = it; done += "awbLock=$it" }
