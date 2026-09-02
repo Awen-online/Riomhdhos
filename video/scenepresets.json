@@ -12,25 +12,31 @@
     "",
     "Edit by hand, or set a look up in OBS and press Capture on the Cams tab."
   ],
-
   "enabled": true,
-
   "scenes": {
     "BROWSER": {
       "Pixel 8": {
         "zoom": 1.5,
-        "filters": { "Focal blur": true, "Erase background": false }
+        "filters": {
+          "Focal blur": false,
+          "Erase background": true
+        }
       }
     },
-
     "BOTH CAMS": {
       "Pixel 8": {
         "zoom": 1.0,
-        "filters": { "Focal blur": true, "Erase background": false }
+        "filters": {
+          "Focal blur": true,
+          "Erase background": false
+        }
       },
       "Pixel 6": {
         "zoom": 1.0,
-        "filters": { "Focal blur": true, "Erase background": false }
+        "filters": {
+          "Focal blur": true,
+          "Erase background": false
+        }
       }
     }
   }
