@@ -16,7 +16,7 @@ manual value. The camera adapts to the room; it does not keep adapting during th
 been "give both phones the same ISO so they match by construction", which is right when
 they face the same light and wrong when they do not - identical settings on two cameras
 pointed at different parts of a room give two different pictures. Both phones are driven
-to the same TARGET LUMA instead, and the ISOs they land on are reported so a large
+to the same TARGET LUMA (centre-weighted median) instead, and the ISOs they land on are reported so a large
 divergence is visible rather than hidden.
 
 Shutter is never touched: 1/60 is the slowest that still stops motion on a hand, and
@@ -128,8 +128,24 @@ def rigcam(url, path, timeout=6):
         return {"offline": True, "error": f"{type(e).__name__}: {e}"}
 
 
-def mean_luma(cl, source):
-    """Mean luma of one frame of an OBS source, 0-255, or None."""
+# ⚠️ CENTRE-WEIGHTED MEDIAN, NOT THE MEAN OF THE FRAME.
+#
+# The first version metered on the plain mean and produced a Pixel 8 that looked too dark.
+# Measured: mean 88.7 but median 81, p95 249, and 4.8% of the frame CLIPPED PURE WHITE - a
+# window in shot. A handful of blown pixels drag the mean up, so driving the mean to target
+# forces everything else down, and the subject goes dark to pay for a highlight that is
+# already unrecoverable. The median ignores that region entirely: it is the value half the
+# picture is above, which no small bright patch can move.
+#
+# Centre weighting for the same reason in the other direction: on the Pixel 6 the centre
+# measured 84.8 against a 69.5 surround, so full-frame metering under-exposes the subject
+# to satisfy the dark edges of the room. Real cameras have metered this way for decades.
+CENTRE_WEIGHT = 3        # the middle 50% x 50% counts this many times
+CLIP_WARN_PCT = 3.0      # blown highlights worth mentioning
+
+
+def meter(cl, source):
+    """Centre-weighted median luma of one frame, plus clipping stats. 0-255, or None."""
     try:
         r = cl.get_source_screenshot(source, "jpg", 480, 270, 70)
     except Exception as e:
@@ -143,7 +159,15 @@ def mean_luma(cl, source):
     except Exception as e:
         print(f"    could not decode frame: {e}")
         return None
-    return float(np.asarray(img, dtype=np.float32).mean())
+    a = np.asarray(img, dtype=np.float32)
+    h, w = a.shape
+    centre = a[h // 4:3 * h // 4, w // 4:3 * w // 4].ravel()
+    pool = np.concatenate([a.ravel()] + [centre] * (CENTRE_WEIGHT - 1))
+    return {
+        "luma": float(np.median(pool)),
+        "clipped": float((a > 250).mean() * 100.0),
+        "mean": float(a.mean()),
+    }
 
 
 def calibrate(cl, label, url, source, target, dry_run=False):
@@ -181,11 +205,14 @@ def calibrate(cl, label, url, source, target, dry_run=False):
                 {"manualExposure": "true", "iso": iso, "shutterNs": shutter}))
             time.sleep(SETTLE_S)
 
+        m = None
         for step in range(1, MAX_STEPS + 1):
-            luma = mean_luma(cl, source)
-            if luma is None:
+            m = meter(cl, source)
+            if m is None:
                 return None
-            print(f"    step {step}: iso {iso:<5} luma {luma:6.1f}", end="")
+            luma = m["luma"]
+            print(f"    step {step}: iso {iso:<5} luma {luma:6.1f}"
+                  f" (mean {m['mean']:5.1f}, clipped {m['clipped']:4.1f}%)", end="")
             if abs(luma - target) <= TOLERANCE:
                 print("  <- in range")
                 break
@@ -214,8 +241,12 @@ def calibrate(cl, label, url, source, target, dry_run=False):
     final = rigcam(url, "/api/state").get("manual", {})
     print(f"  {label}: iso {final.get('iso')} @ 1/{round(1e9 / max(1, shutter))}, "
           f"manual={final.get('exposure')}")
+    if m and m["clipped"] > CLIP_WARN_PCT:
+        print(f"    ⚠️ {m['clipped']:.1f}% of the frame is blown out. Something very bright "
+              f"is in shot; the subject is exposed correctly and that highlight is gone. "
+              f"Reframe or light it differently if the highlight matters.")
     return {"label": label, "iso": final.get("iso"), "shutterNs": shutter,
-            "luma": luma if luma is not None else 0.0}
+            "luma": (m or {}).get("luma", 0.0)}
 
 
 def main():
