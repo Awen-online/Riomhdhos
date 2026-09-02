@@ -634,18 +634,35 @@ function camBtn(box, label, icon, on, handler){
 function renderPower(){
   const box = $('pwrbtns'); if (!box) return;
   box.innerHTML = '';
-  const p = (CAM && CAM.power && CAM.power.out) || '';
   // The state comes from the phones themselves, not from what we last asked for - a mode
   // that reports its own intention rather than reality is how you end up on stage with a
   // camera you believed was awake.
-  const asleep = /screen=asleep/.test(p);
-  const stayOff = /stay_on=0/.test(p);
-  const rig = /rigcam=running/.test(p);
-  $('v_pwr').textContent = (asleep || stayOff) && !rig ? 'sleeping'
-                         : (rig ? 'normal' : 'mixed');
-  camBtn(box, 'Sleep', CAM_ICON.lock, (asleep || stayOff) && !rig,
-         () => powerPost('sleep'));
-  camBtn(box, 'Normal', CAM_ICON.one, rig, () => powerPost('normal'));
+  //
+  // ⚠️ READ FIELDS, NEVER PROSE. This used to regex power.py's human-readable table for
+  // /rigcam=running/. Renaming that column to `camera=` (to make room for mic reporting)
+  // left the pattern matching nothing, so the badge read "sleeping" and the Sleep button
+  // showed as active while BOTH cameras were streaming. The `rows` array is the contract
+  // now; the regex survives only as a fallback for an older power.py.
+  const rows = (CAM && CAM.power && CAM.power.rows) || null;
+  let live, dead;
+  if (rows && rows.length){
+    // A camera is LIVE when it is running or awake. 'dormant' means the app is up but the
+    // camera is released - that is asleep for this purpose, and it is the state the mic-
+    // only mode leaves a phone in.
+    const isLive = r => r.camera === 'running' || r.camera === 'awake';
+    const isDead = r => ['stopped', 'dormant', 'off'].includes(r.camera);
+    live = rows.filter(isLive).length;
+    dead = rows.filter(isDead).length;
+  } else {
+    const p = (CAM && CAM.power && CAM.power.out) || '';
+    live = /camera=(running|awake)|rigcam=running/.test(p) ? 1 : 0;
+    dead = /camera=(stopped|dormant)|screen=asleep|stay_on=0/.test(p) ? 1 : 0;
+  }
+  const allLive = live > 0 && dead === 0;
+  const allDead = dead > 0 && live === 0;
+  $('v_pwr').textContent = allLive ? 'normal' : allDead ? 'sleeping' : 'mixed';
+  camBtn(box, 'Sleep', CAM_ICON.lock, allDead, () => powerPost('sleep'));
+  camBtn(box, 'Normal', CAM_ICON.one, allLive, () => powerPost('normal'));
 }
 
 async function powerPost(mode){

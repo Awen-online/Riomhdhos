@@ -312,6 +312,9 @@ def main():
     ap.add_argument("mode", choices=["sleep", "show", "status"])
     ap.add_argument("--wired-serial", default=None,
                     help="the USB phone; it keeps its webcam, the other runs RigCam")
+    ap.add_argument("--json", action="store_true",
+                    help="machine-readable status. USE THIS from other programs: the "
+                         "human table is for humans and its columns are free to change.")
     ap.add_argument("--phone", action="append", default=[], metavar="LABEL=URL",
                     help="a RigCam phone to sleep/wake over HTTP, repeatable. "
                          "Same LABEL=URL the dashboard takes. Required for any phone that "
@@ -326,7 +329,15 @@ def main():
         phones[label.strip()] = url.strip().rstrip("/")
 
     if args.mode == "status":
-        for r in status(phones):
+        rows = status(phones)
+        if args.json:
+            # ⚠️ THIS EXISTS BECAUSE THE DASHBOARD USED TO REGEX THE TABLE BELOW. Renaming
+            # one column ("rigcam=" -> "camera=") to add mic reporting silently broke
+            # Riastrad's power badge: it reported "sleeping" while both cameras were
+            # streaming. A UI state must not depend on scraping prose.
+            print(json.dumps(rows))
+            return
+        for r in rows:
             screen = "-" if r["screenAwake"] is None else                      ("awake" if r["screenAwake"] else "asleep")
             print(f"  {r['model']:<9} stay_on={r['stayOn']:<4} "
                   f"screen={screen:<6} camera={r['camera']:<9} mic={r.get('mic', '-')}")

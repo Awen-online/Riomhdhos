@@ -240,6 +240,9 @@ def power_call(mode, timeout=120):
     if not POWER.exists():
         return {"ok": False, "out": "power.py not found"}
     cmd = [sys.executable, str(POWER), mode]
+    # Ask for structured output on status so the browser reads FIELDS, never prose.
+    if mode == "status":
+        cmd += ["--json"]
     if UVC_SERIAL:
         cmd += ["--wired-serial", UVC_SERIAL]
     # ⚠️ PASS THE PHONES. power.py sleeps an adb phone by force-stopping RigCam and a
@@ -250,8 +253,16 @@ def power_call(mode, timeout=120):
         cmd += ["--phone", f"{label}={url}"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW)
-        return {"ok": r.returncode == 0,
-                "out": (r.stdout or r.stderr or "").strip()[-800:]}
+        out = (r.stdout or r.stderr or "").strip()
+        result = {"ok": r.returncode == 0, "out": out[-800:]}
+        if mode == "status" and r.returncode == 0:
+            try:
+                result["rows"] = json.loads(out)
+            except Exception as e:
+                # Report the failure rather than silently falling back to no rows - the
+                # last time this data path degraded quietly the UI confidently lied.
+                result["rowsError"] = f"{type(e).__name__}: {e}"
+        return result
     except subprocess.TimeoutExpired:
         return {"ok": False, "out": "timed out - is a phone locked or unplugged?"}
     except Exception as e:
