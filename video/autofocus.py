@@ -54,8 +54,48 @@ def rigcam(url, path, timeout=8):
         return {"offline": True, "error": f"{type(e).__name__}: {e}"}
 
 
-def sharpness(cl, source):
-    """Variance of the Laplacian over one frame. Higher is sharper."""
+def subject_mask(cl, source, shape):
+    """Where the PERSON is, from the background-removal matte. None if unavailable.
+
+    ⚠️ THIS IS THE WHOLE POINT OF THE SECOND VERSION. The first measured variance of the
+    Laplacian over the ENTIRE frame, which optimises for wherever the most detail is - and
+    in this room that is the desk, mic stand, launchpad and keyboard behind the subject.
+    The Pixel 8 duly locked at 3.15 m, focused past the person onto the wall, and Ian's
+    face was soft. Sharpest frame is not the same thing as sharpest subject.
+
+    The erase filter already knows where the person is, so borrow its matte as the region
+    of interest and ignore everything outside it.
+    """
+    name = next((f["filterName"] for f in cl.get_source_filter_list(source).filters
+                 if f["filterKind"] == "background_removal"
+                 and "erase" in f["filterName"].lower()), None)
+    if not name:
+        return None
+    was = next(f["filterEnabled"] for f in cl.get_source_filter_list(source).filters
+               if f["filterName"] == name)
+    try:
+        cl.set_source_filter_enabled(source, name, True)
+        time.sleep(1.4)
+        r = cl.get_source_screenshot(source, "png", shape[1], shape[0], -1)
+        im = Image.open(_io.BytesIO(base64.b64decode(
+            (getattr(r, "image_data", "") or "").split(",", 1)[-1]))).convert("RGBA")
+        alpha = np.asarray(im)[:, :, 3]
+        m = alpha > 128
+        # A mask covering almost nothing or almost everything tells us nothing useful.
+        if m.mean() < 0.03 or m.mean() > 0.9:
+            return None
+        return m
+    except Exception:
+        return None
+    finally:
+        try:
+            cl.set_source_filter_enabled(source, name, was)
+        except Exception:
+            pass
+
+
+def sharpness(cl, source, roi=None):
+    """Variance of the Laplacian, over `roi` if given and the whole frame otherwise."""
     try:
         r = cl.get_source_screenshot(source, "jpg", 640, 360, 92)
     except Exception:
@@ -64,7 +104,14 @@ def sharpness(cl, source):
     a = np.asarray(Image.open(_io.BytesIO(base64.b64decode(
         data.split(",", 1)[-1]))).convert("L"), dtype=np.float32)
     w = sliding_window_view(a, (3, 3))
-    return float(np.einsum("ijkl,kl->ij", w, LAP).var())
+    lap = np.einsum("ijkl,kl->ij", w, LAP)
+    if roi is None:
+        return float(lap.var())
+    # sliding_window_view trims one pixel each side; align the mask to it.
+    r2 = roi[1:-1, 1:-1]
+    if r2.shape != lap.shape or r2.sum() < 50:
+        return float(lap.var())
+    return float(lap[r2].var())
 
 
 def set_focus(url, d):
@@ -93,6 +140,9 @@ def calibrate(cl, label, url, source, dry_run=False):
     # measures the filters. Everything off, restored in the finally block.
     disabled = []
     original = focus.get("dioptres", 0.0)
+    # Before anything is disabled: the matte needs the erase filter ON to exist.
+    roi = subject_mask(cl, source, (360, 640))
+    print(f"  {label}: metering on {'the subject matte' if roi is not None else 'the WHOLE FRAME (no usable matte - it may focus past you)'}")
     try:
         for f in cl.get_source_filter_list(source).filters:
             if f["filterEnabled"]:
@@ -112,7 +162,7 @@ def calibrate(cl, label, url, source, dry_run=False):
         best_d, best_s = None, -1.0
         for d in coarse:
             set_focus(url, d)
-            sc = sharpness(cl, source)
+            sc = sharpness(cl, source, roi)
             if sc is None:
                 continue
             print(f"    {d:5.2f} dioptre ({'inf' if d < 0.01 else f'{1/d:5.2f} m':>7})  "
@@ -126,7 +176,7 @@ def calibrate(cl, label, url, source, dry_run=False):
         fine = [best_d + k * step / 3.0 for k in (-2, -1, 1, 2)]
         for d in [x for x in fine if 0 <= x <= max_d]:
             set_focus(url, d)
-            sc = sharpness(cl, source)
+            sc = sharpness(cl, source, roi)
             if sc is not None and sc > best_s:
                 best_d, best_s = d, sc
 

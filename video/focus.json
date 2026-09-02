@@ -5,14 +5,14 @@
   ],
   "phones": {
     "Pixel 8": {
-      "dioptres": 0.317,
-      "sharpness": 899.1,
-      "calibrated": "2026-09-02T13:31:54"
+      "dioptres": 0.952,
+      "sharpness": 1154.3,
+      "calibrated": "2026-09-02T13:34:29"
     },
     "Pixel 6": {
       "dioptres": 3.175,
-      "sharpness": 995.5,
-      "calibrated": "2026-09-02T13:32:24"
+      "sharpness": 1002.0,
+      "calibrated": "2026-09-02T13:35:05"
     }
   }
 }
