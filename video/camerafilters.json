@@ -1,0 +1,128 @@
+{
+  "Pixel 8": [
+    {
+      "name": "Low light",
+      "kind": "enhanceportrait",
+      "index": 0,
+      "settings": {
+        "blend": 0.67,
+        "model_select": "models/semantic_guided_llie_180x324.onnx",
+        "useGPU": "dml"
+      }
+    },
+    {
+      "name": "Focal blur",
+      "kind": "background_removal",
+      "index": 1,
+      "settings": {
+        "blur_background": 6,
+        "blur_focus_depth": 0.58,
+        "blur_focus_point": 0.21,
+        "enable_focal_blur": true,
+        "enable_image_similarity": true,
+        "enable_threshold": false,
+        "mask_every_x_frames": 1,
+        "model_select": "models/tcmonodepth_tcsmallnet_192x320.onnx",
+        "temporal_smooth_factor": 0.9,
+        "useGPU": "dml"
+      }
+    },
+    {
+      "name": "Colour correct",
+      "kind": "color_filter_v2",
+      "index": 2,
+      "settings": {
+        "brightness": 0.06,
+        "contrast": 0.1,
+        "gamma": -0.25,
+        "saturation": 0.1
+      }
+    },
+    {
+      "name": "Erase background",
+      "kind": "background_removal",
+      "index": 3,
+      "settings": {
+        "advanced": true,
+        "blur_background": 0,
+        "blur_focus_depth": 0.0,
+        "blur_focus_point": 0.0,
+        "contour_filter": 0.0,
+        "enable_focal_blur": false,
+        "enable_image_similarity": false,
+        "enable_threshold": true,
+        "feather": 0.3,
+        "image_similarity_threshold": 35.0,
+        "mask_every_x_frames": 1,
+        "model_select": "models/mediapipe.onnx",
+        "numThreads": 1,
+        "smooth_contour": 0.3,
+        "temporal_smooth_factor": 0.65,
+        "threshold": 0.5,
+        "useGPU": "dml"
+      }
+    }
+  ],
+  "Pixel 6 (vcam)": [
+    {
+      "name": "Low light",
+      "kind": "enhanceportrait",
+      "index": 0,
+      "settings": {
+        "blend": 0.87,
+        "model_select": "models/semantic_guided_llie_180x324.onnx",
+        "useGPU": "dml"
+      }
+    },
+    {
+      "name": "Focal blur",
+      "kind": "background_removal",
+      "index": 1,
+      "settings": {
+        "blur_background": 9,
+        "blur_focus_depth": 0.45,
+        "blur_focus_point": 0.92,
+        "enable_focal_blur": true,
+        "enable_threshold": false,
+        "model_select": "models/tcmonodepth_tcsmallnet_192x320.onnx",
+        "temporal_smooth_factor": 0.9,
+        "useGPU": "dml"
+      }
+    },
+    {
+      "name": "Colour correct",
+      "kind": "color_filter_v2",
+      "index": 2,
+      "settings": {
+        "brightness": 0.06,
+        "contrast": 0.12,
+        "gamma": -0.3,
+        "saturation": 0.0
+      }
+    },
+    {
+      "name": "Erase background",
+      "kind": "background_removal",
+      "index": 3,
+      "settings": {
+        "advanced": true,
+        "blur_background": 0,
+        "blur_focus_depth": 0.0,
+        "blur_focus_point": 0.0,
+        "contour_filter": 0.0,
+        "enable_focal_blur": false,
+        "enable_image_similarity": false,
+        "enable_threshold": true,
+        "feather": 0.3,
+        "image_similarity_threshold": 35.0,
+        "mask_every_x_frames": 1,
+        "model_select": "models/mediapipe.onnx",
+        "numThreads": 1,
+        "smooth_contour": 0.3,
+        "temporal_smooth_factor": 0.65,
+        "threshold": 0.5,
+        "useGPU": "dml"
+      }
+    }
+  ]
+}
