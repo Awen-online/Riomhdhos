@@ -1031,9 +1031,32 @@ function renderPresets(){
          () => spPost({action:'capture'}));
 
   const box = $('splist'); box.innerHTML = '';
-  const scenes = SP.obsScenes && SP.obsScenes.length
-        ? SP.obsScenes : Object.keys((SP.presets||{}).scenes || {});
+  const known = Object.keys((SP.presets||{}).scenes || {});
+  const scenes = SP.obsScenes && SP.obsScenes.length ? SP.obsScenes : known;
   if (!scenes.length){ box.innerHTML = '<span class="sub">OBS is not running</span>'; return; }
+
+  // ⚠️ A PRESET WHOSE SCENE NO LONGER EXISTS MUST BE VISIBLE. Presets are keyed by scene
+  // NAME, so renaming a scene in OBS orphans its preset - and because this list is built
+  // from the scenes OBS reports, an orphan would simply not appear. It would stop firing
+  // with nothing anywhere saying so. Show them first, and offer the only useful action.
+  const orphans = SP.obsScenes && SP.obsScenes.length
+        ? known.filter(n => !SP.obsScenes.includes(n)) : [];
+  for (const name of orphans){
+    const row = document.createElement('div');
+    row.className = 'sprow';
+    row.innerHTML =
+      '<div class="hdr"><span class="nm">' + esc(name) + '</span>'
+      + '<span class="sub" style="color:var(--bad)">no such scene</span></div>'
+      + '<div class="sub">' + presetSummary(((SP.presets||{}).scenes||{})[name])
+      + '<br>This preset can never fire. A scene was renamed or deleted &mdash; re-Capture '
+      + 'it under the new name, then Clear this one.</div>';
+    const btns = document.createElement('div');
+    btns.className = 'g3';
+    camBtn(btns, 'Clear', CAM_ICON.flip, false,
+           () => spPost({action:'save', scene:name, entry:null}));
+    row.append(btns);
+    box.append(row);
+  }
 
   for (const name of scenes){
     const entry = ((SP.presets||{}).scenes || {})[name];
