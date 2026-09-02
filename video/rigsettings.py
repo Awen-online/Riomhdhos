@@ -48,12 +48,33 @@ BASELINE = {
     # that the state field shows silently gets you the 500 kbps FLOOR, at 1080p, and the
     # picture just looks bad with every field reporting success.
     "bitrate": "16000000",
-    # ⚠️ NO `iso` HERE, DELIBERATELY. It used to be pinned at 800, which made every phone
-    # bright in a room that was not the one it was chosen in - measured 2026-09-02 at mean
-    # luma 175-183 against a 110 target. Resolution, fps, bitrate, shutter and white
-    # balance are properties of the RIG and must be identical on both phones; ISO is a
-    # property of the ROOM. It is measured by autoexpose.py and read back from
-    # exposure.json below, so a restart restores the calibration rather than a constant.
+    # ⚠️ AUTO EXPOSURE AND AUTO WHITE BALANCE ARE THE DEFAULT NOW (changed 2026-09-02, at
+    # Ian's direction). This reverses the rig's original stance, so the reasoning on both
+    # sides is worth keeping.
+    #
+    # The original argument for manual: two cameras deciding their own exposure DRIFT
+    # APART over a set, so a cut between them jumps in brightness - measured p50 152
+    # against 98. That is real and it still happens.
+    #
+    # What changed the balance: a fixed exposure is only correct for the room it was
+    # measured in, and this rig moves. A pinned ISO 800 was found over-exposing by a stop
+    # and a half, and even a freshly measured value expired within the hour when the light
+    # changed - measured the same day, the same ISO going from mean luma 105.8 to 83.7.
+    # An exposure that is right and drifts beats one that is wrong and stable.
+    #
+    # ⚠️ SO NOTHING SENSOR-RELATED IS PUSHED HERE. In auto mode RigCam IGNORES iso,
+    # shutterNs and the wb gains outright - CONTROL_AE_MODE must be OFF for the sensor keys
+    # to apply at all - so sending them would be a request that reports success and does
+    # nothing. Use --manual to push the calibrated values instead.
+    "manualExposure": "false",
+    "manualWb": "false",
+}
+
+# Everything auto mode ignores. Applied only with --manual, alongside the per-phone ISO
+# from exposure.json. Kept together because they are one decision: manual exposure without
+# manual white balance still lets the two cameras drift apart on colour.
+MANUAL_EXTRA = {
+    # 16666666 ns = 1/60 s, the slowest shutter that still stops motion on a hand.
     "shutterNs": "16666666",
     "manualExposure": "true",
     "wbR": "1.8",
@@ -92,15 +113,21 @@ def load_calibration():
         return {}
 
 
-def settings_for(label, cal=None):
-    """The baseline, plus this phone's calibrated ISO when there is one.
+def settings_for(label, manual=False, cal=None):
+    """What to push to this phone.
 
-    ⚠️ NO FALLBACK ISO. If a phone has never been calibrated its exposure is left exactly
-    as it is and the caller says so out loud. Substituting a plausible default is how 800
-    became the number that was wrong everywhere.
+    Auto by default - see BASELINE. With `manual`, the sensor is pinned instead: the shared
+    shutter and white balance, plus this phone's own calibrated ISO.
+
+    ⚠️ NO FALLBACK ISO. A phone that has never been calibrated keeps whatever exposure it
+    has and the caller says so out loud. Substituting a plausible default is how 800 became
+    the number that was wrong everywhere.
     """
-    cal = load_calibration() if cal is None else cal
     out = dict(BASELINE)
+    if not manual:
+        return out
+    out.update(MANUAL_EXTRA)
+    cal = load_calibration() if cal is None else cal
     entry = cal.get(label) or {}
     if entry.get("iso"):
         out["iso"] = str(int(entry["iso"]))
@@ -143,20 +170,20 @@ def close_enough(want, got):
         return str(want).lower() == str(got).lower()
 
 
-def check(label, url):
+def check(label, url, manual=False):
     s = get_state(url)
     if s is None:
         print(f"  {label:10s} NOT ANSWERING at {url}")
         return None
     bad = []
-    for k, want in settings_for(label).items():
+    for k, want in settings_for(label, manual).items():
         got = VERIFY[k](s)
         if not close_enough(want, got):
             bad.append(f"{k}={got} (want {want})")
     res = s.get("resolution")
     m = s.get("manual", {})
-    mode = "manual" if (m.get("exposure") and m.get("wb")) else "AUTO exp/WB"
-    if not (load_calibration().get(label) or {}).get("iso"):
+    mode = "manual" if (m.get("exposure") and m.get("wb")) else "auto exp/WB"
+    if manual and not (load_calibration().get(label) or {}).get("iso"):
         mode += f"  iso {m.get('iso')} NOT CALIBRATED - run autoexpose.py"
     print(f"  {label:10s} {res} @{s.get('fps')} {mode}"
           + ("" if not bad else "\n" + "".join(f"      drift: {b}\n" for b in bad)).rstrip())
@@ -172,6 +199,9 @@ def main():
                     metavar="LABEL=SERIAL", help="adb serial per phone, for --start-rigcam")
     ap.add_argument("--apply", action="store_true", help="push the baseline (default is --check)")
     ap.add_argument("--check", action="store_true", help="report only")
+    ap.add_argument("--manual", action="store_true",
+                    help="pin the sensor instead of leaving it on auto: shared shutter and "
+                         "white balance, plus each phone's calibrated ISO from exposure.json")
     ap.add_argument("--start-rigcam", action="store_true",
                     help="if a phone is not answering, start the app over adb first")
     ap.add_argument("--wait", type=int, default=0,
@@ -195,7 +225,7 @@ def main():
 
     if args.check and not args.apply:
         print("current:")
-        drift = [check(l, u) for l, u in phones]
+        drift = [check(l, u, args.manual) for l, u in phones]
         return 0 if all(d == [] for d in drift) else 1
 
     deadline = time.time() + args.wait
@@ -218,9 +248,14 @@ def main():
             continue
         if label in failed:
             continue
-        want = settings_for(label)
+        want = settings_for(label, args.manual)
         r = apply(url, want)
-        note = "" if "iso" in want else "  (no calibration - ISO left alone)"
+        if not args.manual:
+            note = "  (auto exposure and WB)"
+        elif "iso" in want:
+            note = f"  (manual, iso {want['iso']})"
+        else:
+            note = "  (manual, but NOT CALIBRATED - ISO left alone)"
         print(f"  {label:10s} applied {len(r.get('applied', []))} settings{note}")
 
     # ⚠️ Read it back. RigCam drops a whole request if one value is out of range for the
@@ -228,7 +263,7 @@ def main():
     # Pixel 8 21-10666), so "it worked on one" proves nothing about the other.
     time.sleep(4)
     print("verified:")
-    drift = [check(l, u) for l, u in phones]
+    drift = [check(l, u, args.manual) for l, u in phones]
     ok = all(d == [] for d in drift) and not failed
     print("matched and on baseline" if ok else "NOT on baseline - see the drift above")
     return 0 if ok else 1

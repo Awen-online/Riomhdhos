@@ -67,6 +67,10 @@
   .k{color:var(--dim);font-size:13px}
   .v{font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;font-size:13px}
   input[type=range]{width:100%;height:36px;accent-color:var(--accent);margin:0}
+  /* A control the camera is driving. Dimmed and inert rather than hidden: knowing
+     the ISO the camera chose is useful even when you cannot set it. */
+  input[type=range]:disabled{opacity:.3;cursor:not-allowed}
+  .row.auto .k,.row.auto .v{opacity:.45}
   button{padding:12px;font-size:14px;border-radius:10px;border:1px solid var(--line);
          background:#1b2129;color:var(--fg);font-weight:600}
   button:active{transform:scale(.98)}
@@ -779,11 +783,11 @@ function rigCard(label, r, idx){
     + '<div class="g3" id="' + q('locks') + '"></div>'
     + '<div class="row"><span class="k">Sensor</span><span class="v" id="' + q('sensor') + '">-</span></div>'
     + '<div class="g2" id="' + q('manual') + '"></div>'
-    + '<div class="row"><span class="k">ISO</span><span class="v" id="' + q('viso') + '">-</span></div>'
+    + '<div class="row" id="' + q('riso') + '"><span class="k">ISO</span><span class="v" id="' + q('viso') + '">-</span></div>'
     + '<input type="range" id="' + q('iso') + '" min="44" max="3200" step="1" value="400">'
-    + '<div class="row"><span class="k">Shutter</span><span class="v" id="' + q('vshut') + '">-</span></div>'
+    + '<div class="row" id="' + q('rshut') + '"><span class="k">Shutter</span><span class="v" id="' + q('vshut') + '">-</span></div>'
     + '<input type="range" id="' + q('shut') + '" min="30" max="500" step="5" value="60">'
-    + '<div class="row"><span class="k">Warmth</span><span class="v" id="' + q('vwb') + '">-</span></div>'
+    + '<div class="row" id="' + q('rwb') + '"><span class="k">Warmth</span><span class="v" id="' + q('vwb') + '">-</span></div>'
     + '<input type="range" id="' + q('wb') + '" min="-100" max="100" step="1" value="0">'
     + '<div class="g2" id="' + q('smart') + '"></div>'
     + '<div class="row"><span class="k">Lens</span><span class="v" id="' + q('vface') + '">-</span></div>'
@@ -854,6 +858,19 @@ function renderCamera(){
     const nb = $(q('manual'));
     camBtn(nb, 'manual exp', CAM_ICON.one, !!m.exposure, () => send({manualExposure: !m.exposure}));
     camBtn(nb, 'manual WB',  CAM_ICON.one, !!m.wb,       () => send({manualWb: !m.wb}));
+
+    // ⚠️ AUTO IS THE DEFAULT NOW, so these controls are usually inert - and inert has to
+    // LOOK inert. In auto mode RigCam ignores iso, shutterNs and the wb gains outright
+    // (CONTROL_AE_MODE must be off for the sensor keys to apply at all), so a live-looking
+    // slider that silently does nothing is worse than no slider: it invites you to blame
+    // the camera. Disabled, dimmed, and the readout says which value the camera picked.
+    const gate = (rowId, inputId, valId, live, autoText) => {
+      const row = $(rowId), inp = $(inputId), val = $(valId);
+      if (!row || !inp) return;
+      inp.disabled = !live;
+      row.classList.toggle('auto', !live);
+      if (!live && val) val.textContent = autoText;
+    };
     if (!off && m.isoMax){
       // WARNING: BOUNDS COME FROM THE SENSOR, AND THE TWO PHONES DIFFER - Pixel 6 reports
       // 44-11377, Pixel 8 21-10666. Out of range is not refused loudly: the camera ignores
@@ -867,6 +884,15 @@ function renderCamera(){
       $(q('wb')).value = Math.round((m.wbR - 1.8) * 125);
       $(q('vwb')).textContent = wbLabel(+$(q('wb')).value);
     }
+    // After the values are written, so the auto labels win over them.
+    // ⚠️ JUST 'auto' - do NOT print m.iso here. In auto mode those fields hold the
+    // last value someone REQUESTED, not what the camera chose: the app stores its own
+    // request and CONTROL_AE_MODE never writes back. Confirmed on the Pixel 6, which sat
+    // on auto reporting a stale iso 400 for hours. A stale number displayed as a live one
+    // is worse than no number, because it looks like an answer.
+    gate(q('riso'),  q('iso'),  q('viso'),  !off && !!m.exposure, 'auto');
+    gate(q('rshut'), q('shut'), q('vshut'), !off && !!m.exposure, 'auto');
+    gate(q('rwb'),   q('wb'),   q('vwb'),   !off && !!m.wb, 'auto');
     const sb = $(q('smart'));
     camBtn(sb, 'face focus', CAM_ICON.one, !!r.faceTrack, () => send({faceTrack: !r.faceTrack}));
     camBtn(sb, 'stabilise',  CAM_ICON.one, !!r.stabilize, () => send({stabilize: !r.stabilize}));
