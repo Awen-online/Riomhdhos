@@ -38,6 +38,13 @@
           "Erase background": false
         }
       }
+    },
+    "ROOM (Pixel 8)": {
+      "Pixel 8": {
+        "filters": {
+          "Erase background": false
+        }
+      }
     }
   }
 }
