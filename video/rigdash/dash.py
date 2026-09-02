@@ -489,7 +489,43 @@ STATE.update({"rms": 0.0, "centroid": 0.0, "peak": 0.0, "mood": "COSMOS",
               "echo": 0.0, "echoTime": 1.0})
 _subs, _lock = [], threading.Lock()
 _cl = None
-_clock = threading.Lock()
+# ⚠️ RE-ENTRANT, AND IT GUARDS EVERY REQUEST - NOT JUST RECONNECTION.
+#
+# obsws-python's ReqClient is NOT thread-safe: it writes a request to the websocket and
+# then reads the NEXT response off it. Two threads in flight at once therefore hand each
+# other's replies back. This server is a ThreadingHTTPServer, so it always had some
+# exposure, but the 1 Hz scene-preset watcher made it constant - a second caller issuing
+# a request every single second.
+#
+# The symptom was beautifully specific: after adding that watcher, scene presets applied
+# ZOOM but not FILTERS. Zoom is HTTP straight to the phone and never touches this socket;
+# filters go through OBS, and their replies were being consumed by the watcher's
+# GetCurrentProgramScene. The same crossing produced a 500 reading
+# "GetSourceScreenshotDataclass has no attribute filter_settings" - a filter request that
+# was handed a screenshot's response - which was written off as transient. It was not.
+_clock = threading.RLock()
+
+
+class _LockedClient:
+    """Serialises every call onto the shared ReqClient.
+
+    A proxy rather than a lock at each call site: there are dozens of call sites, and the
+    one that gets forgotten is the one that corrupts a response during a show.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        def call(*a, **kw):
+            with _clock:
+                return attr(*a, **kw)
+
+        return call
 
 
 def client():
@@ -501,7 +537,7 @@ def client():
             _cl.get_version()
         except Exception:
             _cl = obsctl.connect(timeout=10)
-        return _cl
+        return _LockedClient(_cl)
 
 
 def publish(feats=None):
@@ -663,6 +699,7 @@ def _current_blend(cl, scene):
 # allows exactly one consumer per device. And zoom is not an OBS property at all, it is a
 # setting on the phone reached over HTTP. One watcher covers both.
 PRESETS = HERE.parent / "scenepresets.json"
+PRESET_LOG = Path(r"C:\Users\mccul\rig\logs\scenepresets.log")
 _presets_cache = {"mtime": 0.0, "data": None}
 
 
@@ -798,7 +835,19 @@ def scene_preset_thread(poll_s=1.0):
                 if cfg.get("enabled"):
                     steps = apply_preset(cur)
                     if steps:
-                        print(f"scene preset '{cur}': " + "; ".join(steps), flush=True)
+                        # ⚠️ TO A FILE, NOT stdout. This runs under pythonw from a
+                        # scheduled task, which has nowhere to print - so a preset that
+                        # silently failed left no trace anywhere. Same lesson as the
+                        # bridges' --log.
+                        line = (time.strftime("%Y-%m-%d %H:%M:%S") +
+                                f"  {cur}: " + "; ".join(steps))
+                        print(line, flush=True)
+                        try:
+                            PRESET_LOG.parent.mkdir(parents=True, exist_ok=True)
+                            with open(PRESET_LOG, "a", encoding="utf-8") as fh:
+                                fh.write(line + "\n")
+                        except Exception:
+                            pass
         except Exception:
             # OBS closed or mid-restart. Try again next tick.
             pass
