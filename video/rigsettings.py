@@ -94,6 +94,8 @@ VERIFY = {
     "iso": lambda s: str(s.get("manual", {}).get("iso")),
     "shutterNs": lambda s: str(s.get("manual", {}).get("shutterNs")),
     "manualExposure": lambda s: str(s.get("manual", {}).get("exposure")).lower(),
+    "manualFocus": lambda s: str(s.get("focus", {}).get("manual")).lower(),
+    "focusDioptres": lambda s: str(s.get("focus", {}).get("dioptres")),
     "wbR": lambda s: str(s.get("manual", {}).get("wbR")),
     "wbG": lambda s: str(s.get("manual", {}).get("wbG")),
     "wbB": lambda s: str(s.get("manual", {}).get("wbB")),
@@ -102,12 +104,22 @@ VERIFY = {
 
 
 CALIBRATION = Path(__file__).resolve().parent / "exposure.json"
+FOCUS = Path(__file__).resolve().parent / "focus.json"
 
 
 def load_calibration():
     """Per-phone ISO measured by autoexpose.py. Missing is a normal state, not an error."""
     try:
         with open(CALIBRATION, encoding="utf-8") as fh:
+            return (json.load(fh) or {}).get("phones") or {}
+    except Exception:
+        return {}
+
+
+def load_focus():
+    """Per-phone focus measured by autofocus.py. Missing is normal, not an error."""
+    try:
+        with open(FOCUS, encoding="utf-8") as fh:
             return (json.load(fh) or {}).get("phones") or {}
     except Exception:
         return {}
@@ -124,6 +136,22 @@ def settings_for(label, manual=False, cal=None):
     the number that was wrong everywhere.
     """
     out = dict(BASELINE)
+
+    # ⚠️ FOCUS IS RESTORED EVEN IN AUTO MODE, unlike ISO, and the asymmetry is deliberate.
+    # Auto EXPOSURE is what Ian asked for: a room's light changes and a camera that adapts
+    # is right. Auto FOCUS is the thing he asked to be rid of - continuous AF re-racks on
+    # every movement, which is visible in the footage as focus cycling. So exposure follows
+    # the baseline's auto default while focus is pinned back to whatever autofocus.py
+    # measured.
+    #
+    # This gap is why the Pixel 6 came back on 2026-09-03 with focus reset to auto after
+    # its battery died: RigCam forgets everything on restart, exposure.json was re-applied
+    # and focus.json was not.
+    fentry = load_focus().get(label) or {}
+    if fentry.get("dioptres") is not None:
+        out["manualFocus"] = "true"
+        out["focusDioptres"] = str(float(fentry["dioptres"]))
+
     if not manual:
         return out
     out.update(MANUAL_EXTRA)
@@ -175,6 +203,12 @@ def check(label, url, manual=False):
     if s is None:
         print(f"  {label:10s} NOT ANSWERING at {url}")
         return None
+    # ⚠️ A DORMANT PHONE IS NOT DRIFT. /api/sleep releases the camera, so resolution reads
+    # 0x0 and every session-fixed setting looks wrong - reporting that as 'NOT on baseline'
+    # is a false alarm that trains you to ignore the real ones.
+    if s.get("dormant"):
+        print(f"  {label:10s} dormant (camera released) - wake it before checking baseline")
+        return []
     bad = []
     for k, want in settings_for(label, manual).items():
         got = VERIFY[k](s)
@@ -185,6 +219,8 @@ def check(label, url, manual=False):
     mode = "manual" if (m.get("exposure") and m.get("wb")) else "auto exp/WB"
     if manual and not (load_calibration().get(label) or {}).get("iso"):
         mode += f"  iso {m.get('iso')} NOT CALIBRATED - run autoexpose.py"
+    if not (load_focus().get(label) or {}).get("dioptres"):
+        mode += "  focus NOT CALIBRATED - run autofocus.py"
     print(f"  {label:10s} {res} @{s.get('fps')} {mode}"
           + ("" if not bad else "\n" + "".join(f"      drift: {b}\n" for b in bad)).rstrip())
     return bad
