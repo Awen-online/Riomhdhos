@@ -706,17 +706,40 @@ function renderDevices(){
   const ds = (CAM && CAM.devices) || [];
   if (!ds.length){ box.innerHTML = '<span class="sub">no phones configured</span>'; return; }
   box.innerHTML = ds.map(d => {
-    // A configured phone adb cannot see: say so plainly, and say what to do about it. Every
-    // other field on this row would be a lie for a phone that is not there, so none are shown.
+    // ⚠️ ABSENT FROM adb IS NOT THE SAME AS DISCONNECTED, and conflating them made this
+    // panel lie every single day. `devices` is built from `adb devices`, but the Pixel 6 is
+    // deliberately WiFi-only and will NEVER appear there - so it sat permanently under
+    // 'NOT CONNECTED', telling you to replug a cable that is not supposed to be plugged in,
+    // while the card directly below it reported the same phone feeding at 25 fps.
+    //
+    // The payload already knows better: rigcams[label] is a live /api/state read. A phone
+    // that answers over HTTP is connected, just not over USB.
     if (d.absent){
       const mk = PHONE_ICON[d.model] || PHONE_FALLBACK;
+      const rc = (CAM && CAM.rigcams && CAM.rigcams[d.model]) || null;
+      const live = rc && !rc.offline;
+      if (live){
+        const dormant = !!rc.dormant;
+        const detail = dormant ? 'camera released - wake it to stream'
+                     : (rc.resolution || '?') + (rc.streaming ? ' streaming' : ' not streaming');
+        return '<div style="margin:2px 0 12px">'
+          + '<div class="hdr"><span class="nm" style="display:flex;align-items:center;gap:8px">'
+          + '<span class="phoneic">' + mk + '</span>' + esc(d.model || '?') + '</span>'
+          + '<span class="sub" style="color:' + (dormant ? 'var(--accent)' : 'var(--ok)') + '">'
+          + (dormant ? 'WIFI &middot; dormant' : 'WIFI &middot; connected') + '</span></div>'
+          + '<div class="sub">' + esc(detail) + ' &mdash; over WiFi. This phone is not on adb '
+          + 'by design, so the USB-only controls above do not apply to it.</div></div>';
+      }
       return '<div style="margin:2px 0 12px">'
         + '<div class="hdr"><span class="nm" style="display:flex;align-items:center;gap:8px">'
         + '<span class="phoneic">' + mk + '</span>' + esc(d.model || '?') + '</span>'
         + '<span class="sub" style="color:var(--bad)">NOT CONNECTED</span></div>'
-        + '<div class="sub">adb cannot see this phone. Replug the USB-C cable; if it stays '
-        + 'away, check Developer options &rsaquo; Default USB configuration says '
-        + '<b>File transfer</b> rather than Webcam.</div></div>';
+        + '<div class="sub">Not reachable over adb <b>or</b> WiFi'
+        + (rc && rc.error ? ' (' + esc(rc.error) + ')' : '')
+        + '. If it is the wired phone, replug the USB-C cable and check Developer options '
+        + '&rsaquo; Default USB configuration says <b>File transfer</b> rather than Webcam. '
+        + 'If it is the WiFi phone, RigCam is not running &mdash; it has no adb, so it has '
+        + 'to be started on the handset.</div></div>';
     }
     // Role is decided by which serial the dashboard was told is the wired one - never
     // guessed, because guessing sent the wired controls to the wrong phone once already.
