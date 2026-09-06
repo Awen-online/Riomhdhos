@@ -127,6 +127,16 @@ slider35:5<1,12,1>Chromatic row step (semitones)
 // Ticks are accumulated and only spend a step when this many have gone by, so a setting
 // takes a deliberate turn. 1 restores the old one-tick-per-option behaviour.
 slider36:6<1,16,1>SCALES encoder ticks per option
+// VELOCITY NORMALISE. Push 1 pads read low when you play melodically and lightly over
+// a held diad - the soft notes come through quiet or not at all, and you end up hitting
+// hard just to be heard. This lifts the floor and bends the low end upward so a gentle
+// touch still speaks, while leaving the loud end alone. It affects ONLY the NOTE-view
+// grid, not mood/mixer pads. Floor 0 + curve 100 = untouched (raw pad velocity).
+//   Vel floor  = the quietest note that can leave the grid (raises the whole bottom).
+//   Vel curve% = how much soft hits are lifted before the floor: 100 = linear/off,
+//                higher bends the low end up harder (200 ~= square-root response).
+slider37:40<0,110,1>Vel floor (min note velocity)
+slider38:140<100,250,1>Vel curve % (lift soft notes)
 // Octave Down = CC54, Octave Up = CC55. The octave is published to gmem[62] so
 // `pushled` follows it directly - previously both plugins carried their own copy of
 // the octave and had to be kept matching by hand, which meant the lit "root" pads
@@ -299,9 +309,17 @@ while (midirecv(mpos, m1, m2, m3)) (
           n = gridnote(m2);
           n = max(0, min(127, n));
           padnote[m2] = n;
-          midisend(mpos, 0x90, n, m3);
+          // velocity normalise (sliders 37/38) - lift soft strikes so melodic playing
+          // over a held diad speaks; floor 0 + curve 100 leaves raw pad velocity alone.
+          vout = m3;
+          (slider37 > 0 || slider38 > 100) ? (
+            vn = pow(m3 / 127, 100 / slider38);        // curve>100 bends soft notes up
+            vout = slider37 + (127 - slider37) * vn;    // then lift onto the floor
+            vout = max(1, min(127, floor(vout + 0.5)));
+          );
+          midisend(mpos, 0x90, n, vout);
           held += 1;
-          gmem[55] = held; gmem[56] = n; gmem[57] = m3; gmem[54] += 1;
+          gmem[55] = held; gmem[56] = n; gmem[57] = vout; gmem[54] += 1;
           publishheld();
         ) : (
           // release the note this pad actually produced - the scale may have been
