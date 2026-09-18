@@ -83,6 +83,35 @@
   .sprow{padding:10px 0 12px;border-top:1px solid var(--line)}
   .sprow:first-child{border-top:0;padding-top:2px}
   .sprow .g3{margin-top:8px}
+
+  /* ⚠️ ONE DEVICE PER BLOCK, RULED OFF - the same rule as .sprow and for the same reason.
+     Phones and bridges were separated by a bare 12px margin, so at a glance a phone's
+     battery line sat closer to the NEXT phone's heading than to its own name, and the
+     Reset button under a bridge read as belonging to the bridge below it. A hairline costs
+     nothing and removes the ambiguity entirely. */
+  .devrow,.brrow{padding:11px 0 12px;border-top:1px solid var(--line)}
+  .devrow:first-child,.brrow:first-child{border-top:0;padding-top:2px}
+  .brrow .g1{margin-top:9px}
+  .g1{display:grid;grid-template-columns:1fr;gap:8px}
+
+  /* The name side may shrink and ellipsis; the state side never wraps, because a status
+     that folds onto a second line drags the whole row out of alignment with its neighbour. */
+  .devrow .nm,.brrow .nm{display:flex;align-items:center;gap:8px;min-width:0}
+  .devrow .nm span:last-child,.brrow .nm span:last-child{overflow:hidden;text-overflow:ellipsis;
+       white-space:nowrap}
+  .devstate,.brstate{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;
+       flex:0 0 auto}
+  .sdot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+
+  /* Facts as a grid of icon + value, so the values start on one vertical line instead of
+     running together as ' · ' separated prose that wraps differently on every phone. */
+  .facts{display:grid;grid-template-columns:14px 1fr;gap:4px 8px;align-items:center;
+         margin-top:7px}
+  .facts .fi{width:14px;height:14px;color:var(--dim);opacity:.85}
+  .facts .fi svg{display:block;width:100%;height:100%}
+  .facts .fv{min-width:0;overflow-wrap:anywhere}
+  .brwhy{margin-top:4px;font-family:inherit;font-size:11.5px;line-height:1.45}
+  .brlast{margin-top:4px;opacity:.72;overflow-wrap:anywhere}
   .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
   .g3 button,.g4 button{padding:10px 3px;font-size:11.5px;font-weight:500}
   .g2 button.sel,.g3 button.sel,.g4 button.sel{background:var(--accent);
@@ -272,13 +301,18 @@
     <div class="row"><span class="k">Camera bridges</span><span class="v" id="v_br">&mdash;</span></div>
     <div id="brlist"><span class="sub">&mdash;</span></div>
     <div class="g2" id="brbtns"></div>
-    <div class="note">&#9888;&#65039; A bridge that says <b>running</b> can still be feeding
-      nothing. When the sink goes away underneath it &mdash; OBS closed, the machine slept
-      &mdash; it blocks with the process alive and the frame counter frozen, so health here
-      is how long ago it last wrote to its log, not whether it exists.<br><br>
-      <b>Force reset</b> kills both bridges and their ffmpeg, then starts them again; each
-      re-opens its OBS source once frames are actually flowing, so give it about ten seconds
-      before the pictures come back.</div>
+    <div class="note">&#9888;&#65039; <b>feeding</b> means a frame count in the log, not a
+      fresh log. A bridge whose phone is off writes <i>no picture yet &hellip; retrying in
+      5s</i> every five seconds &mdash; the freshest log on the machine &mdash; and that
+      used to be read as healthy. It now reads <b>no signal</b>. A bridge that says
+      <b>running</b> can still be feeding nothing: when the sink goes away underneath it
+      &mdash; OBS closed, the machine slept &mdash; it blocks with the process alive and the
+      counter frozen, which is <b>stalled</b>.<br><br>
+      <b>Reset this bridge</b> restarts one camera and leaves the other one live; that is
+      the one to reach for mid-set. <b>Force reset both</b> is the sledgehammer, and the
+      only path that also catches an ffmpeg orphaned by a bridge that already died. Either
+      way the bridge re-opens its OBS source once frames are actually flowing, so give it
+      about ten seconds before the picture comes back.</div>
   </div>
 
   <h2>Scene presets</h2>
@@ -632,6 +666,17 @@ const CAM_ICON = {
   lock:  SVG('<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'),
   torch: SVG('<path d="M9 3h6l-1 4H10z"/><path d="M10 7h4v5l-2 9-2-9z"/>'),
 };
+
+/* Row markers for the phone facts. Dim, 14px, and deliberately plain: they exist so the
+   eye can jump straight to the battery line during a set, not to decorate the panel. */
+const DEV_ICON = {
+  wifi:    SVG('<path d="M2.6 8.6a15 15 0 0 1 18.8 0"/><path d="M5.6 12.1a10.4 10.4 0 0 1 12.8 0"/><path d="M8.6 15.5a6 6 0 0 1 6.8 0"/><circle cx="12" cy="19" r="1.1" fill="currentColor" stroke="none"/>'),
+  usb:     SVG('<circle cx="12" cy="20.2" r="1.5"/><path d="M12 18.7V4.2"/><path d="M9.4 6.8L12 4.2l2.6 2.6"/><path d="M12 12.4l3.6-2.2V8"/><path d="M12 14.6L8.4 12.4v-2"/><circle cx="8.4" cy="9.4" r="1"/>'),
+  battery: SVG('<rect x="2.6" y="7.6" width="15.8" height="8.8" rx="2"/><path d="M21 10.6v2.8"/>'),
+  shield:  SVG('<path d="M12 3.2l7 2.7v5c0 4.1-2.9 7.5-7 8.9-4.1-1.4-7-4.8-7-8.9v-5z"/>'),
+  chip:    SVG('<rect x="6.6" y="6.6" width="10.8" height="10.8" rx="2"/><path d="M10 3.2v3.4M14 3.2v3.4M10 17.4v3.4M14 17.4v3.4M3.2 10h3.4M3.2 14h3.4M17.4 10h3.4M17.4 14h3.4"/>'),
+  net:     SVG('<circle cx="12" cy="12" r="8.6"/><path d="M3.4 12h17.2"/><path d="M12 3.4c2.3 2.4 3.5 5.4 3.5 8.6S14.3 18.2 12 20.6c-2.3-2.4-3.5-5.4-3.5-8.6S9.7 5.8 12 3.4z"/>'),
+};
 let CAM = null, camBusy = false;
 
 function camBtn(box, label, icon, on, handler){
@@ -705,48 +750,92 @@ function renderDevices(){
   const box = $('devlist');
   const ds = (CAM && CAM.devices) || [];
   if (!ds.length){ box.innerHTML = '<span class="sub">no phones configured</span>'; return; }
+
+  // ONE heading shape for every branch below. The three states used to build their own
+  // headers inline, which is how the dormant row ended up with its status 2px higher than
+  // the connected row directly under it.
+  const head = (mk, name, col, label) =>
+      '<div class="hdr"><span class="nm"><span class="phoneic">' + mk + '</span>'
+    + '<span>' + esc(name) + '</span></span>'
+    + '<span class="sub devstate" style="color:' + col + '">'
+    + '<span class="sdot" style="background:' + col + '"></span>' + esc(label) + '</span></div>';
+  const fact = (ic, html) =>
+      '<span class="fi">' + ic + '</span><span class="sub fv">' + html + '</span>';
+
   box.innerHTML = ds.map(d => {
-    // ⚠️ ABSENT FROM adb IS NOT THE SAME AS DISCONNECTED, and conflating them made this
-    // panel lie every single day. `devices` is built from `adb devices`, but the Pixel 6 is
-    // deliberately WiFi-only and will NEVER appear there - so it sat permanently under
+    // ⚠️ ABSENT FROM adb IS NOT THE SAME AS DISCONNECTED, and conflating them made
+    // this panel lie every single day. `devices` is built from `adb devices`, but the Pixel
+    // 6 is deliberately WiFi-only and will NEVER appear there - so it sat permanently under
     // 'NOT CONNECTED', telling you to replug a cable that is not supposed to be plugged in,
     // while the card directly below it reported the same phone feeding at 25 fps.
     //
     // The payload already knows better: rigcams[label] is a live /api/state read. A phone
     // that answers over HTTP is connected, just not over USB.
+    const mk = PHONE_ICON[d.model] || PHONE_FALLBACK;
     if (d.absent){
-      const mk = PHONE_ICON[d.model] || PHONE_FALLBACK;
       const rc = (CAM && CAM.rigcams && CAM.rigcams[d.model]) || null;
       const live = rc && !rc.offline;
       if (live){
         const dormant = !!rc.dormant;
-        const detail = dormant ? 'camera released - wake it to stream'
-                     : (rc.resolution || '?') + (rc.streaming ? ' streaming' : ' not streaming');
-        return '<div style="margin:2px 0 12px">'
-          + '<div class="hdr"><span class="nm" style="display:flex;align-items:center;gap:8px">'
-          + '<span class="phoneic">' + mk + '</span>' + esc(d.model || '?') + '</span>'
-          + '<span class="sub" style="color:' + (dormant ? 'var(--accent)' : 'var(--ok)') + '">'
-          + (dormant ? 'WIFI &middot; dormant' : 'WIFI &middot; connected') + '</span></div>'
-          + '<div class="sub">' + esc(detail) + ' &mdash; over WiFi. This phone is not on adb '
-          + 'by design, so the USB-only controls above do not apply to it.</div></div>';
+        const col = dormant ? 'var(--accent)' : 'var(--ok)';
+        // \u26a0\ufe0f THE THIN ROW WAS NOT 'NO INFORMATION', IT WAS THE WRONG SOURCE.
+        // Android version, patch level, serial and battery all come from `adb devices`,
+        // and this phone is deliberately never on adb - so those four were simply blank
+        // next to a Pixel 8 that listed all of them, which reads as a phone half falling
+        // off rather than a phone on a different transport. RigCam exposes /api/state and
+        // /api/set and nothing else (probed: /api/battery, /api/device, /api/info are all
+        // 404), so those fields cannot come from RigCam. They CAN come from adb over TCP -
+        // 'WiFi-only' means 'not on USB', not 'not on adb', and device_info() runs
+        // `adb -s <serial> shell dumpsys battery`, which does not care whether the serial
+        // is a USB one or 192.168.1.50:PORT. Enable Wireless debugging on the handset and
+        // pair it once and devices_snapshot() stops emitting the absent placeholder for it,
+        // so this whole branch simply stops being reached. Until then, show every field
+        // RigCam DOES give and name the remedy rather than leaving a gap.
+        const enc = rc.encoder || {}, zm = rc.zoom || {}, mn = rc.manual || {};
+        const url = (CAM && CAM.rigcamUrls && CAM.rigcamUrls[d.model]) || '';
+        const fps = enc.fps || rc.fps;
+        const shot = (rc.resolution || '?')
+                   + (fps ? ' \u00b7 ' + fps + ' fps' : '')
+                   + (rc.streaming ? ' \u00b7 streaming' : ' \u00b7 not streaming');
+        const lens = (rc.facing ? rc.facing + ' camera' : '')
+                   + (zm.ratio != null ? ' \u00b7 zoom ' + (Math.round(zm.ratio * 100) / 100)
+                                       + '\u00d7' : '')
+                   + (enc.bitrateKbps ? ' \u00b7 ' + Math.round(enc.bitrateKbps / 1000)
+                                      + ' Mb/s' : '');
+        const look = (mn.exposure ? 'manual ISO ' + mn.iso : 'auto exposure')
+                   + ' \u00b7 ' + (mn.wb ? 'manual WB' : 'auto WB')
+                   + ((rc.focus && rc.focus.manual) ? ' \u00b7 manual focus' : ' \u00b7 autofocus');
+        return '<div class="devrow">'
+          + head(mk, d.model || '?', col, dormant ? 'WIFI \u00b7 dormant' : 'WIFI \u00b7 connected')
+          + '<div class="facts">'
+          + fact(DEV_ICON.wifi, dormant ? 'camera released \u2014 wake it to stream' : esc(shot))
+          + (url ? fact(DEV_ICON.net, esc(url.replace(/^https?:\/\//, ''))) : '')
+          + (lens ? fact(DEV_ICON.chip, esc(lens)) : '')
+          + fact(DEV_ICON.shield, esc(look))
+          + fact(DEV_ICON.battery, 'no battery or OS yet \u2014 RigCam serves only /api/state. '
+                                 + 'Turn on Wireless debugging on this phone and pair it '
+                                 + 'once; adb over TCP fills this row in exactly like the '
+                                 + 'wired one, with no change here.')
+          + '</div></div>';
       }
-      return '<div style="margin:2px 0 12px">'
-        + '<div class="hdr"><span class="nm" style="display:flex;align-items:center;gap:8px">'
-        + '<span class="phoneic">' + mk + '</span>' + esc(d.model || '?') + '</span>'
-        + '<span class="sub" style="color:var(--bad)">NOT CONNECTED</span></div>'
-        + '<div class="sub">Not reachable over adb <b>or</b> WiFi'
-        + (rc && rc.error ? ' (' + esc(rc.error) + ')' : '')
-        + '. If it is the wired phone, replug the USB-C cable and check Developer options '
-        + '&rsaquo; Default USB configuration says <b>File transfer</b> rather than Webcam. '
-        + 'If it is the WiFi phone, RigCam is not running &mdash; it has no adb, so it has '
-        + 'to be started on the handset.</div></div>';
+      return '<div class="devrow">'
+        + head(mk, d.model || '?', 'var(--bad)', 'NOT CONNECTED')
+        + '<div class="facts">'
+        + fact(DEV_ICON.net, 'not reachable over adb <b>or</b> WiFi'
+                           + (rc && rc.error ? ' (' + esc(rc.error) + ')' : ''))
+        + '</div>'
+        + '<div class="note">If it is the wired phone, replug the USB-C cable and check '
+        + 'Developer options &rsaquo; Default USB configuration says <b>File transfer</b> '
+        + 'rather than Webcam. If it is the WiFi phone, RigCam is not running &mdash; it '
+        + 'has no adb, so it has to be started on the handset.</div></div>';
     }
     // Role is decided by which serial the dashboard was told is the wired one - never
     // guessed, because guessing sent the wired controls to the wrong phone once already.
     // Both phones run RigCam now; only the transport differs. Saying UVC here was left over
     // from when the wired phone came in through DeviceAsWebcam, and a label that names the
     // wrong software is worse than no label - it sends you to the wrong tool when it breaks.
-    const role = d.role === 'wired' ? 'USB · RigCam' : 'WIFI · RigCam';
+    const wired = d.role === 'wired';
+    const role = wired ? 'USB \u00b7 RigCam' : 'WIFI \u00b7 RigCam';
     // ⚠️ Runtime, coloured, not just a percentage. These phones draw ~500 mA while
     // streaming, so '14%' and '45%' can both mean 'dies during the set' - or not. The
     // number a performer needs is HOURS LEFT, and it needs to shout when it is short.
@@ -761,25 +850,30 @@ function renderDevices(){
       ? (d.mA > 0 ? '+' + d.mA + ' mA' : d.mA + ' mA')
       : '';
     const batt = '<span style="color:' + col + '">' + (d.level != null ? d.level + '%' : '?')
-               + (hrs ? '  ·  ' + hrs : '') + '</span>'
-               + (rate ? '  ·  ' + rate : '')
+               + (hrs ? '  \u00b7  ' + hrs : '') + '</span>'
+               + (rate ? '  \u00b7  ' + rate : '')
                + (d.supplyMA ? ' of ' + d.supplyMA + ' mA' : '')
-               + (d.tempC ? '  ·  ' + d.tempC + '°C' : '')
-               + (d.healthPct ? '  ·  health ' + d.healthPct + '%' : '')
-               + (d.cycles ? '  ·  ' + d.cycles + ' cyc' : '');
-    const where = d.ip ? d.ip : (d.usb ? 'usb: ' + d.usb : '—');
-    const vb = d.verifiedboot === 'yellow'
-        ? '<span style="color:var(--ok)">verified yellow</span>'   // correct for GrapheneOS
-        : '<span style="color:var(--bad)">verified ' + (d.verifiedboot||'?') + '</span>';
-    const mark = PHONE_ICON[d.model] || PHONE_FALLBACK;
-    return '<div style="margin:2px 0 12px">'
-      + '<div class="hdr"><span class="nm" style="display:flex;align-items:center;gap:8px">'
-      + '<span class="phoneic">' + mark + '</span>' + (d.model||d.serial) + '</span>'
-      + '<span class="sub">' + role + '</span></div>'
-      + '<div class="sub">Android ' + (d.android||'?') + ' · GrapheneOS ' + (d.build||'?')
-      + ' · patch ' + (d.patch||'?') + '</div>'
-      + '<div class="sub">' + vb + ' · ' + where + ' · ' + d.serial + '</div>'
-      + '<div class="sub">battery ' + batt + '</div></div>';
+               + (d.tempC ? '  \u00b7  ' + d.tempC + '\u00b0C' : '')
+               + (d.healthPct ? '  \u00b7  health ' + d.healthPct + '%' : '')
+               + (d.cycles ? '  \u00b7  ' + d.cycles + ' cyc' : '');
+    const where = d.ip ? d.ip : (d.usb ? 'usb: ' + d.usb : '\u2014');
+    // \u26a0\ufe0f THE AVB COLOUR IS A ROOT OF TRUST, NOT A GRADE, and 'verified yellow'
+    // on its own reads like a warning to anyone who does not already know that. YELLOW is
+    // the CORRECT state here: the bootloader is relocked and the boot image is verified
+    // against GrapheneOS's own key instead of Google's. GREEN would mean the stock OS.
+    // ORANGE is the one that should alarm you - unlocked, verifying nothing.
+    const vbi = VERIFIED_BOOT[d.verifiedboot] || ['var(--bad)', 'unrecognised state'];
+    const vb = '<span style="color:' + vbi[0] + '">verified ' + esc(d.verifiedboot || '?')
+             + '</span> <span style="opacity:.75">' + vbi[1] + '</span>';
+    return '<div class="devrow">'
+      + head(mk, d.model || d.serial, 'var(--ok)', role)
+      + '<div class="facts">'
+      + fact(DEV_ICON.chip, 'Android ' + esc(d.android || '?') + ' \u00b7 GrapheneOS '
+                          + esc(d.build || '?') + ' \u00b7 patch ' + esc(d.patch || '?'))
+      + fact(DEV_ICON.shield, vb)
+      + fact(wired ? DEV_ICON.usb : DEV_ICON.wifi, esc(where) + ' \u00b7 ' + esc(d.serial))
+      + fact(DEV_ICON.battery, batt)
+      + '</div></div>';
   }).join('');
 }
 
@@ -1101,27 +1195,79 @@ function renderPresets(){
   }
 }
 
+/* ⚠️ 'feeding' IS THE ONLY GREEN, and the server now has to prove it with a frame count -
+   see _bridge_health in dash.py. These are the states it can return; anything unrecognised
+   falls through to peach rather than green, because the failure that started all this was
+   a bad state painted as a good one. */
+const BR_COL = {
+  'feeding':   'var(--ok)',
+  'starting':  'var(--accent)',
+  'dropped':   'var(--accent)',
+  'no signal': 'var(--bad)',
+  'failing':   'var(--bad)',
+  'stalled':   'var(--bad)',
+  'stopped':   'var(--dim)',
+};
+// Said the way you would say it at the desk - the raw last line is usually ffmpeg's.
+const BR_WHY = {
+  'starting':  'opening the stream — a few seconds before frames count',
+  'dropped':   'the stream broke; the bridge is already retrying',
+  'no signal': 'nothing is arriving — phone off, asleep, or off the network',
+  'failing':   'the sink would not open; a reset releases it',
+  'stalled':   'alive, but nothing written in 90 s — the counter is frozen',
+  'stopped':   'the scheduled task is not running',
+};
+
+// Labels here are 'Pixel 6 (WiFi)' while the icon keys are 'Pixel 6'. Match on the key
+// being contained in the label, so renaming a transport cannot silently drop the icon.
+function phoneMark(label){
+  const k = Object.keys(PHONE_ICON).find(n => String(label || '').includes(n));
+  return k ? PHONE_ICON[k] : PHONE_FALLBACK;
+}
+
 function renderBridges(){
   const box = $('brlist'); if (!box) return;
   const bs = (CAM && CAM.bridges) || [];
+  box.innerHTML = '';
   if (!bs.length){ box.innerHTML = '<span class="sub">no bridges configured</span>'; }
-  else {
-    box.innerHTML = bs.map(b => {
-      const col = b.health === 'feeding' ? 'var(--ok)'
-                : b.health === 'stalled' ? 'var(--bad)' : 'var(--accent)';
-      const age = b.ageS == null ? 'no log'
-                : b.ageS < 90 ? Math.round(b.ageS) + 's ago'
-                : Math.round(b.ageS / 60) + ' min ago';
-      return '<div class="hdr"><span class="nm">' + esc(b.label) + '</span>'
-           + '<span class="sub" style="color:' + col + '">' + b.health + ' &middot; ' + age + '</span></div>'
-           + '<div class="sub">' + esc(b.last || '') + '</div>';
-    }).join('');
+  for (const b of bs){
+    const col = BR_COL[b.health] || 'var(--accent)';
+    const age = b.ageS == null ? 'no log'
+              : b.ageS < 90 ? Math.round(b.ageS) + 's ago'
+              : Math.round(b.ageS / 60) + ' min ago';
+    const row = document.createElement('div');
+    row.className = 'brrow';
+    row.innerHTML =
+        '<div class="hdr"><span class="nm"><span class="phoneic">' + phoneMark(b.label)
+      + '</span>' + esc(b.label) + '</span>'
+      + '<span class="sub brstate" style="color:' + col + '">'
+      + '<span class="sdot" style="background:' + col + '"></span>'
+      + esc(b.health) + ' &middot; ' + age + '</span></div>'
+      + (BR_WHY[b.health] ? '<div class="sub brwhy">' + esc(BR_WHY[b.health]) + '</div>' : '')
+      + '<div class="sub brlast">' + esc(b.last || '') + '</div>';
+    // Each button gets its own box: camBtn disables every sibling while it runs, and one
+    // camera being reset must not grey out the control for the camera that is still live.
+    const one = document.createElement('div');
+    one.className = 'g2';
+    row.append(one);
+    // ⚠️ NAME THE PHONE ON THE BUTTON. Two stacked resets reading 'Reset this bridge' are
+    // one mis-tap apart from taking down the camera that is still live, and this rig has
+    // already sent the wired controls to the wrong phone once.
+    const short = String(b.label || '').replace(/\s*\(.*\)\s*$/, '');
+    camBtn(one, 'Reset ' + short, CAM_ICON.flip, false, async () => {
+      const st = row.querySelector('.brstate');
+      if (st) st.textContent = 'restarting…';
+      try { await post('/api/bridges', {action: 'reset', bridge: b.label}); }
+      catch(e){ $('err').textContent = e.message; }
+      setTimeout(loadCamera, 9000);
+    });
+    box.append(row);
   }
   const bad = bs.filter(b => b.health !== 'feeding').length;
   $('v_br').textContent = !bs.length ? '\u2014' : (bad ? bad + ' not feeding' : 'both feeding');
   const btns = $('brbtns'); if (!btns) return;
   btns.innerHTML = '';
-  camBtn(btns, 'Force reset', CAM_ICON.flip, false, async () => {
+  camBtn(btns, 'Force reset both', CAM_ICON.flip, false, async () => {
     $('v_br').textContent = 'restarting…';
     try { await post('/api/bridges', {action: 'reset'}); }
     catch(e){ $('err').textContent = e.message; }
@@ -1190,6 +1336,12 @@ const PHONE_ICON = {
     + '<rect x="7.9" y="6.6" width="4.4" height="1.6" rx="0.8" fill="currentColor" stroke="none"/>'
     + '<circle cx="15.2" cy="7.4" r="0.7" fill="currentColor" stroke="none"/>'
     + '</svg>',
+};
+const VERIFIED_BOOT = {
+  yellow: ['var(--ok)',  'bootloader locked, GrapheneOS key \u2014 expected'],
+  green:  ['var(--ok)',  'bootloader locked, stock Google key'],
+  orange: ['var(--bad)', 'BOOTLOADER UNLOCKED \u2014 nothing is verified'],
+  red:    ['var(--bad)', 'verification FAILED \u2014 do not trust this device'],
 };
 const PHONE_FALLBACK = SVG('<rect x="6" y="2" width="12" height="20" rx="2.2"/>');
 

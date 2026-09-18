@@ -278,13 +278,17 @@ def power_call(mode, timeout=120):
 # in a C call and will not honour a polite stop.
 BRIDGE_LOGS = Path(r"C:\Users\mccul\rig\logs")
 BRIDGES = [
-    {"task": "Riomhdhos vcam bridge", "label": "Pixel 6 (WiFi)", "log": BRIDGE_LOGS / "vcam-p6.log"},
-    {"task": "Riomhdhos vcam bridge P8", "label": "Pixel 8 (USB)", "log": BRIDGE_LOGS / "vcam-p8.log"},
+    # "source" is the OBS source this bridge ends up in; the reset needs it by name - see
+    # the note in bridge_reset about who is holding the sink. It lives on the bridge rather
+    # than in a parallel list so that resetting ONE bridge cannot release the other one's
+    # sink by picking the wrong index.
+    {"task": "Riomhdhos vcam bridge", "label": "Pixel 6 (WiFi)",
+     "log": BRIDGE_LOGS / "vcam-p6.log", "source": "Pixel 6 (vcam)"},
+    {"task": "Riomhdhos vcam bridge P8", "label": "Pixel 8 (USB)",
+     "log": BRIDGE_LOGS / "vcam-p8.log", "source": "Pixel 8"},
 ]
 BRIDGE_FRESH_S = 90        # they report frames every 30 s, so this is three missed reports
-# The OBS source each bridge ends up in. The reset needs these by name - see the note in
-# bridge_reset about who is holding the sink.
-BRIDGE_SOURCES = ["Pixel 6 (vcam)", "Pixel 8"]
+BRIDGE_SOURCES = [b["source"] for b in BRIDGES]
 
 
 def _task_state(task):
@@ -308,6 +312,44 @@ def _last_line(path):
         return ""
 
 
+def _bridge_health(last, age, state):
+    """What the last log line SAYS decides health - and it has to say something POSITIVE.
+
+    ⚠️ A FRESH LOG MINUS TWO KNOWN ERROR STRINGS IS NOT HEALTH, and reading it that way is
+    what made this panel claim a phone that was switched off was feeding at 25 fps. When
+    the handset is unreachable the bridge writes
+
+        no picture yet (phone unreachable, or camera asleep); retrying in 5s
+
+    every five seconds. That is the FRESHEST log on the machine, the scheduled task is
+    still 'running', and the line contains neither 'session failed' nor 'STALLED' - so the
+    old denylist fell straight through to 'feeding'. The retry spam was itself the thing
+    being mistaken for health.
+
+    Only a frame report proves frames. Everything else is named for what it actually is,
+    because 'feeding' on a dead camera costs a take and 'no signal' does not.
+    """
+    if state != "running":
+        return "stopped"
+    if age is None or age >= BRIDGE_FRESH_S:
+        # Nothing written in three reporting intervals: alive, blocked, counter frozen.
+        return "stalled"
+    low = last.lower()
+    if "session failed" in low or "stalled" in low:
+        return "failing"
+    if "no picture yet" in low or "phone unreachable" in low or "camera asleep" in low:
+        return "no signal"
+    if "stream ended" in low or "error during demuxing" in low or "i/o error" in low:
+        return "dropped"
+    if " frames," in low:
+        return "feeding"
+    # Opened the stream, or re-opened the OBS source, but no frame report yet. Honest for
+    # the ~30 s between connecting and the first count, and it must not read as feeding.
+    if "from http" in low or "feeding '" in low or "re-opened" in low:
+        return "starting"
+    return "starting"
+
+
 def bridge_status():
     out = []
     for b in BRIDGES:
@@ -319,33 +361,60 @@ def bridge_status():
         last = _last_line(b["log"])
         out.append({
             "task": b["task"], "label": b["label"], "state": state,
+            "source": b["source"],
             "ageS": None if age is None else round(age, 1),
-            # feeding, stalled, or not running at all - three states, because "stalled" is
-            # the one that used to be invisible
-            # ⚠️ Freshness alone is not health: a bridge failing to open its sink writes an
-            # error every two seconds, which is the freshest log on the machine. What the
-            # last line SAYS decides it.
-            "health": (("failing" if ("session failed" in last or "STALLED" in last)
-                        else "feeding")
-                       if (age is not None and age < BRIDGE_FRESH_S and state == "running")
-                       else "stalled" if state == "running" else "stopped"),
+            "health": _bridge_health(last, age, state),
             "last": last[-140:],
         })
     return out
 
 
-def bridge_reset():
+def bridge_find(label):
+    """Resolve a bridge by label or task name. Returns None when nothing matches, so a
+    stale button in an old tab cannot silently reset the wrong camera."""
+    for b in BRIDGES:
+        if label in (b["label"], b["task"]):
+            return b
+    return None
+
+
+def bridge_reset(only=None):
+    """Reset every bridge, or just one.
+
+    ⚠️ ONE CAMERA AT A TIME IS THE POINT. The pair reset drops both pictures for about ten
+    seconds, which mid-set costs the shot that is currently live as well as the one that
+    was broken. When only the WiFi phone has gone, only the WiFi phone should go dark.
+    """
     steps = []
-    ps = ("Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='pythonw.exe'\" | "
-          "Where-Object { $_.CommandLine -like '*vcambridge*' } | "
-          "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "
-          "Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe'\" | "
-          "Where-Object { $_.CommandLine -like '*stream.h264*' } | "
-          "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+    targets = BRIDGES if only is None else [only]
+    if only is None:
+        # The sledgehammer, kept deliberately broad: it is also the only path that catches
+        # an ffmpeg whose parent bridge already died and left it holding the stream.
+        ps = ("Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='pythonw.exe'\" | "
+              "Where-Object { $_.CommandLine -like '*vcambridge*' } | "
+              "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "
+              "Get-CimInstance Win32_Process -Filter \"Name='ffmpeg.exe'\" | "
+              "Where-Object { $_.CommandLine -like '*stream.h264*' } | "
+              "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+        killed = "stopped the bridges and their ffmpeg"
+    else:
+        # Both bridges run the same script with the same '*vcambridge*' command line, so the
+        # only thing that tells them apart is the --log path they were started with. Match
+        # on that, then take the ffmpeg that bridge actually spawned - by parent pid, not by
+        # a URL restated here, which would drift the moment a task is re-pointed.
+        tag = only["log"].name
+        ps = ("$ps = Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='pythonw.exe'\" | "
+              "Where-Object { $_.CommandLine -like '*" + tag + "*' }; "
+              "foreach ($p in $ps) { "
+              "Get-CimInstance Win32_Process -Filter \"ParentProcessId=$($p.ProcessId)\" | "
+              "Where-Object { $_.Name -eq 'ffmpeg.exe' } | "
+              "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "
+              "Stop-Process -Id $p.ProcessId -Force }")
+        killed = "stopped " + only["label"] + " and its ffmpeg"
     try:
         subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
                        capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW)
-        steps.append("stopped the bridges and their ffmpeg")
+        steps.append(killed)
     except Exception as e:
         steps.append(f"kill failed: {type(e).__name__}")
     # ⚠️ AND NOW LET GO OF THE SINK. A producer killed outright does not release the OBS
@@ -358,7 +427,7 @@ def bridge_reset():
     try:
         import obsctl
         cl = obsctl.connect(timeout=4)
-        for src in BRIDGE_SOURCES:
+        for src in [t["source"] for t in targets]:
             try:
                 obsctl._cycle(cl, src, settle=0.5)
                 steps.append("released " + src)
@@ -368,7 +437,7 @@ def bridge_reset():
         # OBS closed is a perfectly normal state here - it is often WHY the reset is needed
         steps.append("OBS not reachable - skipped releasing the sources")
 
-    for b in BRIDGES:
+    for b in targets:
         for verb in ("/End", "/Run"):
             try:
                 subprocess.run(["schtasks", verb, "/TN", b["task"]], capture_output=True,
@@ -947,6 +1016,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({
                     "rigcam": rigcam_call("/api/state"),
                     "rigcams": rigcams_state(),
+                    # Where each phone actually is. The WiFi phone is not on adb, so this is
+                    # the only address the panel can show for it - and 'no address at all'
+                    # reads as 'we lost it' rather than 'it is deliberately over HTTP'.
+                    "rigcamUrls": dict(RIGCAMS),
                     "uvc": {"reachable": uvc["ok"], "selected": uvc_selected(uvc["out"]),
                             "zooms": list(UVC_ZOOMS), "detail": uvc["out"]},
                     "devices": devices_snapshot(),
@@ -1084,7 +1157,14 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/bridges":
                 if body.get("action") != "reset":
                     self._json({"error": "action must be reset"}, 400); return
-                self._json(bridge_reset()); return
+                # No "bridge" key means both, which is what the old callers sent.
+                want = body.get("bridge")
+                if want is None:
+                    self._json(bridge_reset()); return
+                one = bridge_find(want)
+                if one is None:
+                    self._json({"error": f"unknown bridge {want!r}"}, 400); return
+                self._json(bridge_reset(one)); return
 
             if p == "/api/phonereset":
                 payload, code = phone_reset(body.get("phone"))
