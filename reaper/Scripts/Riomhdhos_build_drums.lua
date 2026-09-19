@@ -56,11 +56,24 @@
 local TRACK_NAME = "DRUMS"
 local LOGFILE    = "C:\\Users\\mccul\\rig\\build_drums_log.txt"
 
--- ⚠️ THIS PATH IS MACHINE-SPECIFIC AND IS NOT ASSUMED TO EXIST. It was read off this
--- workstation's D: drive; `build_moods.lua` points at C:\KONTAKT, so the live rig box
--- evidently lays its libraries out differently. Every file below is checked before it
--- is used, and a missing one is reported by name rather than silently loading nothing.
-local KIT_ROOT = "D:\\Sample Library\\kits\\TR808"
+-- ⚠️ THIS PATH IS MACHINE-SPECIFIC AND IS NOT ASSUMED TO EXIST, so it is SEARCHED rather
+-- than stated. It was read off the workstation's D: drive, but the rig box has no D: at
+-- all - one 477 GB NVMe, and `build_moods.lua` already points at C:\KONTAKT where the
+-- workstation has D:\KONTAKT. A single hardcoded root therefore cannot be right on both
+-- machines, and the failure it produces is eight silent samplers rather than an error.
+--
+-- First existing root wins. Every file below is still checked before it is used, and a
+-- missing one is reported by name.
+local KIT_CANDIDATES = {
+  "D:\\Sample Library\\kits\\TR808",   -- workstation (cuchulainn)
+  "C:\\Sample Library\\kits\\TR808",   -- rig box (riomhdhos)
+}
+local KIT_ROOT = KIT_CANDIDATES[1]
+for _, root in ipairs(KIT_CANDIDATES) do
+  -- EnumerateSubdirectories returns nil for a root that does not exist; the 808 kit is
+  -- foldered per voice, so a first subdirectory is a sound existence test.
+  if reaper.EnumerateSubdirectories(root, 0) then KIT_ROOT = root break end
+end
 
 -- Voice 1 is the TOP row of pads, matching the instrument rack, the mixer view and the
 -- sequencer grid - "top" means the same thing everywhere on this panel. That puts the
