@@ -60,13 +60,27 @@ slider17:1<0,1,1{pitch bend (as-is),modulation CC1}>Touch strip
 //              Columns 5-8 stay dark until there is something to put there.
 // Mood select and PLAY-panic stay live in EVERY view: being in the wrong mode is not
 // an acceptable reason to be unable to change world or kill a stuck note.
+//   2 = DRUMS  the step sequencer: row = voice, column = step. Reached from ACCENT
+//              (CC57, see slider44) and still from RECORD (CC86). ACCENT is the one
+//              that belongs there - it sits in the same six-button block as NOTE,
+//              SESSION and SCALES, which is where the hand already goes to change
+//              what the pads mean, whereas RECORD is across the panel in the
+//              transport. RECORD is kept as a second door rather than removed:
+//              taking a working route away mid-set is its own failure.
+//              Pressing ACCENT AGAIN, while already here, toggles ACCENT EDIT -
+//              the same pads then write the accent map instead of the step map.
+//              That is the printed name of the button doing the printed thing,
+//              which is worth more than a consistent "views never toggle" rule.
 //   3 = SCALES the key/mode/layout picker, on the SCALES button (CC58) above
 //              REPEAT. Press it again - or NOTE - to go back to playing.
 //              The four settings live on ENCODERS 1-4, under the display columns
 //              that name them. The pads stay the instrument: they show the grid
 //              being built and play it, so the scale is chosen by ear, not by
 //              reading its name off a list.
-slider18:0<0,3,1{NOTE,MIXER,SEQ,SCALES}>View
+// ⚠️ Index 2 is still the same view it always was - only its NAME changed from SEQ to
+// DRUMS. The running project stores this by NUMBER in the .rpp, so a rename is free
+// and a reorder would silently move a saved view.
+slider18:0<0,3,1{NOTE,MIXER,DRUMS,SCALES}>View
 // REPEAT (CC56) = HOLD. A true note-latch, not a sustain message: CC64 is taken by
 // the brain for mood-advance, so sending sustain from here would change world instead
 // of holding notes. Suppressing note-offs also holds more reliably than sustain does -
@@ -137,6 +151,29 @@ slider36:6<1,16,1>SCALES encoder ticks per option
 //                higher bends the low end up harder (200 ~= square-root response).
 slider37:40<0,110,1>Vel floor (min note velocity)
 slider38:140<100,250,1>Vel curve % (lift soft notes)
+// EIRE articulation strip: base MIDI note of the LOWEST Uilleann keyswitch (C#2). The
+// eight top-row pads fire C#2..B2 relative to this. If the wrong articulation (or none)
+// lights in Kontakt, nudge by +/-12 to match the library's octave convention.
+// 37 = C#2 under C4=60; 49 = C#2 under C3=60.
+slider43:37<0,72,1>EIRE keyswitch base (C#2)
+// ⚠️ THE DRUMS BUTTON'S CC IS A SLIDER, NOT A CONSTANT, BECAUSE IT IS INFERRED.
+// The Push 1 button block is two columns wide and its CCs run in reading order. Four
+// of its members are VERIFIED in this file by working code: Octave Down = CC54 and
+// Octave Up = CC55 (the handler at `m2 == 54 || m2 == 55`), REPEAT = CC56 (the hold
+// toggle), SCALES = CC58, which the comment there records as "the button above
+// REPEAT". That fixes the geometry:
+//     SCALES 58   USER  59
+//     REPEAT 56   ????  57
+//     OCT-   54   OCT+  55
+// so the button above Octave Up and to the right of Repeat - which is ACCENT on the
+// printed panel - is CC57. That is an INFERENCE from four measured neighbours, not a
+// reading taken off this Push, so it lives on a slider: if the panel turns out to
+// disagree, it is a knob turn rather than an edit. Confirm it by putting `pushmap` or
+// `midispy` on the Push track and reading `last cc` while pressing Accent.
+// ⚠️ Must not be set to a CC this file already claims (3, 9, 14, 15, 20-27, 36-43, 50,
+// 51, 54-56, 58, 64, 71-79, 85, 86, 102-109) - the explicit handlers above run first
+// and would swallow it silently.
+slider44:57<0,127,1>DRUMS button CC (Accent)
 // Octave Down = CC54, Octave Up = CC55. The octave is published to gmem[62] so
 // `pushled` follows it directly - previously both plugins carried their own copy of
 // the octave and had to be kept matching by hand, which meant the lit "root" pads
@@ -149,6 +186,7 @@ slider38:140<100,250,1>Vel curve % (lift soft notes)
 // This counter is the only cheap way to tell the difference: if it is 0, @init never
 // executed and the plugin is dead. An empty block "( )" was what killed it once.
 slider6 = 1; sliderchange(slider6);
+lastmood63 = -1;                // last seen active mood (gmem[63]); triggers a recolor
 padnote = 5000;                 // pad note -> the note we actually emitted, for note-off
 enc = 5400;                     // accumulated absolute value per encoder (they send relative)
 sc = 5200;                      // scale degree table
@@ -217,7 +255,7 @@ function publishscale()(
   gmem[44] = slider1 + 1;
   gmem[45] = slider2 + 1;
   gmem[46] = slider3;
-  gmem[47] = slider34 + 1;
+  gmem[47] = (slider34 || gmem[63] == 3) + 1;   // ÉIRE forces chromatic (see gridnote)
   gmem[48] = slider35;
 );
 
@@ -225,7 +263,9 @@ function publishscale()(
 // the whole grid below the mood row is playable: rows 0-6, all 8 columns
 function gridnote(p) local(idx, row, col, deg, oct)(
   idx = p - 36; row = (idx / 8) | 0; col = idx - row*8;
-  slider34 ? (
+  // ÉIRE (Uilleann Pipes) always plays CHROMATIC so every pipe note is on a pad,
+  // regardless of the global Grid layout. ÉIRE is mood index 2 -> gmem[63] == 3.
+  (slider34 || gmem[63] == 3) ? (
     // CHROMATIC: the pad IS the semitone, rows a fixed interval apart. No octave
     // wrapping to compute - the grid is just a piano roll folded into eight columns.
     12 * slider4 + slider1 + row * slider35 + col;
@@ -234,6 +274,75 @@ function gridnote(p) local(idx, row, col, deg, oct)(
     oct = (deg / sclen) | 0;
     12 * (slider4 + oct) + slider1 + sc[deg - oct*sclen];
   );
+);
+
+// ---------------------------------------------------------------- DRUMS presets
+// The DRUMS region of gmem. `drumseq` owns 2000-2102 and reads them; this plugin is
+// the editor and writes them. Everything from 2103 up is new here:
+//   gmem[2000 + v*8 + s]  step on          (1 = this voice fires on this step)
+//   gmem[2100]            current step, or -1 when stopped
+//   gmem[2101]            1 = running      gmem[2102] = step division index
+//   gmem[2103]            1 = ACCENT EDIT: the pads write accents, not steps
+//   gmem[2104]            preset loaded + 1  (0 = hand-edited, no preset is "the" one)
+//   gmem[2105]            pattern edit counter - see below
+//   gmem[2200 + v*8 + s]  accent on        (louder strike; `drumseq` picks the velocity)
+//
+// ⚠️ gmem[2105] EXISTS BECAUSE `pushled` COULD NOT SEE AN EDIT WHILE STOPPED.
+// The LED plugin decided a DRUMS repaint was due by watching the playhead (gmem[2100]).
+// Stopped, `drumseq` writes -1 there on every block and it never changes - so toggling
+// a step with the sequencer stopped lit nothing, and the pattern you were typing in was
+// invisible until you started it. Every write to the pattern below bumps this counter,
+// which is the same idiom the button presses and note events already use.
+//
+// ⚠️ gmem IS NOT SAVED WITH THE PROJECT. A pattern typed in by hand is gone the next
+// time REAPER loads it. That, not convenience, is why the preset bank exists: it is
+// the only pattern that survives a reload.
+// The evidence is the +1 sentinel this rig uses everywhere, and reaper/README.md says
+// why it exists: "Values are stored +1 so a stored 0 means 'never touched' - otherwise
+// an untouched control reads as a fader at zero and mutes the track on load." A fader
+// only reads as zero on load if gmem came back EMPTY, so the whole region starts blank
+// every time. A pattern has no equivalent sentinel to hide behind - an empty grid is a
+// perfectly valid pattern, it is just a silent one.
+//
+// Each preset is ONE 64-CHARACTER STRING, read row by row - row 1 = voice 1 = the TOP
+// row of pads (matching the rack and the mixer), left to right = steps 1-8. Written
+// this way so the beat is legible AS a beat in the source; eight bitmasks per preset
+// would be sixty-four numbers with nothing to look at.
+//   '.' = silent      'x' = hit      'X' = hit, accented
+// Returning a string literal out of a ternary is the same trick notename() and
+// scalename() already use in `pushled` - EEL2 string literals are handles, so the
+// whole bank costs one comparison chain and no memory.
+//
+// The eight are deliberately sparse: this is a drone rig, and a beat here is a pulse
+// under a story rather than a groove in front of one.
+function presetstr(p)(
+  p==0 ? "X.x.x.x.........xxxxxxxx..........X...X........................." :   // FOUR
+  p==1 ? "X...x..x..X...X.xxxxxxxx........................................" :   // BACKBEAT
+  p==2 ? "X...........X...x.x.x.x........................................." :   // HALFTIME
+  p==3 ? "X..xX..x.................................x.x.x.x................" :   // BODHRAN
+  p==4 ? "X..xX.x.........xxxxxxxx........................................" :   // REEL
+  p==5 ? "Xx.............................................................." :   // SPARSE
+  p==6 ? "X...x...........................................Xx.xXx.xx......." :   // TRIBAL
+         "................xxxxxxxx....X...........................x.......";    // PULSE
+);
+
+// ⚠️ Defined ABOVE its callers. EEL2 resolves a function only from its definition
+// onward, and a forward reference is a COMPILE ERROR - which in JSFX means the plugin
+// silently stops running while still reporting every slider through the API. That
+// exact mistake cost an hour in `pushled`; see the note above bottomline() there.
+function loadpreset(p) local(i, c, s)(
+  s = presetstr(p);
+  i = 0;
+  loop(64,
+    // every one of the 64 cells is written, so a preset REPLACES the pattern rather
+    // than merging with it - loading twice in a row must give the same beat twice
+    c = str_getchar(s, i);
+    gmem[2000 + i] = (c == 46) ? 0 : 1;     // 46 = '.'
+    gmem[2200 + i] = (c == 88) ? 1 : 0;     // 88 = 'X'
+    i += 1;
+  );
+  gmem[2104] = p + 1;                       // +1 sentinel, the rig's usual convention
+  gmem[2105] += 1;
 );
 
 loadscale();
@@ -247,6 +356,9 @@ gmem[62] = slider4 + 1;
 gmem[61] = slider18;
 
 @block
+// when the mood changes, republish the scale/layout so the LED grid recolors to match
+// (playing already follows gmem[63] live in gridnote). ÉIRE draws chromatic.
+gmem[63] != lastmood63 ? ( lastmood63 = gmem[63]; publishscale(); );
 while (midirecv(mpos, m1, m2, m3)) (
   st = m1 & 0xF0;
 
@@ -255,7 +367,7 @@ while (midirecv(mpos, m1, m2, m3)) (
     (slider18 == 1 && m2 >= 92 && m2 <= 95) ? (
       st == 0x90 && m3 > 0 ? midisend(mpos, 0x99, 36 + (m2 - 92), 127);
     ) :
-    // SEQ VIEW: row = voice, column = step. Every pad is one step of one voice, so the
+    // DRUMS VIEW: row = voice, column = step. Every pad is one step of one voice, so the
     // whole pattern is on the panel at once with no paging - which matters far more on
     // a dark stage than the extra resolution a 16-step layout would buy.
     // Voice 1 is the TOP row, matching the instrument rack and the mixer view.
@@ -264,8 +376,14 @@ while (midirecv(mpos, m1, m2, m3)) (
         srow = ((m2 - 36) / 8) | 0;
         scol = (m2 - 36) - srow*8;
         svoice = 7 - srow;
-        gi = 2000 + svoice*8 + scol;
+        // ACCENT EDIT changes WHICH ARRAY the press lands in and nothing else - same
+        // pads, same geometry, same gesture. There is nothing extra to learn beyond
+        // "the ACCENT button is blinking", which `pushled` makes it do.
+        gi = (gmem[2103] > 0.5 ? 2200 : 2000) + svoice*8 + scol;
         gmem[gi] = gmem[gi] > 0.5 ? 0 : 1;
+        // the pattern is no longer any preset, so the panel must stop claiming one
+        gmem[2104] = 0;
+        gmem[2105] += 1;
       );
     ) :
     // left column, bottom four rows = layer 1-4 toggles
@@ -299,6 +417,22 @@ while (midirecv(mpos, m1, m2, m3)) (
           slider21 += 1;
           sliderchange(slider19); sliderchange(slider21);
         );
+      );
+    ) :
+    // EIRE ARTICULATION STRIP: in NOTE view, the top row (pads 92-99) fires the Uilleann
+    // Pipes keyswitches instead of playing notes. Sent on ch1 like grid notes, so the
+    // brain re-channels them to EIRE (ch3), where Kontakt reads them as articulation
+    // switches (no sound - they sit below the playable range). Left->right = ascending
+    // keyswitch pitch: Roll2 Roll1 Staccato Mordent-slow Mordent-fast Vib2 Vib1 Sustain.
+    (slider18 == 0 && gmem[63] == 3 && m2 >= 92 && m2 <= 99) ? (
+      st == 0x90 && m3 > 0 ? (
+        kscol = m2 - 92;
+        ksn = slider43 + (
+          kscol == 0 ? 0  : kscol == 1 ? 2  : kscol == 2 ? 5  : kscol == 3 ? 6  :
+          kscol == 4 ? 7  : kscol == 5 ? 8  : kscol == 6 ? 9  : 10 );
+        ksn = max(0, min(127, ksn));
+        midisend(mpos, 0x90, ksn, 100);   // keyswitch blip: note-on...
+        midisend(mpos, 0x80, ksn, 0);     // ...then immediately off
       );
     ) :
     // NB: an EMPTY block "( )" is a compile error in EEL2 and silently stops the
@@ -360,14 +494,61 @@ while (midirecv(mpos, m1, m2, m3)) (
     );
   ) :
 
+  // FOOT PEDAL (CC64) = momentary SUSTAIN, via the same note-latch as HOLD. The pedal
+  // in the Push jack sends CC64; the brain reads CC64 as mood-advance, so we CONSUME it
+  // here (never pass it on) and repurpose it. Down engages the latch; up releases every
+  // note still held. Unlike CC64 sustain into a patch, this holds by suppressing
+  // note-offs, so it behaves the same across every Kontakt instrument.
+  (st == 0xB0 && m2 == 64) ? (
+    m3 >= 64 ? (
+      slider29 = 1; sliderchange(slider29); gmem[53] = 1;
+    ) : (
+      slider29 = 0; sliderchange(slider29); gmem[53] = 0;
+      i = 36;
+      loop(64,
+        heldpad[i] ? (
+          midisend(mpos, 0x80, padnote[i], 0);
+          heldpad[i] = 0; padnote[i] = -1;
+          held = max(0, held - 1);
+        );
+        i += 1;
+      );
+      gmem[55] = held; gmem[54] += 1;
+      publishheld();
+    );
+  ) :
+
   // NOTE (CC50) and SESSION (CC51) select a view DIRECTLY - they are not a toggle.
   // A single button that flips between modes leaves you unsure which state you landed
   // in, and the same 64 pads mean entirely different things in each view.
-  // SEQ view is selected by RECORD (CC86). That button was deliberately left dark and
+  // DRUMS view is selected by RECORD (CC86). That button was deliberately left dark and
   // inert so it could not be pressed mid-set by mistake; a step sequencer is the one
   // thing it can mean here without lying about what it does.
+  // It is now the SECOND door - ACCENT below is the first - and is kept because
+  // removing a route that already works is its own way to break a set.
   (st == 0xB0 && m2 == 86 && m3 > 0) ? (
     slider18 = 2; sliderchange(slider18); gmem[61] = slider18;
+    gmem[2103] = 0;            // always arrive editing STEPS, never accents
+  ) :
+
+  // ACCENT (CC57 by default - see slider44 for how that number was arrived at) = DRUMS.
+  // It sits in the same six-button block as NOTE, SESSION, REPEAT and SCALES, which is
+  // where the hand already goes to change what the pads mean; RECORD is across the
+  // panel among the transport keys, where a mode switch has no business being.
+  //
+  // ⚠️ THIS IS DELIBERATELY BOTH A SELECT AND A TOGGLE, which NOTE and SESSION are not.
+  // From anywhere else it selects DRUMS, full stop - the rule that a view button must
+  // land you somewhere definite still holds. Once you are ALREADY in DRUMS it toggles
+  // ACCENT EDIT, because the button is printed ACCENT and a panel that makes its own
+  // labels true is worth more than an unbroken "views never toggle" rule. SCALES is
+  // already a toggle for a comparable reason.
+  // Leaving DRUMS by any other route (NOTE, SESSION, SCALES, RECORD) drops accent edit,
+  // so it can never be silently still on when you come back.
+  (st == 0xB0 && m2 == slider44 && m3 > 0) ? (
+    slider18 == 2 ? ( gmem[2103] = gmem[2103] > 0.5 ? 0 : 1; ) : (
+      slider18 = 2; sliderchange(slider18); gmem[61] = slider18;
+      gmem[2103] = 0;
+    );
   ) :
 
   // SCALES (CC58), the button above REPEAT. This one IS a toggle, unlike NOTE and
@@ -380,12 +561,14 @@ while (midirecv(mpos, m1, m2, m3)) (
     slider18 = slider18 == 3 ? 0 : 3;
     sliderchange(slider18);
     gmem[61] = slider18;
+    gmem[2103] = 0;              // never leave accent edit armed behind you
   ) :
 
   (st == 0xB0 && (m2 == 50 || m2 == 51) && m3 > 0) ? (
     slider18 = (m2 == 51) ? 1 : 0;
     sliderchange(slider18);
     gmem[61] = slider18;
+    gmem[2103] = 0;              // never leave accent edit armed behind you
   ) :
 
   // PLAY (CC85) = panic. On a drone rig the classic failure is a stuck note, and
@@ -429,13 +612,18 @@ while (midirecv(mpos, m1, m2, m3)) (
   ) :
 
   st == 0xB0 ? (
-    // SEQ view claims the upper row for transport before the arm/mute handler sees it.
+    // DRUMS view claims the upper row for transport before the arm/mute handler sees it.
     // Scoped to the view, so RUN cannot be hit while looking at the mixer.
     //   CC102 = run / stop        CC103 = clear the pattern
     (slider18 == 2 && m2 >= 102 && m2 <= 103) ? (
       m3 > 0 ? (
         m2 == 102 ? ( gmem[2101] = gmem[2101] > 0.5 ? 0 : 1; ) : (
-          i = 0; loop(64, gmem[2000 + i] = 0; i += 1; );
+          // CLEAR wipes the accents as well. Leaving them behind would mean a freshly
+          // cleared grid still carried a loudness map you cannot see, and the first
+          // step you typed back in would come out accented for no visible reason.
+          i = 0; loop(64, gmem[2000 + i] = 0; gmem[2200 + i] = 0; i += 1; );
+          gmem[2104] = 0;
+          gmem[2105] += 1;
         );
       );
     ) :
@@ -443,6 +631,18 @@ while (midirecv(mpos, m1, m2, m3)) (
     // the panel, which is why the sequencer's one selectable value lives here.
     (slider18 == 2 && m2 >= 36 && m2 <= 43) ? (
       m3 > 0 ? ( gmem[2102] = m2 - 36; );
+    ) :
+    // ⚠️ THE LOWER SMALL-BUTTON ROW WAS DARK IN THIS VIEW AND STILL ACTED.
+    // `pushled`'s redraw_seq blanks every button CC and never relights CC20-27, but the
+    // arm/mute handler below is NOT scoped to a view - so pressing one of those eight
+    // while looking at the sequencer muted a track, from a button the panel was
+    // presenting as unassigned. This rig's whole LED convention is that dark means
+    // "does nothing here"; a button that acts must never be painted that way.
+    // Claiming the row for the preset bank fixes both things at once: the eight beats
+    // get the only eight-across control surface this view has spare, and the row stops
+    // lying. `pushled` lights them dim, with the loaded one lit.
+    (slider18 == 2 && m2 >= 20 && m2 <= 27) ? (
+      m3 > 0 ? loadpreset(m2 - 20);
     ) :
     // the two small button rows: one pair per column, published for the Lua bridge
     (m2 >= 102 && m2 <= 109) ? (

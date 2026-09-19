@@ -15,6 +15,15 @@ desc:Riomhdhos drum sequencer (8 voices x 8 steps, free-running)
 // The pattern crosses tracks through gmem, the same way faders, layer mutes and view
 // state already do - the Push writes it, this reads it.
 //
+// ⚠️ THE EIGHT VOICES ARE EIGHT *CONSECUTIVE* NOTES, WHICH IS WHY THE INSTRUMENT BELOW
+// IT IS NOT KONTAKT. Voice v plays `Voice 1 note + v`, so the default is notes 36-43
+// and nothing else. No sampled drum library maps that way - General MIDI scatters the
+// kit (36 kick, 38 snare, 42 closed hat, 46 open hat, 45/47/48 toms, 49 crash) and
+// every Kontakt library picks its own arrangement on top of that. Eight instances of
+// ReaSamplOmatic5000, one per voice with its note range pinned to a single note, let
+// the LAYOUT be chosen here rather than negotiated with a library. See
+// `Riomhdhos_build_drums.lua`, which builds exactly that.
+//
 // ⚠️ THE CLOCK IS FREE-RUNNING, NOT REAPER'S TRANSPORT
 // The project timeline has media items on it, so rolling the transport to drive a
 // sequencer would play them. This counts its own samples against the project tempo
@@ -33,6 +42,18 @@ slider5:2<0,7,1{1/4,1/4T,1/8,1/8T,1/16,1/16T,1/32,1/32T}>Step division
 // through the API, so this is the only way to tell "loaded" from "running".
 slider6:0<0,99,1>-alive
 slider7:0<0,7,1>-current step
+// ⚠️ APPENDED, never inserted. REAPER assigns JSFX parameter indices by ASCENDING
+// SLIDER NUMBER, so a new low number renumbers everything above it and any automation
+// or script holding an index would break silently.
+//
+// ACCENT. A drum machine with one velocity for every hit is the thing that makes a
+// sequencer sound like a sequencer: without a loud "1" there is no bar, only a grid.
+// The Push writes a second 8x8 map at gmem[2200], parallel to the pattern, and this
+// picks a velocity per strike from it. Both ends stay whole numbers you can read off
+// the panel - there is no curve, no humanise and no randomness, because on stage the
+// useful question is "did that land where I put it", and anything that answers
+// "usually" is worse than nothing.
+slider8:127<1,127,1>Accent velocity
 
 @init
 slider6 = 1; sliderchange(slider6);
@@ -41,6 +62,10 @@ PAT  = 2000;   // gmem[PAT + voice*8 + step]  - 1 = step on
 STEP = 2100;   // gmem[STEP]  current step, for the LEDs
 RUN  = 2101;   // gmem[RUN]   1 = running
 DIV  = 2102;   // gmem[DIV]   step division index
+// 2103 (accent edit), 2104 (loaded preset) and 2105 (edit counter) belong to the panel
+// - `pushbrain` writes them and `pushled` reads them. Nothing here needs them: this
+// plugin only has to know WHICH steps fire and HOW HARD, never how they got there.
+ACC  = 2200;   // gmem[ACC + voice*8 + step]  - 1 = accented
 
 pos      = 0;    // samples into the current step
 curstep  = 0;
@@ -115,7 +140,12 @@ running ? (
     v = 0;
     loop(8,
       gmem[PAT + v*8 + curstep] > 0.5 ? (
-        midisend(0, 0x90, slider2 + v, slider3);
+        // max() rather than a plain pick: an accent must never come out QUIETER than a
+        // normal hit, however the two sliders have been left. Dialling the accent down
+        // below the base velocity is an easy thing to do by accident on a small screen,
+        // and the result - the "1" of the bar disappearing - is hard to diagnose by ear.
+        midisend(0, 0x90, slider2 + v,
+                 gmem[ACC + v*8 + curstep] > 0.5 ? max(slider3, slider8) : slider3);
         sounding[v] = 1;
       );
       v += 1;

@@ -18,8 +18,9 @@ channel. Only the selected mood is audible.
 | `minilab-brain` | The brain. Mood select, re-channelling, latching pedal → mood advance, MiniLab LCD, publishes state to sliders and gmem. |
 | `layermix` | Per mood track, straight after Kontakt. Mixes 4 Kontakt outputs to stereo, per-mood lowpass, layer on/off, ducks against the live input. |
 | `inputenv` | First on each live input track. Measures playing dynamics and publishes them via gmem. Passes audio untouched. |
-| `pushbrain` | Ableton Push 1 input: mood select, layer toggles, scale-locked note grid, encoders. |
+| `pushbrain` | Ableton Push 1 input: mood select, layer toggles, scale-locked note grid, encoders, the DRUMS step grid and its preset bank. |
 | `pushled` | Push 1 LEDs and 4×68 display. Separate track from `pushbrain` — see below. |
+| `drumseq` | First on the DRUMS track. 8 voices × 8 steps, free-running against the project tempo, reading its pattern out of gmem. Generates the notes it feeds. |
 | `midispy`, `pushmap`, `pushlight` | Diagnostics: capture what a controller emits, map it, light it. |
 | `minilab-lcd` | Earlier standalone LCD experiment. |
 
@@ -30,7 +31,9 @@ channel. Only the selected mood is audible.
 SSH). `riomhdhos_lib.lua` is the helper library that console loads. The `add_*` /
 `learn_*` scripts are one-shot installers, as is `build_moods.lua` — it creates one
 Kontakt child track per instrument under each mood bus and carries the intended
-instrument list for all four moods.
+instrument list for all four moods. `Riomhdhos_build_drums.lua` is the same kind of
+thing for the DRUMS track: `drumseq` at the head of the chain and eight
+ReaSamplOmatic5000 behind it, one per voice. All of them are safe to re-run.
 
 ## Three things that are not obvious
 
@@ -48,11 +51,12 @@ all four moods. Per-mood control has to go through a JSFX (audio) or the Lua bri
 note-on on channel 1, and the `pushbrain` track's output feeds the control track — so
 lighting from there would play notes on COSMOS. Two tracks, two destinations.
 
-## Push layout — two views
+## Push layout — four views
 
 `NOTE` (CC50) and `SESSION` (CC51) select a view directly; they are not a toggle.
-The mode lives in `gmem[61]` so the two plugins cannot disagree about what is on
-screen.
+`SCALES` (CC58) and `ACCENT` (CC57) are toggles, for reasons given below. `RECORD`
+(CC86) is a second door into DRUMS. The mode lives in `gmem[61]` so the two plugins
+cannot disagree about what is on screen.
 
 The grid defaults to **D major** — the rig's home key, where most of the repertoire sits
 and what the pipes are pitched in. It used to default to C minor, which put the grid in
@@ -73,7 +77,12 @@ SESSION view   4x4 instrument grid: COLUMN = mood, ROW = instrument slot
                arm/mute rows lit (upper CC102-109 red = ARM,
                                   lower CC20-27 white = MUTE, both binary)
 
-BOTH views     PLAY (CC85)   = panic, all-notes-off on every mood channel
+DRUMS view     8x8 step sequencer: ROW = voice, COLUMN = step, voice 1 on TOP
+               lower button row CC20-27 = the eight preset beats, loaded one lit
+               CC102 run/stop  CC103 clear  CC36-43 step division 1/4..1/32T
+               ACCENT again toggles ACCENT EDIT - same pads, accent map
+
+EVERY view     PLAY (CC85)   = panic, all-notes-off on every mood channel
                REPEAT (CC56) = HOLD - a true note latch, lit while engaged
                octave CC54 down / CC55 up, dark at the limits
                encoders CC71-78 -> the MiniLab's own knob CCs (same in both views)
@@ -206,15 +215,94 @@ delivery** (`I_MIDIFLAGS = channel + 32`). Kontakt instruments default to channe
 every mood plays with **no per-instrument configuration at all**, and any instrument
 loaded later works immediately.
 
+## The DRUMS track
+
+`ACCENT` (CC57) opens it. ⚠️ **That CC is an inference, not a measurement.** Four of its
+neighbours are verified by working code in `pushbrain` — Octave Down 54, Octave Up 55,
+`REPEAT` 56, `SCALES` 58, which the source records as "the button above REPEAT". That
+fixes the block as
+
+```
+SCALES 58   USER  59
+REPEAT 56   ACCENT 57?
+OCT-   54   OCT+  55
+```
+
+so the button above Octave Up and right of Repeat is CC57. It lives on a **slider** at
+both ends (`pushbrain` slider44, `pushled` slider40) rather than as a constant, so a
+wrong guess is a knob turn. Confirm it by putting `pushmap` or `midispy` on the Push
+track and reading `last cc` while pressing Accent.
+
+`ACCENT` both selects and toggles, which `NOTE` and `SESSION` deliberately do not. From
+anywhere else it lands you in DRUMS, full stop. Pressed again *while already in DRUMS*
+it toggles **accent edit**: the same 64 pads then write the accent map instead of the
+step map, and the button blinks (Push LED mode 5) because that is the only thing on the
+panel saying which array a press will land in. The button is printed ACCENT, and a panel
+whose labels are true is worth more than an unbroken "views never toggle" rule — the
+same trade `SCALES` already makes.
+
+⚠️ **`drumseq` generates its own notes and its own clock.** Nothing upstream feeds it,
+and it counts samples against the project tempo rather than rolling the transport,
+because the timeline has media items on it. It is therefore audible with nothing armed,
+nothing recording and the edit cursor untouched.
+
+⚠️ **The instrument is ReaSamplOmatic5000, not Kontakt.** `drumseq` plays eight
+*consecutive* notes (36–43 by default) and no drum library maps that way — GM scatters a
+kit and every Kontakt library rearranges it again. Eight RS5k instances, one per voice
+with its note range pinned to a single note, put the layout here instead of negotiating
+it. RS5k is also stock, so it cannot go missing or stall on an authorisation mid-set,
+and eight separate instances publish eight identical named parameter sets — none of the
+instrument-boundary detection the moods need. Set **Obey note-offs off** on each, or
+`drumseq`'s gate chops the cymbal to the length of a step. Kontakt still earns a place
+for big cinematic hits (`D:\KONTAKT\Spitfire Audio HZ01 Hans Zimmer Percussion…`) on a
+*second* drums track — note that Old Tape Drums is already spoken for by THE CAIRN.
+
+⚠️ **gmem is not saved with the project.** A pattern typed in by hand is gone the next
+time REAPER loads. That, not convenience, is why the eight preset beats exist in
+`pushbrain` — the bank is the only pattern that survives a reload. Each preset is one
+64-character string, row per voice, `.` silent `x` hit `X` accented, so the beat is
+legible as a beat in the source.
+
+⚠️ **Editing a step while stopped used to light nothing.** `pushled` decided a repaint
+was due by watching the playhead, and `drumseq` parks that at −1 on every block when it
+is not running — so it never changed and a whole pattern could be typed in blind.
+`gmem[2105]` is a pattern edit counter and is what triggers the repaint now. The
+playhead is handled separately and repaints **only the two columns that changed**: a
+full redraw is ~513 bytes and at 1/8 and 120 BPM that is ~2 kB/s against MIDI 1.0's
+3125 B/s ceiling, with the pads and LCD sharing the same port.
+
+⚠️ **The lower button row was dark in this view and still acted.** `redraw_seq` blanks
+every button CC and never relit CC20–27, but the arm/mute handler is not view-scoped, so
+pressing one there muted a track from a button the panel was presenting as unassigned.
+The row is now the preset bank, which fixes both halves at once.
+
 ## gmem map
 
 ```
 0, 1        live input envelopes (guitar, second input)
 8, 9        envelope peak hold
+44..48      scale published by pushbrain: root+1, scale+1, row step,
+            layout+1, chromatic step
+49, 50      held pitch-class mask + 1, lowest held note + 1  (chord naming)
+52          swing + 1
+53          repeat/hold engaged
+54..57      note event counter, notes held, last note, its velocity
+58..60      parameter readout: counter, value, label id + 2
+61          view          0 NOTE  1 MIXER  2 DRUMS  3 SCALES
 62          octave offset + 1   (pushbrain -> pushled)
 63          active mood + 1     (minilab-brain -> pushled, bridge)
 64 + m*16 + 0..3    faders 1-4      (value+1, 0 = never touched)
 64 + m*16 + 4..11   knobs K1-K8     (value+1, 0 = never touched)
 64 + m*16 + 12..15  layer 1-4 muted (1 = silent)
 1000+       MIDI spy log
+
+-- DRUMS.  pushbrain writes, drumseq and pushled read.
+2000 + v*8 + s      step on        (v = voice 0-7, s = step 0-7)
+2100        current step, -1 while stopped
+2101        1 = running
+2102        step division index   0 = 1/4 ... 7 = 1/32T
+2103        1 = accent edit (pads write accents, not steps)
+2104        preset loaded + 1     (0 = hand-edited, no preset lit)
+2105        pattern edit counter  (see above - the repaint trigger)
+2200 + v*8 + s      accent on      (drumseq picks "Accent velocity" for these)
 ```
