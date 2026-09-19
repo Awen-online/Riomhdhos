@@ -86,6 +86,7 @@ class CamService : LifecycleService() {
         engine.start(this)          // LifecycleService IS the LifecycleOwner
         server.start()
         RUNNING = true
+        LIVE = this
 
         notifText = "http://${lanAddress() ?: "?"}:$PORT/stream.h264"
         notify(notifText)
@@ -128,8 +129,28 @@ class CamService : LifecycleService() {
         return START_STICKY
     }
 
+    /**
+     * What the on-screen overlay reads. Deliberately the SAME json the HTTP API serves
+     * rather than a second set of getters: two descriptions of one camera drift, and the
+     * whole point of showing state on the handset is that it agrees with the dashboard.
+     */
+    fun stateJson(): String = if (::engine.isInitialized) engine.stateJson() else "{}"
+
+    /**
+     * The address the desk should be pulling from, or null when this phone has no LAN
+     * address at all.
+     *
+     * ⚠️ NULL IS A REAL ANSWER HERE, NOT A FAILURE. The wired phone is genuinely off WiFi -
+     * `ip addr` on it shows nothing but `lo` - and it is reached only through an adb port
+     * forward. Rendering that as "?.?.?.?" put a broken-looking address on screen for a
+     * camera that was working perfectly, which is exactly the kind of false alarm this
+     * readout exists to prevent. The caller says what USB means instead.
+     */
+    fun address(): String? = lanAddress()
+
     override fun onDestroy() {
         RUNNING = false
+        LIVE = null
         if (::mic.isInitialized) mic.stop()
         if (::server.isInitialized) server.stop()
         try { wifiLock?.release() } catch (_: Exception) {}
@@ -206,5 +227,14 @@ class CamService : LifecycleService() {
         const val NOTIF_ID = 42
         const val ACTION_STOP = "online.awen.rigcam.STOP"
         @Volatile var RUNNING = false
+
+        /**
+         * ⚠️ NOT A LEAK, AND NOT A SHORTCUT AROUND BINDING. The Activity is a throwaway
+         * viewer onto a service that deliberately outlives it, so binding would mean a
+         * connection torn down and rebuilt on every screen rotation just to read a string
+         * once a second. This is cleared in onDestroy, and every reader must treat null as
+         * the normal "service not up yet" case rather than an error.
+         */
+        @Volatile var LIVE: CamService? = null
     }
 }

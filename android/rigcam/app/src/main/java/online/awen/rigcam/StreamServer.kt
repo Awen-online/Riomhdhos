@@ -108,6 +108,18 @@ class StreamServer(
     private val nalClients = CopyOnWriteArrayList<NalClient>()
     private val tsClients = CopyOnWriteArrayList<NalClient>()
 
+    /**
+     * ⚠️ WHO IS ACTUALLY PULLING - WHICH IS NOT WHAT `streaming` ANSWERS. The state JSON's
+     * `streaming` is true whenever the encoder has produced a NAL, and it stays true with
+     * nothing whatsoever on the other end. From the handset those two look identical, and
+     * they are the difference between "the desk is taking this camera" and "this phone is
+     * burning 500 mA for no one". The screen has to be able to tell them apart, so the
+     * counts are published rather than inferred.
+     */
+    fun videoClientCount() = nalClients.size + tsClients.size
+    fun audioClientCount() = audioClients.size
+    fun mjpegViewerCount() = mjpegViewers.get()
+
     /** Called from the mic thread for every 20 ms block. */
     fun publishAudio(block: ByteArray) {
         for (c in audioClients) {

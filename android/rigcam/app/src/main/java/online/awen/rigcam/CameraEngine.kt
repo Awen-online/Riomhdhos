@@ -396,6 +396,9 @@ class CameraEngine(
         return """
         {"streaming":${(e?.nalsOut ?: 0) > 0},
          "dormant":$dormant,
+         "clients":{"video":${server?.videoClientCount() ?: 0},
+                    "mjpeg":${server?.mjpegViewerCount() ?: 0},
+                    "audio":${server?.audioClientCount() ?: 0}},
          "audio":${mic?.stateJson() ?: "null"},
          "resolution":"${actualW}x${actualH}",
          "facing":"${if (facing == CameraSelector.LENS_FACING_BACK) "back" else "front"}",

@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  ⚠️ THE OVERLAY IS READ FROM ACROSS A ROOM, ON A PHONE LYING ON A DESK, MID-SET. That is
+  the whole design constraint. The state line is large and coloured because it answers the
+  only urgent question - is this camera actually being taken? - and the detail block is
+  small monospace underneath because those are numbers you go looking for, not ones that
+  have to catch your eye. Both sit on a scrim rather than on the picture itself, since a
+  bright frame made white text on the old single line unreadable.
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -9,16 +17,34 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <TextView
-        android:id="@+id/status"
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|start"
         android:layout_margin="16dp"
-        android:padding="8dp"
-        android:background="#99000000"
-        android:textColor="#FFFFFF"
-        android:textSize="13sp"
-        android:fontFamily="monospace"
-        android:text="@string/starting" />
+        android:padding="10dp"
+        android:orientation="vertical"
+        android:background="#B3000000">
+
+        <TextView
+            android:id="@+id/state"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="#FFFFFF"
+            android:textSize="20sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:text="@string/starting" />
+
+        <TextView
+            android:id="@+id/detail"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textColor="#CCCCCC"
+            android:textSize="13sp"
+            android:lineSpacingExtra="2dp"
+            android:fontFamily="monospace"
+            android:text="" />
+    </LinearLayout>
 </FrameLayout>
