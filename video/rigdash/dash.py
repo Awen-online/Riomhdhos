@@ -106,6 +106,10 @@ ADB = r"C:\Users\mccul\Android\Sdk\platform-tools\adb.exe"
 # changes on the timescale of an OS update, not a song.
 _dev_cache = {"at": 0.0, "data": []}
 _DEV_TTL = 120.0
+# Below this draw, "hours left" is arithmetic on measurement noise. These phones pull
+# ~500 mA while streaming, so anything under 50 mA means the battery is effectively
+# balanced and no honest runtime can be quoted - see the note in device_info.
+RUNTIME_MIN_MA = 50
 
 
 def adb_devices():
@@ -165,7 +169,17 @@ def device_info(serial):
         ua = int(d["now"])                       # microamps; negative means discharging
         d["mA"] = round(ua / 1000.0)
         mah_now = int(d["full"]) / 1000.0 * int(d["level"]) / 100.0
-        if ua < 0:
+        # ⚠️ A RUNTIME DIVIDED BY A NEAR-ZERO CURRENT IS NOISE, NOT NEWS. Only exactly 0 was
+        # guarded here, so a phone sitting balanced on its charger at -4 mA reported
+        # "891.7 h left" - thirty-seven days, for a handset that lasts a couple of hours
+        # while streaming. One absurd number is enough to teach you to stop reading the
+        # field that exists precisely to shout when the battery is short. Below this
+        # threshold the reading is dominated by measurement noise and the division
+        # explodes, so say nothing rather than something false.
+        if abs(ua) < RUNTIME_MIN_MA * 1000:
+            d["hours"] = None
+            d["charging"] = None if ua == 0 else ua > 0
+        elif ua < 0:
             d["hours"] = round(mah_now / (abs(ua) / 1000.0), 1)
             d["charging"] = False
         elif ua > 0:
