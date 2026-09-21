@@ -296,9 +296,14 @@ BRIDGES = [
     # the note in bridge_reset about who is holding the sink. It lives on the bridge rather
     # than in a parallel list so that resetting ONE bridge cannot release the other one's
     # sink by picking the wrong index.
+    # ⚠️ THE LABEL NAMES THE TRANSPORT, SO IT HAS TO BE TRUE. Both phones now come in over
+    # WiFi - the Pixel 8 moved off its USB adb forward on 2026-09-21 and its task points at
+    # 192.168.1.166:8090 directly. A label that still said USB would send you to replug a
+    # cable that is not part of the path any more, which is the exact wrong-tool failure
+    # the device rows were fixed for.
     {"task": "Riomhdhos vcam bridge", "label": "Pixel 6 (WiFi)",
      "log": BRIDGE_LOGS / "vcam-p6.log", "source": "Pixel 6 (vcam)"},
-    {"task": "Riomhdhos vcam bridge P8", "label": "Pixel 8 (USB)",
+    {"task": "Riomhdhos vcam bridge P8", "label": "Pixel 8 (WiFi)",
      "log": BRIDGE_LOGS / "vcam-p8.log", "source": "Pixel 8"},
 ]
 BRIDGE_FRESH_S = 90        # they report frames every 30 s, so this is three missed reports
