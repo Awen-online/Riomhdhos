@@ -43,8 +43,12 @@
      scrolls through the slot between them. It was 47 against a 40px bar, which showed a
      7px sliver of whatever card was passing underneath - measured, not guessed. The
      script keeps it in step if a long scene name ever wraps the bar onto two lines. */
+  /* ⚠️ THE COLUMN COUNT IS THE TAB COUNT. Adding STREAM as a fifth tab against a
+     hard-coded repeat(4) wrapped RIG onto a second row and pushed every panel down.
+     auto-fit keeps one row however many tabs exist; 5.5rem is the narrowest a label
+     plus its icon reads at, and below that they stack deliberately rather than clip. */
   .tabs{position:sticky;top:40px;z-index:9;background:var(--bg);display:grid;
-        grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:8px 0 10px}
+        grid-template-columns:repeat(auto-fit,minmax(5.5rem,1fr));gap:6px;padding:8px 0 10px}
   /* A press must be a press. Without this a thumb that starts on a button and drags to
      scroll fires it on release, and a vertical drag that begins on a slider drags the
      SLIDER instead of the page - both of which change a live camera by accident.
@@ -209,8 +213,41 @@
   <button id="t_cams" class="sel"></button>
   <button id="t_perform"></button>
   <button id="t_look"></button>
+  <button id="t_stream"></button>
   <button id="t_rig"></button>
 </div>
+
+<!-- ⚠️ THE RELAY IS STANDALONE AND STAYS THAT WAY. This tab READS it (MediaMTX's local
+     API plus each pusher's own progress file) and can bounce its scheduled task, but it
+     never owns or spawns it. That is what keeps the same relay folder runnable on a laptop
+     with no dashboard at all - copy the folder, edit keys.env, run the bat. -->
+<section id="stream">
+  <h2>Broadcast</h2>
+  <div class="card">
+    <div class="row"><span class="k" id="v_bcast_k">Not streaming</span>
+      <span class="v" id="v_bcast">&mdash;</span></div>
+    <div class="g2" id="bcastbtns"></div>
+    <div class="note">&#9888;&#65039; <b>Green means bytes are moving.</b> A destination is
+      only feeding while its progress file is both fresh AND advancing &mdash; the relay's
+      own <code>.state</code> file is a hint, not evidence, because MediaMTX hard-kills the
+      supervisor when the source goes away and can leave it reading "running" over a dead
+      push. Same trap as a switched-off phone whose retry log looked fresh enough to read
+      as feeding.<br><br>
+      <b>Stop</b> asks first. An accidental stop mid-set costs the set.</div>
+  </div>
+
+  <h2>Destinations</h2>
+  <div class="card">
+    <div class="row"><span class="k">Ingest from OBS</span><span class="v" id="v_ingest">&mdash;</span></div>
+    <div id="destlist"><span class="sub">&mdash;</span></div>
+    <div class="g2" id="relaybtns"></div>
+    <div class="note">Each destination is its own ffmpeg reading the same local RTMP path,
+      so one platform dropping cannot take the others down, and a dead one retries on its
+      own with backoff. <b>Restart relay</b> bounces the whole scheduled task &mdash; it
+      does not touch OBS, and OBS keeps sending while it comes back.<br><br>
+      Keys live in the relay's own <code>keys.env</code>, never here and never in a log.</div>
+  </div>
+</section>
 
 <section id="perform">
   <h2>Mood</h2>
@@ -448,11 +485,14 @@ const TAB_ICON = {
   perform: SVG('<path d="M8 5v14M16 5v14"/><path d="M8 9h8M8 15h8"/>', 1.6),
   look:    SVG('<circle cx="12" cy="12" r="3.2"/><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/>'),
   rig:     SVG('<path d="M4 18V9M9 18V5M14 18v-7M19 18v-4"/>', 1.8),
+  // Broadcast: one source throwing arcs outward. Not a cloud - nothing here leaves the
+  // building except the pushes themselves, and a cloud would imply a service in the middle.
+  stream:  SVG('<circle cx="12" cy="17.5" r="2.1" fill="currentColor" stroke="none"/><path d="M8.3 13.8a5 5 0 0 1 7.4 0"/><path d="M5.4 10.6a9 9 0 0 1 13.2 0"/>'),
 };
 
 // Order matches the strip above; cams leads because it is the landing tab.
 const TABS = [['t_cams','cams'], ['t_perform','perform'], ['t_look','look'],
-              ['t_rig','rig']];
+              ['t_stream','stream'], ['t_rig','rig']];
 for (const [btn, sec] of TABS){
   $(btn).innerHTML = '<span class="ic">' + TAB_ICON[sec] + '</span>' +
                      sec.charAt(0).toUpperCase() + sec.slice(1);
@@ -465,8 +505,16 @@ for (const [btn, sec] of TABS){
     // Camera state is expensive to read, so it loads when you actually open Look rather
     // than on every poll. Once per visit is enough - taps re-query themselves.
     if (sec === 'cams' && !CAM) loadCamera();
+    // Unlike the camera read, this one is cheap and entirely local, so it refreshes on
+    // every visit rather than once - a stale broadcast panel is worse than no panel.
+    if (sec === 'stream') loadStream();
   };
 }
+
+// ⚠️ POLLED ONLY WHILE THE TAB IS OPEN. Mid-set this has to be current to the second, but
+// a dashboard sitting on Cams has no business hammering the relay - and the phones are
+// already the expensive thing on this box.
+setInterval(() => { if ($('stream').classList.contains('on')) loadStream(); }, 2000);
 
 // ⚠️ SCROLL GUARD. touch-action stops a slider being dragged by a scroll, but a BUTTON
 // still fires on release even when the finger travelled half the screen first - which on a
@@ -1223,6 +1271,109 @@ const BR_WHY = {
 function phoneMark(label){
   const k = Object.keys(PHONE_ICON).find(n => String(label || '').includes(n));
   return k ? PHONE_ICON[k] : PHONE_FALLBACK;
+}
+
+/* ---- broadcast ---------------------------------------------------------------------
+   ⚠️ SAME RULE AS THE BRIDGES: green is earned, never assumed. The server decides health
+   from the progress file being fresh AND its byte counter advancing; this only paints it.
+   'stalled' is the state that matters - a pusher alive and sending nothing - and it is the
+   one a single green/red pair would hide. */
+const DEST_COL = { feeding:'var(--ok)', stalled:'var(--bad)', stopped:'var(--dim)' };
+const DEST_WHY = {
+  stalled: 'alive but nothing is reaching the platform',
+  stopped: 'not running',
+};
+let STREAM = null;
+
+function hhmmss(s){
+  if (s == null) return '';
+  const h = Math.floor(s/3600), m = Math.floor(s%3600/60);
+  return (h ? h + ':' + String(m).padStart(2,'0') : String(m)) + ':' +
+         String(Math.floor(s%60)).padStart(2,'0');
+}
+function mb(n){
+  if (!n) return '0 MB';
+  return n >= 1073741824 ? (n/1073741824).toFixed(2) + ' GB' : Math.round(n/1048576) + ' MB';
+}
+
+function renderStream(){
+  const s = STREAM; if (!s) return;
+  const ds = s.destinations || [];
+  const live = ds.filter(d => d.health === 'feeding').length;
+  const obs  = s.obs || {};
+
+  // Headline: three states, not two. "Degraded" is the whole reason this panel exists.
+  let head, col;
+  if (!obs.active)            { head = 'Not streaming';               col = 'var(--dim)'; }
+  else if (!ds.length)        { head = 'OBS sending, no destinations'; col = 'var(--accent)'; }
+  else if (live === ds.length){ head = 'LIVE';                         col = 'var(--ok)'; }
+  else if (live === 0)        { head = 'LIVE — nothing getting out'; col = 'var(--bad)'; }
+  else                        { head = 'DEGRADED — ' + live + ' of ' + ds.length;
+                                col = 'var(--bad)'; }
+  $('v_bcast_k').textContent = head;
+  $('v_bcast_k').style.color = col;
+  const longest = Math.max(0, ...ds.map(d => d.uptimeS || 0));
+  $('v_bcast').textContent = obs.active
+      ? (hhmmss(longest) || 'starting…')
+      : (obs.connected ? 'OBS idle' : 'OBS not reachable');
+
+  const ing = s.ingest || {};
+  $('v_ingest').textContent = ing.error ? 'relay not answering'
+      : (ing.ready ? 'ready · ' + ing.readers + ' reader' + (ing.readers === 1 ? '' : 's')
+                     + ' · ' + mb(ing.bytes)
+                   : 'no source publishing');
+  $('v_ingest').style.color = ing.error ? 'var(--bad)'
+      : (ing.ready ? 'var(--ok)' : 'var(--dim)');
+
+  const box = $('destlist');
+  if (!ds.length){
+    box.innerHTML = '<span class="sub">no destinations pushing — enable one in the '
+                  + 'relay’s keys.env, then start streaming from OBS</span>';
+  } else {
+    box.innerHTML = ds.map(d => {
+      const c = DEST_COL[d.health] || 'var(--accent)';
+      const bits = [];
+      if (d.kbps)            bits.push(d.kbps + ' kbps');
+      if (d.bytes)           bits.push(mb(d.bytes));
+      if (d.uptimeS != null) bits.push(hhmmss(d.uptimeS));
+      if (d.restarts)        bits.push(d.restarts + ' restart' + (d.restarts === 1 ? '' : 's'));
+      return '<div class="brrow">'
+        + '<div class="hdr"><span class="nm">' + esc(d.name) + '</span>'
+        + '<span class="sub brstate" style="color:' + c + '">'
+        + '<span class="sdot" style="background:' + c + '"></span>'
+        + esc(d.retrying ? 'retrying' : d.health) + '</span></div>'
+        + (DEST_WHY[d.health] ? '<div class="sub brwhy">' + DEST_WHY[d.health] + '</div>' : '')
+        + (bits.length ? '<div class="sub brlast">' + bits.join(' · ') + '</div>' : '')
+        + (d.last ? '<div class="sub brlast">' + esc(d.last) + '</div>' : '')
+        + '</div>';
+    }).join('');
+  }
+
+  const bb = $('bcastbtns'); bb.innerHTML = '';
+  if (obs.active){
+    // ⚠️ Confirm on stop, never on start. Going live late is a mistake you can fix;
+    // ending a broadcast by mis-tap is not.
+    camBtn(bb, 'Stop streaming', CAM_ICON.lock, false, async () => {
+      if (!confirm('Stop the broadcast?')) return;
+      await post('/api/stream', {action:'obs_stop'});
+      setTimeout(loadStream, 1200);
+    });
+  } else {
+    camBtn(bb, 'Go live', CAM_ICON.hq, false, async () => {
+      await post('/api/stream', {action:'obs_start'});
+      setTimeout(loadStream, 1800);
+    });
+  }
+  const rb = $('relaybtns'); rb.innerHTML = '';
+  camBtn(rb, 'Restart relay', CAM_ICON.flip, false, async () => {
+    await post('/api/stream', {action:'relay_restart'});
+    setTimeout(loadStream, 4000);
+  });
+}
+
+async function loadStream(){
+  try { STREAM = await (await fetch('/api/stream')).json(); renderStream(); }
+  catch(e){ $('v_bcast').textContent = 'unreachable'; }
 }
 
 function renderBridges(){

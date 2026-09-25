@@ -29,6 +29,7 @@ down mid-show.
 import argparse
 import json
 import queue
+import re
 import subprocess
 import urllib.parse
 import urllib.request
@@ -104,6 +105,40 @@ ADB = r"C:\Users\mccul\Android\Sdk\platform-tools\adb.exe"
 
 # ⚠️ CACHED. Each phone costs an adb round trip, and this is identity information that
 # changes on the timescale of an OS update, not a song.
+# ---------------------------------------------------------------- access token
+# Generated on first run and read at startup. Delete the file to disable auth entirely
+# (loopback is always allowed regardless); rotate by deleting it and restarting.
+TOKEN_FILE = Path.home() / ".riastrad-token"
+try:
+    if not TOKEN_FILE.exists():
+        import secrets
+        TOKEN_FILE.write_text(secrets.token_urlsafe(18), encoding="utf-8")
+    TOKEN = TOKEN_FILE.read_text(encoding="utf-8").strip()
+except Exception:
+    # A token we cannot read must not take the dashboard down - but it must be loud,
+    # because the failure mode is "silently open to the network again".
+    TOKEN = ""
+    print("WARNING: could not read or create the access token; "
+          "network access is UNAUTHENTICATED", flush=True)
+
+# ---------------------------------------------------------------- the stream relay
+# The relay is deliberately STANDALONE: its own folder, its own scheduled task, its own
+# retry loop. Riastrad reads it and can restart it, but never owns it - so the same folder
+# runs on a laptop somewhere else with no dashboard at all.
+RELAY_DIR = Path(r"C:\Users\mccul\Awen\stream-relay")
+RELAY_STATUS = RELAY_DIR / "status"
+RELAY_TASK = "Awen stream relay"
+MEDIAMTX_API = "http://127.0.0.1:9997"
+# ⚠️ A DESTINATION IS GREEN ONLY WHILE BYTES ARE MOVING TO IT. The .state file the relay
+# writes is a HINT, not evidence: MediaMTX hard-kills the supervisor when the source goes
+# away, so its finally block may never run and .state can sit there reading "running" over
+# a dead push. This is the same shape as the bridge bug where retry spam kept a log fresh
+# and a switched-off phone reported "feeding". Judge by the progress file: recently written
+# AND total_size advancing.
+EGRESS_FRESH_S = 5.0
+
+_egress_seen = {}          # name -> (total_size, first time we saw that value)
+
 _dev_cache = {"at": 0.0, "data": []}
 _DEV_TTL = 120.0
 # Below this draw, "hours left" is arithmetic on measurement noise. These phones pull
@@ -468,6 +503,140 @@ def bridge_reset(only=None):
     # source once frames are actually flowing, which takes several seconds, and a request
     # that blocks that long reads as a hung dashboard. The status rows tell the truth a
     # moment later.
+    return {"ok": True, "steps": steps}
+
+
+# ---------------------------------------------------------------- the stream relay
+
+
+def _progress(path):
+    """ffmpeg -progress writes repeating key=value blocks; the last values are current."""
+    out = {}
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip()
+    except Exception:
+        return {}
+    return out
+
+
+def _egress_health(name, prog_path):
+    """feeding / stalled / stopped for one destination, from evidence only."""
+    try:
+        age = time.time() - prog_path.stat().st_mtime
+    except Exception:
+        return "stopped", None, 0.0, None
+    prog = _progress(prog_path)
+    try:
+        total = int(prog.get("total_size") or 0)
+    except ValueError:
+        total = 0
+    kbps = None
+    m = re.match(r"([\d.]+)", (prog.get("bitrate") or "").strip())
+    if m:
+        try:
+            kbps = round(float(m.group(1)))
+        except ValueError:
+            pass
+    secs = None
+    try:
+        secs = int(int(prog.get("out_time_us") or 0) / 1_000_000)
+    except ValueError:
+        pass
+
+    if prog.get("progress") == "end":
+        return "stopped", total, age, secs
+    if age >= EGRESS_FRESH_S:
+        # Written recently enough to be a live process, but not recently enough to be
+        # sending anything. Alive and not feeding is exactly the case worth naming.
+        return "stalled", total, age, secs
+
+    # Fresh file. Still not enough on its own: ffmpeg rewrites the block on a timer even
+    # when the far end has stopped accepting, so require the counter to have MOVED.
+    prev = _egress_seen.get(name)
+    if prev is None or prev[0] != total:
+        _egress_seen[name] = (total, time.time())
+        return "feeding", total, age, secs
+    held = time.time() - prev[1]
+    return ("feeding" if held < EGRESS_FRESH_S else "stalled"), total, age, secs
+
+
+def relay_status():
+    """Ingest from MediaMTX, egress from each pusher's own progress file."""
+    out = {"ingest": {"ready": False, "readers": 0, "bytes": 0, "error": None},
+           "destinations": [], "task": _task_state(RELAY_TASK)}
+    try:
+        with urllib.request.urlopen(MEDIAMTX_API + "/v3/paths/get/live", timeout=2) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        out["ingest"] = {"ready": bool(d.get("ready")),
+                         "readers": len(d.get("readers") or []),
+                         "bytes": d.get("bytesReceived") or 0, "error": None}
+    except Exception as e:
+        out["ingest"]["error"] = type(e).__name__
+
+    try:
+        progs = sorted(RELAY_STATUS.glob("*.progress"))
+    except Exception:
+        progs = []
+    for p in progs:
+        name = p.stem
+        health, total, age, secs = _egress_health(name, p)
+        state = err = ""
+        try:
+            state = (RELAY_STATUS / f"{name}.state").read_text(encoding="utf-8",
+                                                               errors="replace").strip()
+        except Exception:
+            pass
+        try:
+            err = (RELAY_STATUS / f"{name}.err").read_text(
+                encoding="utf-8", errors="replace").strip()[-160:]
+        except Exception:
+            pass
+        restarts = 0
+        m = re.search(r"restarts=(\d+)", state)
+        if m:
+            restarts = int(m.group(1))
+        prog = _progress(p)
+        out["destinations"].append({
+            "name": name, "health": health, "bytes": total,
+            "ageS": None if age is None else round(age, 1),
+            "uptimeS": secs, "kbps": None,
+            "speed": prog.get("speed"), "restarts": restarts,
+            "retrying": state.startswith("retrying"), "last": err,
+        })
+        try:
+            mm = re.match(r"([\d.]+)", (prog.get("bitrate") or "").strip())
+            out["destinations"][-1]["kbps"] = round(float(mm.group(1))) if mm else None
+        except Exception:
+            pass
+    return out
+
+
+def obs_stream_state():
+    """Is OBS actually sending? OBS closed is a normal answer, not an error."""
+    try:
+        cl = obsctl.connect(timeout=3)
+        st = cl.get_stream_status()
+        return {"connected": True, "active": bool(getattr(st, "output_active", False)),
+                "congestion": getattr(st, "output_congestion", None),
+                "skipped": getattr(st, "output_skipped_frames", None),
+                "total": getattr(st, "output_total_frames", None)}
+    except (Exception, SystemExit):
+        return {"connected": False, "active": False}
+
+
+def relay_restart():
+    steps = []
+    for verb in ("/End", "/Run"):
+        try:
+            subprocess.run(["schtasks", verb, "/TN", RELAY_TASK], capture_output=True,
+                           text=True, timeout=30, creationflags=NO_WINDOW)
+        except Exception as e:
+            steps.append(f"{verb} failed: {type(e).__name__}")
+    _egress_seen.clear()
+    steps.append("restarted " + RELAY_TASK)
     return {"ok": True, "steps": steps}
 
 
@@ -996,6 +1165,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b)))
+        self._maybe_set_cookie()
         self.end_headers()
         self.wfile.write(b)
 
@@ -1006,7 +1176,62 @@ class Handler(BaseHTTPRequestHandler):
         except (Exception, SystemExit):
             return None
 
+    # ---------------------------------------------------------------- access control
+    #
+    # ⚠️ THIS SERVER WAS OPEN TO THE WHOLE NETWORK AND HAD NO AUTH OF ANY KIND. Measured,
+    # not theorised: the rig box at .232 fetched the entire dashboard over the LAN, and the
+    # only matches for "auth" in this file were the words "author" and "authoritative" in
+    # comments. Fourteen POST routes were reachable by anything that could route here -
+    # including /api/power, which puts both phones to sleep, and /api/scene, which changes
+    # what the audience is looking at. This box is also on a tailnet.
+    #
+    # ⚠️ BUT LOOPBACK-ONLY IS THE WRONG FIX, because "open on the phone" is the first line
+    # of this file's own docstring. The dashboard is MEANT to be reachable from the couch.
+    # So: loopback stays unauthenticated (local tools, the OBS browser source, curl), and
+    # everything arriving over the network needs the token.
+    #
+    # The phone visits http://<ip>:8770/?t=<token> ONCE; that sets a cookie and the
+    # bookmark works from then on. A header is also accepted for scripts.
+    def _authed(self):
+        peer = (self.client_address or ("",))[0]
+        if peer in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            return True
+        if not TOKEN:
+            return True                      # no token file => auth disabled deliberately
+        if self.headers.get("X-Riastrad-Token") == TOKEN:
+            return True
+        if ("t=" + TOKEN) in (urlparse(self.path).query or ""):
+            return True
+        cookie = self.headers.get("Cookie") or ""
+        return ("riastrad=" + TOKEN) in cookie
+
+    def _deny(self):
+        # 403, not 401: a browser basic-auth prompt cannot be satisfied by a token in a URL
+        # and would just trap the user in a dialog with nothing useful to type.
+        body = (b"Riastrad: not authorised from this address.\n"
+                b"Open it once as  http://<this-host>:8770/?t=<token>\n"
+                b"The token is in  " + str(TOKEN_FILE).encode() + b"\n")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except Exception:
+            pass
+
+    def _maybe_set_cookie(self):
+        """Turn a one-off ?t=<token> into a sticky cookie so the phone bookmark works."""
+        if TOKEN and ("t=" + TOKEN) in (urlparse(self.path).query or ""):
+            # No Secure flag: this is plain HTTP on a LAN by design. HttpOnly and SameSite
+            # still keep it out of page scripts and off cross-site requests.
+            self.send_header("Set-Cookie",
+                             f"riastrad={TOKEN}; Path=/; Max-Age=31536000; "
+                             f"HttpOnly; SameSite=Lax")
+
     def do_GET(self):
+        if not self._authed():
+            self._deny(); return
         p = urlparse(self.path).path
         try:
             if p == "/feed":
@@ -1028,6 +1253,13 @@ class Handler(BaseHTTPRequestHandler):
                         if q in _subs:
                             _subs.remove(q)
                 return
+
+            if p == "/api/stream":
+                # Cheap and entirely local - a 2 s-capped loopback call plus a few small
+                # file reads - so this one IS safe on the poll tier, unlike /api/camera.
+                s = relay_status()
+                s["obs"] = obs_stream_state()
+                self._json(s); return
 
             if p == "/api/camera":
                 # On demand only. See the note by RIGCAM above.
@@ -1112,6 +1344,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": str(e)}, 500)
 
     def do_POST(self):
+        if not self._authed():
+            self._deny(); return
         p = urlparse(self.path).path
         try:
             n = int(self.headers.get("Content-Length", 0))
@@ -1172,6 +1406,25 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"scene": scene, "steps": apply_preset(scene)}); return
                 self._json({"error": "action must be save, capture, apply or enable"}, 400)
                 return
+
+            if p == "/api/stream":
+                # Above the OBS guard for relay_restart, which is pure schtasks and must
+                # work with OBS closed - the same rule /api/power already follows.
+                act = body.get("action")
+                if act == "relay_restart":
+                    self._json(relay_restart()); return
+                if act in ("obs_start", "obs_stop"):
+                    try:
+                        cl = obsctl.connect(timeout=4)
+                        if act == "obs_start":
+                            cl.start_stream()
+                        else:
+                            cl.stop_stream()
+                    except (Exception, SystemExit) as e:
+                        self._json({"error": f"OBS not reachable: {type(e).__name__}"}, 503)
+                        return
+                    self._json({"ok": True, "action": act}); return
+                self._json({"error": f"unknown action {act!r}"}, 400); return
 
             if p == "/api/bridges":
                 if body.get("action") != "reset":
@@ -1485,7 +1738,13 @@ def main():
     CODE_HASH = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:8]
     print(f"source: {SOURCE}  (video features at 5 Hz)  code {CODE_HASH}", flush=True)
     for label, ip in addresses(args.port):
-        print(f"  {label:<6} dashboard http://{ip}:{args.port}/", flush=True)
+        # Loopback needs no token; anything else does, so print the URL that actually
+        # works from the couch rather than one that 403s.
+        q = "" if ip in ("127.0.0.1", "localhost") or not TOKEN else f"?t={TOKEN}"
+        print(f"  {label:<6} dashboard http://{ip}:{args.port}/{q}", flush=True)
+    if TOKEN:
+        print(f"  token {TOKEN_FILE} (loopback is exempt; delete the file to disable auth)",
+              flush=True)
     print(f"  OBS browser source -> http://localhost:{args.port}/visuals", flush=True)
     ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
 
