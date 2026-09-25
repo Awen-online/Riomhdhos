@@ -64,6 +64,8 @@
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
         padding:12px 14px;margin-bottom:9px}
   .hdr{display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .brrow .hdr{flex-wrap:wrap}
+  .brrow .hdr .nm{flex:1 1 auto;min-width:0}
   .nm{font-weight:600}
   .sub{color:var(--dim);font-size:11px;font-family:ui-monospace,Consolas,monospace}
   .note{color:var(--dim);font-size:11px;line-height:1.55;margin-top:8px}
@@ -136,6 +138,7 @@
   .recbtn.live .glyph{width:38px;height:38px;border-radius:7px}   /* the stop square */
   .recbtn.cold{border-color:var(--line);background:#161b21}
   .recbtn.cold .glyph{background:var(--dim)}
+  .howto{max-width:30rem;text-align:center;line-height:1.5;margin-top:2px}
   .reclabel{font:600 12px ui-sans-serif,system-ui,sans-serif;letter-spacing:.14em;
             text-transform:uppercase;color:var(--dim)}
   .recbtn.armed + .reclabel,.recbtn.live + .reclabel{color:var(--bad)}
@@ -153,6 +156,23 @@
   .pdot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;box-sizing:border-box}
   .pdot.hollow{background:transparent;border:2px solid currentColor}
   .pdot.warn{position:relative;background:transparent;border:2px solid var(--bad)}
+
+  /* Arm switch. A sliding pill, not another pill-shaped button: red/green here means
+     disarmed/armed in the channel-strip sense, and the SHAPE is what keeps that from
+     colliding with the status dots beside it, where red already means broken and, on the
+     record button, recording. Three uses of red on one panel only works if none of them
+     share a silhouette. */
+  .sw{position:relative;width:46px;height:26px;border-radius:13px;border:1px solid var(--line);
+      background:#3a1f22;padding:0;flex:0 0 auto;cursor:pointer;
+      transition:background .16s ease;margin:-9px 0}   /* negative margin = 44px tap target */
+  .sw::before{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;
+      border-radius:50%;background:var(--bad);transition:transform .16s ease, background .16s ease}
+  .sw.on{background:#17301f;border-color:#2c5c3c}
+  .sw.on::before{transform:translateX(20px);background:var(--ok)}
+  .sw:disabled{opacity:.4;cursor:not-allowed}
+  .sw:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  @media (prefers-reduced-motion:reduce){ .sw,.sw::before{transition:none} }
+  .swwrap{display:inline-flex;align-items:center;gap:10px}
 
   /* Facts as a grid of icon + value, so the values start on one vertical line instead of
      running together as ' · ' separated prose that wraps differently on every phone. */
@@ -279,11 +299,14 @@
     <div class="row"><span class="k">Description</span>
       <span class="v sub">YouTube and Facebook only</span></div>
     <input type="text" id="s_desc" maxlength="400" autocomplete="off" placeholder="optional">
+    <div class="row"><span class="k">YouTube privacy</span>
+      <span class="v sub" id="v_privnote">&mdash;</span></div>
     <div class="g3" id="privbtns"></div>
     <div id="preflight"></div>
     <div class="rec">
       <button id="recbtn" class="recbtn cold"><span class="glyph"></span></button>
       <div class="reclabel" id="reclabel">check first</div>
+      <div class="sub howto" id="howto"></div>
     </div>
     <div class="g2" id="bcastbtns"></div>
     <div class="note">&#9888;&#65039; <b>Green means bytes are moving.</b> A destination is
@@ -1369,7 +1392,7 @@ const SETUP = {
   needs_app:     { col:'var(--dim)',    chip:'no app',       step:'app not registered — add its credentials to oauth.env' },
   not_connected: { col:'var(--accent)', chip:'not signed in',step:'sign in once at the desk: python connect.py ' },
   no_key:        { col:'var(--accent)', chip:'no key',       step:'signed in, no stream key yet: python connect.py ' },
-  off:           { col:'var(--dim)',    chip:'off',          step:'key is set but switched off — set ENABLED=1 in keys.env' },
+  off:           { col:'var(--dim)',    chip:'off',          step:'key is set — flick the switch to arm it' },
   ready:         { col:'var(--ok)',     chip:'ready',        step:'will receive the stream' },
 };
 let STREAM = null;
@@ -1474,13 +1497,20 @@ function renderStream(){
       // no_key would be a switch that silently does nothing, which is worse than no
       // switch - the row already says what the actual next step is.
       if (p.key_present){
-        const g = document.createElement('div');
-        g.className = 'g2';
-        row.append(g);
-        camBtn(g, p.enabled ? 'Turn off' : 'Turn on', CAM_ICON.hq, !!p.enabled, async () => {
-          await post('/api/stream', {action:'enable', platform:p.name, on:!p.enabled});
-          loadStream();
-        });
+        const sw = document.createElement('button');
+        sw.className = 'sw' + (p.enabled ? ' on' : '');
+        sw.setAttribute('role', 'switch');
+        sw.setAttribute('aria-checked', p.enabled ? 'true' : 'false');
+        sw.setAttribute('aria-label', (p.label || p.name) + ' armed');
+        sw.onclick = async () => {
+          // Move immediately, then let the poll confirm. A switch that waits on a round
+          // trip before it moves reads as broken and gets pressed twice.
+          sw.classList.toggle('on');
+          sw.disabled = true;
+          try { await post('/api/stream', {action:'enable', platform:p.name, on:!p.enabled}); }
+          finally { loadStream(); }
+        };
+        row.querySelector('.hdr').append(sw);
       }
       box.append(row);
     }
@@ -1525,6 +1555,22 @@ function renderStream(){
   btn.className = 'recbtn ' + (obs.active ? 'live' : (armed ? 'armed' : 'cold'));
   lab.textContent = obs.active ? 'stop' : (armed ? 'go live' : 'nothing armed');
   btn.setAttribute('aria-label', lab.textContent);
+  // ⚠️ SAY WHAT THE BUTTON ACTUALLY DOES. Nothing on this panel pushes video - OBS does.
+  // This starts OBS streaming to the local relay, and the relay fans that one stream out
+  // to whatever is switched on below. Without that sentence the obvious reading is that
+  // Riastrad is the encoder, and the first time a channel is dark you go looking in the
+  // wrong place.
+  const names = (s.platforms || []).filter(p => p.state === 'ready')
+                                   .map(p => p.label || p.name);
+  $('howto').textContent = obs.active
+    ? 'OBS is sending to the relay, which is forwarding to '
+      + (names.join(' and ') || 'nothing') + '. Press to stop.'
+    : (armed
+        ? 'Press this and OBS starts sending to the relay here on this machine; the relay '
+          + 'forwards that one stream out to ' + names.join(' and ')
+          + '. Nothing to press in OBS.'
+        : 'Switch a channel on below first. This starts OBS sending to the local relay, '
+          + 'and the relay forwards it to whatever is armed.');
   btn.onclick = async () => {
     if (obs.active){
       if (!confirm('Stop the broadcast?')) return;
@@ -1540,6 +1586,7 @@ function renderStream(){
     renderStream();
   };
 
+  renderPrivacy();
   const bb = $('bcastbtns'); bb.innerHTML = '';
   if (!obs.active){
     camBtn(bb, 'Re-check destinations', CAM_ICON.tight, false, async () => {
@@ -1571,8 +1618,21 @@ function showReport(head, lines, bad){
 
 let PREFLIGHT_OK = false, LIVE_SINCE = 0;
 let PRIVACY = 'unlisted';
+/* ⚠️ THESE ONLY DO ANYTHING FOR YOUTUBE, AND ONLY THROUGH OAUTH. Privacy is a property of
+   a YouTube broadcast, which only exists when connect.py creates one. Twitch has no such
+   concept and Facebook's is set on its own object. With a hand-pasted key and no app
+   registered these buttons are decoration - so say that on the row rather than let three
+   confident-looking buttons imply the stream is private when it is not. */
 function renderPrivacy(){
   const box = $('privbtns'); if (!box) return;
+  const yt = ((STREAM && STREAM.platforms) || []).find(p => p.name === 'youtube');
+  const live = !!(yt && yt.signed_in);
+  const note = $('v_privnote');
+  if (note){
+    note.textContent = live ? 'applied when the broadcast is created'
+                            : 'not applied — YouTube is not signed in';
+    note.style.color = live ? 'var(--dim)' : 'var(--accent)';
+  }
   box.innerHTML = '';
   for (const p of ['public','unlisted','private']){
     camBtn(box, p, CAM_ICON.lock, PRIVACY === p, async () => {
@@ -1581,6 +1641,7 @@ function renderPrivacy(){
       renderPrivacy();
     });
   }
+  if (!live) for (const b of box.querySelectorAll('button')) b.style.opacity = '.45';
 }
 
 async function goLive(force){
@@ -1588,7 +1649,8 @@ async function goLive(force){
   // No title is a legitimate choice, not an error - it is the whole no-OAuth path. Skip
   // the platform calls entirely rather than failing on them.
   if (!title) force = true;
-  try { localStorage.setItem('riastrad.title', title); } catch(e){}
+  try { localStorage.setItem('riastrad.title', title);
+        localStorage.setItem('riastrad.desc', $('s_desc').value.trim()); } catch(e){}
   showReport('setting titles, then starting OBS…', []);
   const r = await post('/api/stream',
       {action:'golive', title, desc:$('s_desc').value.trim(), privacy:PRIVACY, force:!!force});
@@ -1613,9 +1675,14 @@ async function loadStream(){
 
 // Restore what was typed last time - a dash.py restart mid-setup should not cost the
 // title - and keep the character count honest against Twitch's 140 limit.
+const DEFAULT_TITLE = 'Test title';
+const DEFAULT_DESC  = 'Test description';
 try {
+  // Remembered value wins; the default is only ever a starting point on a fresh browser.
   const t = localStorage.getItem('riastrad.title');
-  if (t) $('s_title').value = t;
+  $('s_title').value = (t === null ? DEFAULT_TITLE : t);
+  const dsc = localStorage.getItem('riastrad.desc');
+  $('s_desc').value = (dsc === null ? DEFAULT_DESC : dsc);
   const pv = localStorage.getItem('riastrad.privacy');
   if (pv) PRIVACY = pv;
 } catch(e){}
