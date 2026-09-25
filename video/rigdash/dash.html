@@ -211,9 +211,9 @@
      deliberately once a set is running; nobody opens this page mid-song by accident. -->
 <div class="tabs">
   <button id="t_cams" class="sel"></button>
+  <button id="t_stream"></button>
   <button id="t_perform"></button>
   <button id="t_look"></button>
-  <button id="t_stream"></button>
   <button id="t_rig"></button>
 </div>
 
@@ -491,25 +491,43 @@ const TAB_ICON = {
 };
 
 // Order matches the strip above; cams leads because it is the landing tab.
-const TABS = [['t_cams','cams'], ['t_perform','perform'], ['t_look','look'],
-              ['t_stream','stream'], ['t_rig','rig']];
+// Cams then Stream: the two you touch while a set is actually running, side by side and
+// leftmost. Perform, Look and Rig are set-up work you do before anyone is watching.
+const TABS = [['t_cams','cams'], ['t_stream','stream'], ['t_perform','perform'],
+              ['t_look','look'], ['t_rig','rig']];
+function selectTab(sec, scroll){
+  for (const [b,s] of TABS){
+    $(b).classList.toggle('sel', s === sec);
+    $(s).classList.toggle('on',  s === sec);
+  }
+  if (scroll !== false) window.scrollTo(0,0);
+  // ⚠️ THE TAB HAS TO SURVIVE A RELOAD. This page gets refreshed constantly - a dash.py
+  // restart, a dropped WiFi, a pull-to-refresh on the phone - and every one of those used
+  // to dump you back on Cams. Mid-set that means finding your place again while something
+  // is wrong, which is exactly when you can least afford to.
+  try { localStorage.setItem('riastrad.tab', sec); } catch (e) {}
+  // Camera state is expensive to read, so it loads when you actually open Cams rather
+  // than on every poll. Once per visit is enough - taps re-query themselves.
+  if (sec === 'cams' && !CAM) loadCamera();
+  // Unlike the camera read, this one is cheap and entirely local, so it refreshes on
+  // every visit rather than once - a stale broadcast panel is worse than no panel.
+  if (sec === 'stream') loadStream();
+}
+
 for (const [btn, sec] of TABS){
   $(btn).innerHTML = '<span class="ic">' + TAB_ICON[sec] + '</span>' +
                      sec.charAt(0).toUpperCase() + sec.slice(1);
-  $(btn).onclick = () => {
-    for (const [b,s] of TABS){
-      $(b).classList.toggle('sel', b === btn);
-      $(s).classList.toggle('on', s === sec);
-    }
-    window.scrollTo(0,0);
-    // Camera state is expensive to read, so it loads when you actually open Look rather
-    // than on every poll. Once per visit is enough - taps re-query themselves.
-    if (sec === 'cams' && !CAM) loadCamera();
-    // Unlike the camera read, this one is cheap and entirely local, so it refreshes on
-    // every visit rather than once - a stale broadcast panel is worse than no panel.
-    if (sec === 'stream') loadStream();
-  };
+  $(btn).onclick = () => selectTab(sec);
 }
+
+// Restore on load. ⚠️ Validate the stored name against TABS first: a tab that was renamed
+// or removed would otherwise match nothing, leave every section hidden, and present as a
+// blank dashboard - a worse failure than forgetting which tab you were on. Don't scroll,
+// because a reload should put you back where you were, not at the top.
+try {
+  const saved = localStorage.getItem('riastrad.tab');
+  if (saved && TABS.some(([, s]) => s === saved)) selectTab(saved, false);
+} catch (e) {}
 
 // ⚠️ POLLED ONLY WHILE THE TAB IS OPEN. Mid-set this has to be current to the second, but
 // a dashboard sitting on Cams has no business hammering the relay - and the phones are
