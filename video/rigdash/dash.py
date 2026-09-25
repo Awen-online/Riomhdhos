@@ -106,19 +106,28 @@ ADB = r"C:\Users\mccul\Android\Sdk\platform-tools\adb.exe"
 # ⚠️ CACHED. Each phone costs an adb round trip, and this is identity information that
 # changes on the timescale of an OS update, not a song.
 # ---------------------------------------------------------------- access token
-# Generated on first run and read at startup. Delete the file to disable auth entirely
-# (loopback is always allowed regardless); rotate by deleting it and restarting.
+#
+# ⚠️ OPT-IN, NOT OPT-OUT, AND THAT IS A DELIBERATE REVERSAL. This first shipped
+# generating a token on startup and requiring it from anywhere but loopback. That is the
+# safer default in the abstract and it was the wrong one here: it silently broke the phone
+# bookmark that is this dashboard's primary way of being used, mid-session, with no
+# warning - and the comment claiming you could "delete the file to disable it" was false,
+# because startup recreated it. A security control that breaks the instrument during a set
+# will be ripped out at the worst moment, so it does not get to be the default.
+#
+# No file  -> no auth. Exactly the behaviour this had for its whole life before today.
+# A file   -> its contents are required from anything that is not loopback.
+#
+# Turn it on for the case that actually warrants it - the rig on a venue or hotel network,
+# where the LAN is full of strangers:
+#     python -c "import secrets;print(secrets.token_urlsafe(18))" > %USERPROFILE%\.riastrad-token
+# then restart the task. Delete the file and restart to go back.
 TOKEN_FILE = Path.home() / ".riastrad-token"
 try:
-    if not TOKEN_FILE.exists():
-        import secrets
-        TOKEN_FILE.write_text(secrets.token_urlsafe(18), encoding="utf-8")
-    TOKEN = TOKEN_FILE.read_text(encoding="utf-8").strip()
+    TOKEN = TOKEN_FILE.read_text(encoding="utf-8").strip() if TOKEN_FILE.exists() else ""
 except Exception:
-    # A token we cannot read must not take the dashboard down - but it must be loud,
-    # because the failure mode is "silently open to the network again".
     TOKEN = ""
-    print("WARNING: could not read or create the access token; "
+    print("WARNING: access token file exists but could not be read; "
           "network access is UNAUTHENTICATED", flush=True)
 
 # ---------------------------------------------------------------- the stream relay
@@ -1742,9 +1751,10 @@ def main():
         # works from the couch rather than one that 403s.
         q = "" if ip in ("127.0.0.1", "localhost") or not TOKEN else f"?t={TOKEN}"
         print(f"  {label:<6} dashboard http://{ip}:{args.port}/{q}", flush=True)
-    if TOKEN:
-        print(f"  token {TOKEN_FILE} (loopback is exempt; delete the file to disable auth)",
-              flush=True)
+    # Say which mode this is, every time. "Is it locked right now" must never be a thing
+    # you work out by getting a 403 on the couch.
+    print(f"  auth  {'ON  - token required off-box (' + str(TOKEN_FILE) + ')' if TOKEN else 'off - open on the LAN, as before'}",
+          flush=True)
     print(f"  OBS browser source -> http://localhost:{args.port}/visuals", flush=True)
     ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
 
