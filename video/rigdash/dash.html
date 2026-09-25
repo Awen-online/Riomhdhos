@@ -162,9 +162,17 @@
      colliding with the status dots beside it, where red already means broken and, on the
      record button, recording. Three uses of red on one panel only works if none of them
      share a silhouette. */
+  /* ⚠️ THE TAP TARGET IS THE ::after, NOT THE MARGIN. This shipped with `margin:-9px 0`
+     and a comment claiming that made a 44px target. It does not - negative margin shrinks
+     the space the element occupies, it does not enlarge what you can hit. Worse, the -9px
+     BOTTOM pulled the following .brwhy/.brlast lines up over the switch, and later
+     siblings paint on top, so the lower third of a 26px control was covered by text and
+     ate the tap. On a desktop pointer you land in the middle and never notice; on a thumb
+     it is a coin flip. An inset ::after gives a real 50px target without touching layout. */
   .sw{position:relative;width:46px;height:26px;border-radius:13px;border:1px solid var(--line);
       background:#3a1f22;padding:0;flex:0 0 auto;cursor:pointer;
-      transition:background .16s ease;margin:-9px 0}   /* negative margin = 44px tap target */
+      transition:background .16s ease}
+  .sw::after{content:'';position:absolute;inset:-12px -10px;border-radius:24px}
   .sw::before{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;
       border-radius:50%;background:var(--bad);transition:transform .16s ease, background .16s ease}
   .sw.on{background:#17301f;border-color:#2c5c3c}
@@ -181,7 +189,7 @@
   .facts .fi{width:14px;height:14px;color:var(--dim);opacity:.85}
   .facts .fi svg{display:block;width:100%;height:100%}
   .facts .fv{min-width:0;overflow-wrap:anywhere}
-  .brwhy{margin-top:4px;font-family:inherit;font-size:11.5px;line-height:1.45}
+  .brwhy{margin-top:8px;font-family:inherit;font-size:11.5px;line-height:1.45}
   .brlast{margin-top:4px;opacity:.72;overflow-wrap:anywhere}
   .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
   .g3 button,.g4 button{padding:10px 3px;font-size:11.5px;font-weight:500}
@@ -1547,8 +1555,13 @@ function renderStream(){
           // trip before it moves reads as broken and gets pressed twice.
           sw.classList.toggle('on');
           sw.disabled = true;
+          // ⚠️ RE-ENABLE IN finally. A successful toggle changes the armed flag, which
+          // changes the structural signature and rebuilds the row, so a fresh switch
+          // appears and the stuck flag goes unnoticed. A FAILED toggle changes nothing,
+          // no rebuild happens, and the switch would stay disabled forever - dead exactly
+          // when something is already wrong.
           try { await post('/api/stream', {action:'enable', platform:p.name, on:!p.enabled}); }
-          finally { loadStream(); }
+          finally { sw.disabled = false; loadStream(); }
         };
         row.querySelector('.hdr').append(sw);
       }
@@ -1561,9 +1574,14 @@ function renderStream(){
     // about - would be running and completely invisible here. A process sending bytes off
     // this machine that the panel does not show is the same failure as a dead camera
     // reading "feeding", just pointed the other way.
+    // ⚠️ NEVER `innerHTML +=` ON A CONTAINER WITH LIVE HANDLERS. It reads the whole
+    // subtree back out as text, concatenates, and reparses - so every child is replaced by
+    // a fresh node and every listener attached in JS is silently dropped. This line broke
+    // all three arm switches the moment it was added, including when `orphans` was empty,
+    // because `+= ''` still round-trips the markup. Build nodes and append them.
     const known = new Set(plats.map(p => p.name));
     const orphans = ds.filter(d => !known.has(d.name));
-    box.innerHTML += orphans.map(d => {
+    for (const frag of orphans.map(d => {
       const c = DEST_COL[d.health] || 'var(--accent)';
       const solid = d.health === 'feeding';
       const bits = [];
@@ -1579,7 +1597,11 @@ function renderStream(){
         + '<div class="sub brwhy">extra destination, not one of the known platforms</div>'
         + (bits.length ? '<div class="sub brlast">' + esc(bits.join(' · ')) + '</div>' : '')
         + '</div>';
-    }).join('');
+    })){
+      const t = document.createElement('template');
+      t.innerHTML = frag;
+      box.append(t.content.firstElementChild);
+    }
   }
 
   // ⚠️ THREE BUTTON STATES, AND NONE OF THEM IS A DEAD CONTROL. Go Live stays cold until
