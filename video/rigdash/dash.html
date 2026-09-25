@@ -302,6 +302,7 @@
     <div class="row"><span class="k" id="v_bcast_k">Not streaming</span>
       <span class="v" id="v_bcast">&mdash;</span></div>
     <div class="row"><span class="k">Title</span><span class="v" id="v_titlelen">0</span></div>
+    <div class="sub" id="v_titlenote"></div>
     <input type="text" id="s_title" maxlength="140" autocomplete="off"
            placeholder="what this set is">
     <div class="row"><span class="k">Description</span>
@@ -1467,12 +1468,23 @@ function renderStream(){
      only when the STRUCTURE changes (a platform appears, its setup state or armed flag
      changes, a pusher starts or stops); everything volatile - bytes, uptime, the health
      chip - is written into the existing nodes. */
+  // ingest readiness is part of the structure: a ready channel with no pusher renders as
+  // "not getting it" only while OBS is actually sending, and that row has no destination
+  // object, so the in-place path below would never reach it.
   const sig = JSON.stringify([
     plats.map(p => [p.name, p.state, p.enabled, p.key_present]),
     ds.map(d => d.name).sort(),
+    !!ing.ready,
   ]);
-  if (sig === DEST_SIG && box.children.length === plats.length + ds.filter(
-        d => !plats.some(p => p.name === d.name)).length){
+  // ⚠️ THIS SKIPS THE LIST REBUILD, NOT THE REST OF THE FUNCTION. It used to `return`,
+  // which also skipped the record button, the instruction under it and the privacy row -
+  // all of which live below. In steady state they simply stopped updating, and the
+  // button kept an onclick closure capturing the state it was built with, so once OBS was
+  // sending, the Stop button would still have tried to GO LIVE. Everything after the
+  // destination list has to run on every poll.
+  const structural = !(sig === DEST_SIG && box.children.length === plats.length + ds.filter(
+        d => !plats.some(p => p.name === d.name)).length);
+  if (!structural){
     for (const row of box.children){
       const d = byName[row.dataset.name];
       const st = row.querySelector('.brstate'), last = row.querySelector('.brlast');
@@ -1495,10 +1507,11 @@ function renderStream(){
         if (bits.length) last.textContent = bits.join(' · ');
       }
     }
-    return;
   }
   DEST_SIG = sig;
-  if (!plats.length){
+  if (!structural){
+    /* list is current; fall through to the controls below */
+  } else if (!plats.length){
     box.innerHTML = '<span class="sub">could not read the relay’s platform list '
                   + '(connect.py status)</span>';
   } else {
@@ -1648,6 +1661,22 @@ function renderStream(){
     renderStream();
   };
 
+  /* ⚠️ THE TITLE BOX IS INERT UNTIL SOMETHING IS SIGNED IN, and a text field you can type
+     into is an even stronger promise than a button you can press. Setting a title needs
+     connect.py to reach the platform: YouTube names the broadcast from YouTube Studio when
+     it auto-creates one from a persistent key, Twitch keeps whatever the channel already
+     says, and Facebook titles the live video at creation. Typing here and watching the
+     stream go out under the old name is the kind of quiet wrong that only shows up after
+     the set. */
+  const signed = (s.platforms || []).filter(p => p.signed_in).map(p => p.label || p.name);
+  const tn = $('v_titlenote');
+  if (tn){
+    tn.textContent = signed.length
+      ? 'applied to ' + signed.join(' and ') + ' when you go live'
+      : 'not applied to anything yet — no platform is signed in, so titles stay as each '
+        + 'platform already has them';
+    tn.style.color = signed.length ? 'var(--dim)' : 'var(--accent)';
+  }
   renderPrivacy();
   const bb = $('bcastbtns'); bb.innerHTML = '';
   if (!obs.active){
