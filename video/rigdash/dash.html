@@ -1451,6 +1451,45 @@ function renderStream(){
   const plats = s.platforms || [];
   const byName = Object.fromEntries(ds.map(d => [d.name, d]));
   const box = $('destlist');
+
+  /* ⚠️ DO NOT REBUILD THIS LIST ON EVERY POLL. It used to, twice a second's worth of
+     innerHTML, which meant the arm switch was destroyed and recreated underneath whatever
+     finger was on it - press, rebuild, release onto a node that no longer exists, click
+     never fires. The switch looked broken and the API was fine the whole time. Rebuild
+     only when the STRUCTURE changes (a platform appears, its setup state or armed flag
+     changes, a pusher starts or stops); everything volatile - bytes, uptime, the health
+     chip - is written into the existing nodes. */
+  const sig = JSON.stringify([
+    plats.map(p => [p.name, p.state, p.enabled, p.key_present]),
+    ds.map(d => d.name).sort(),
+  ]);
+  if (sig === DEST_SIG && box.children.length === plats.length + ds.filter(
+        d => !plats.some(p => p.name === d.name)).length){
+    for (const row of box.children){
+      const d = byName[row.dataset.name];
+      const st = row.querySelector('.brstate'), last = row.querySelector('.brlast');
+      if (!d || !st) continue;
+      const c = DEST_COL[d.health] || 'var(--accent)';
+      const solid = d.health === 'feeding';
+      st.style.color = c;
+      st.lastChild.nodeValue = (d.retrying ? 'retrying' : d.health);
+      const dot = st.querySelector('.pdot');
+      if (dot){
+        dot.className = 'pdot' + (solid ? '' : (d.health === 'stalled' ? ' warn' : ' hollow'));
+        dot.style.background = solid ? c : '';
+      }
+      if (last){
+        const bits = [];
+        if (d.kbps)            bits.push(d.kbps + ' kbps');
+        if (d.bytes)           bits.push(mb(d.bytes));
+        if (d.uptimeS != null) bits.push(hhmmss(d.uptimeS));
+        if (d.restarts)        bits.push(d.restarts + ' restart' + (d.restarts === 1 ? '' : 's'));
+        if (bits.length) last.textContent = bits.join(' · ');
+      }
+    }
+    return;
+  }
+  DEST_SIG = sig;
   if (!plats.length){
     box.innerHTML = '<span class="sub">could not read the relay’s platform list '
                   + '(connect.py status)</span>';
@@ -1484,6 +1523,7 @@ function renderStream(){
       if (p.account) bits.push(p.account);
       const row = document.createElement('div');
       row.className = 'brrow';
+      row.dataset.name = p.name;
       row.innerHTML =
           '<div class="hdr"><span class="nm">' + esc(p.label || p.name) + '</span>'
         + '<span class="sub brstate" style="color:' + col + '">'
@@ -1491,7 +1531,7 @@ function renderStream(){
         + '" style="' + (solid ? 'background:' + col : '') + '"></span>'
         + esc(chip) + '</span></div>'
         + (why ? '<div class="sub brwhy">' + esc(why) + '</div>' : '')
-        + (bits.length ? '<div class="sub brlast">' + esc(bits.join(' · ')) + '</div>' : '')
+        + '<div class="sub brlast">' + esc(bits.join(' · ')) + '</div>'
         + (d && d.last ? '<div class="sub brlast">' + esc(d.last) + '</div>' : '');
       // ⚠️ THE TOGGLE ONLY EXISTS ONCE THERE IS A KEY TO ARM. Offering it at needs_app or
       // no_key would be a switch that silently does nothing, which is worse than no
@@ -1616,7 +1656,7 @@ function showReport(head, lines, bad){
       .join('');
 }
 
-let PREFLIGHT_OK = false, LIVE_SINCE = 0;
+let PREFLIGHT_OK = false, LIVE_SINCE = 0, DEST_SIG = '';
 let PRIVACY = 'unlisted';
 /* ⚠️ THESE ONLY DO ANYTHING FOR YOUTUBE, AND ONLY THROUGH OAUTH. Privacy is a property of
    a YouTube broadcast, which only exists when connect.py creates one. Twitch has no such
