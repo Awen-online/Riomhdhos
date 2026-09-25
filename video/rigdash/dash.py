@@ -28,6 +28,7 @@ down mid-show.
 
 import argparse
 import json
+import os
 import queue
 import re
 import subprocess
@@ -694,6 +695,53 @@ def connect_run(args, timeout=90):
         return {"ok": False, "exit": None, "lines": [f"{type(e).__name__}: {e}"]}
     lines = [l.strip() for l in ((p.stdout or "") + (p.stderr or "")).splitlines() if l.strip()]
     return {"ok": p.returncode == 0, "exit": p.returncode, "lines": lines[-12:]}
+
+
+def set_enabled(name, on):
+    """Flip one <NAME>_ENABLED flag in the relay's keys.env. Never reads or writes a key.
+
+    ⚠️ THIS FILE HOLDS THE STREAM KEYS, so it is edited line by line and written
+    atomically. Rewriting it from parsed values would risk reformatting or dropping a key
+    on a parse quirk, and a truncated write during a crash would lose all of them - to
+    arm a channel, which is not a trade worth making. Only the one ENABLED line changes;
+    every other byte is passed through untouched.
+    """
+    name = (name or "").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]+", name or ""):
+        return {"error": "bad platform name"}, 400
+    key = f"{name}_ENABLED"
+    val = "1" if on else "0"
+    path = RELAY_DIR / "keys.env"
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception as e:
+        return {"error": f"cannot read keys.env: {type(e).__name__}"}, 500
+
+    newline = "\r\n" if "\r\n" in raw else "\n"
+    lines, found = raw.splitlines(), False
+    for i, l in enumerate(lines):
+        if l.strip().startswith(key + "="):
+            lines[i] = f"{key}={val}"
+            found = True
+            break
+    if not found:
+        # A platform with a key but no ENABLED line is a real state; adding the line is
+        # the correct repair rather than an error.
+        lines.append(f"{key}={val}")
+
+    tmp = path.with_suffix(".env.tmp")
+    try:
+        tmp.write_text(newline.join(lines) + newline, encoding="utf-8")
+        os.replace(tmp, path)          # atomic on Windows for same-volume replace
+    except Exception as e:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+        return {"error": f"cannot write keys.env: {type(e).__name__}"}, 500
+
+    _plat_cache["at"] = 0.0            # the panel must reflect this on the very next poll
+    return {"ok": True, "platform": name.lower(), "enabled": bool(on)}, 200
 
 
 def relay_restart():
@@ -1482,6 +1530,10 @@ class Handler(BaseHTTPRequestHandler):
                 act = body.get("action")
                 if act == "relay_restart":
                     self._json(relay_restart()); return
+
+                if act == "enable":
+                    payload, code = set_enabled(body.get("platform"), bool(body.get("on")))
+                    self._json(payload, code); return
 
                 if act == "preflight":
                     # Creates nothing. Refreshes tokens and does one cheap read per

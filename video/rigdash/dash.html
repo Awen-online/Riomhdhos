@@ -1432,7 +1432,8 @@ function renderStream(){
     box.innerHTML = '<span class="sub">could not read the relay’s platform list '
                   + '(connect.py status)</span>';
   } else {
-    box.innerHTML = plats.map(p => {
+    box.innerHTML = '';
+    for (const p of plats){
       const setup = SETUP[p.state] || { col:'var(--accent)', chip:p.state, step:'' };
       const d = byName[p.name];
       // A configured channel that is pushing shows its LIVE state; one that is not yet
@@ -1458,17 +1459,31 @@ function renderStream(){
         if (d.restarts)        bits.push(d.restarts + ' restart' + (d.restarts === 1 ? '' : 's'));
       }
       if (p.account) bits.push(p.account);
-      return '<div class="brrow">'
-        + '<div class="hdr"><span class="nm">' + esc(p.label || p.name) + '</span>'
+      const row = document.createElement('div');
+      row.className = 'brrow';
+      row.innerHTML =
+          '<div class="hdr"><span class="nm">' + esc(p.label || p.name) + '</span>'
         + '<span class="sub brstate" style="color:' + col + '">'
         + '<span class="pdot' + (solid ? '' : (chip === 'stalled' ? ' warn' : ' hollow'))
         + '" style="' + (solid ? 'background:' + col : '') + '"></span>'
         + esc(chip) + '</span></div>'
         + (why ? '<div class="sub brwhy">' + esc(why) + '</div>' : '')
         + (bits.length ? '<div class="sub brlast">' + esc(bits.join(' · ')) + '</div>' : '')
-        + (d && d.last ? '<div class="sub brlast">' + esc(d.last) + '</div>' : '')
-        + '</div>';
-    }).join('');
+        + (d && d.last ? '<div class="sub brlast">' + esc(d.last) + '</div>' : '');
+      // ⚠️ THE TOGGLE ONLY EXISTS ONCE THERE IS A KEY TO ARM. Offering it at needs_app or
+      // no_key would be a switch that silently does nothing, which is worse than no
+      // switch - the row already says what the actual next step is.
+      if (p.key_present){
+        const g = document.createElement('div');
+        g.className = 'g2';
+        row.append(g);
+        camBtn(g, p.enabled ? 'Turn off' : 'Turn on', CAM_ICON.hq, !!p.enabled, async () => {
+          await post('/api/stream', {action:'enable', platform:p.name, on:!p.enabled});
+          loadStream();
+        });
+      }
+      box.append(row);
+    }
 
     // ⚠️ ANYTHING PUSHING THAT IS NOT A KNOWN PLATFORM STILL GETS A ROW. The list above is
     // keyed off connect.py's platforms, so a pusher the relay invented - a YouTube backup
