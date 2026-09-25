@@ -148,6 +148,13 @@ MEDIAMTX_API = "http://127.0.0.1:9997"
 EGRESS_FRESH_S = 5.0
 
 _egress_seen = {}          # name -> (total_size, first time we saw that value)
+# ⚠️ CACHED BECAUSE IT IS A SUBPROCESS, NOT BECAUSE IT IS SLOW. `connect.py status --json`
+# measures 195 ms, which is almost entirely interpreter startup. At the 2 s poll that is a
+# tenth of the dashboard's duty cycle spent launching Python to be told the same thing.
+# Setup state only changes when a file is edited or a connect flow is run, so seconds of
+# staleness cost nothing - unlike the egress health beside it, which is read every poll.
+_plat_cache = {"at": 0.0, "data": []}
+_PLAT_TTL = 5.0
 
 _dev_cache = {"at": 0.0, "data": []}
 _DEV_TTL = 120.0
@@ -573,10 +580,34 @@ def _egress_health(name, prog_path):
     return ("feeding" if held < EGRESS_FRESH_S else "stalled"), total, age, secs
 
 
+def platform_status():
+    """Every configured platform and how far through setup it is. Never returns a key.
+
+    ⚠️ THE PLATFORM LIST IS THE SPINE OF THIS PANEL, not the pushers. Listing only what is
+    currently streaming meant a rig with nothing set up showed an empty box, which answers
+    "is anything going out" with a technically-true "no" and tells you nothing about WHY
+    or what to do next. A channel you have not registered an app for and a channel that is
+    live are both facts about the same channel, and both belong on its row.
+    """
+    now = time.time()
+    if now - _plat_cache["at"] < _PLAT_TTL and _plat_cache["data"]:
+        return _plat_cache["data"]
+    r = connect_run(["status", "--json"], timeout=15)
+    data = []
+    if r["ok"] and r["lines"]:
+        try:
+            data = json.loads("".join(r["lines"])).get("platforms", [])
+        except Exception:
+            data = []
+    _plat_cache.update(at=now, data=data)
+    return data
+
+
 def relay_status():
     """Ingest from MediaMTX, egress from each pusher's own progress file."""
     out = {"ingest": {"ready": False, "readers": 0, "bytes": 0, "error": None},
-           "destinations": [], "task": _task_state(RELAY_TASK)}
+           "destinations": [], "platforms": platform_status(),
+           "task": _task_state(RELAY_TASK)}
     try:
         with urllib.request.urlopen(MEDIAMTX_API + "/v3/paths/get/live", timeout=2) as r:
             d = json.loads(r.read().decode("utf-8"))

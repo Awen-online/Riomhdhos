@@ -117,6 +117,43 @@
        flex:0 0 auto}
   .sdot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
 
+  /* ---- broadcast controls --------------------------------------------------------
+     Deliberately a record button rather than another pill in a row of pills. Going live
+     is the one irreversible-feeling action on this panel and it should not look like
+     "Normal" or "Sleep"; a camera operator already knows what a big red circle means.
+     ⚠️ RED HERE MEANS RECORDING, WHICH FIGHTS --bad MEANING BROKEN EVERYWHERE ELSE ON
+     THIS DASHBOARD. Solid red = live, hollow red ring = stalled, and every state also
+     carries its word in text, so the colour is never the only thing distinguishing
+     "you are on air" from "this one is broken". */
+  .rec{display:flex;flex-direction:column;align-items:center;gap:9px;padding:6px 0 2px}
+  .recbtn{width:92px;height:92px;border-radius:50%;border:3px solid #3a2226;
+          background:#1b1114;display:grid;place-items:center;padding:0;
+          transition:transform .08s ease, background .15s ease}
+  .recbtn:active{transform:scale(.96)}
+  .recbtn .glyph{width:52px;height:52px;border-radius:50%;background:var(--bad);display:block}
+  .recbtn.armed{border-color:var(--bad)}
+  .recbtn.live{border-color:var(--bad);background:#2a1216}
+  .recbtn.live .glyph{width:38px;height:38px;border-radius:7px}   /* the stop square */
+  .recbtn.cold{border-color:var(--line);background:#161b21}
+  .recbtn.cold .glyph{background:var(--dim)}
+  .reclabel{font:600 12px ui-sans-serif,system-ui,sans-serif;letter-spacing:.14em;
+            text-transform:uppercase;color:var(--dim)}
+  .recbtn.armed + .reclabel,.recbtn.live + .reclabel{color:var(--bad)}
+
+  .livehdr{display:inline-flex;align-items:center;gap:8px;font-variant-numeric:tabular-nums}
+  .pulse{width:9px;height:9px;border-radius:50%;background:var(--bad);
+         animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  /* A blinking dot is exactly the thing that makes some people ill, and the timer beside
+     it already proves the stream is running. */
+  @media (prefers-reduced-motion:reduce){ .pulse{animation:none} }
+
+  /* Row markers. Filled = bytes moving, hollow = nothing moving, and the shape carries
+     the meaning so the two reds are never confused at a glance. */
+  .pdot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;box-sizing:border-box}
+  .pdot.hollow{background:transparent;border:2px solid currentColor}
+  .pdot.warn{position:relative;background:transparent;border:2px solid var(--bad)}
+
   /* Facts as a grid of icon + value, so the values start on one vertical line instead of
      running together as ' · ' separated prose that wraps differently on every phone. */
   .facts{display:grid;grid-template-columns:14px 1fr;gap:4px 8px;align-items:center;
@@ -244,6 +281,10 @@
     <input type="text" id="s_desc" maxlength="400" autocomplete="off" placeholder="optional">
     <div class="g3" id="privbtns"></div>
     <div id="preflight"></div>
+    <div class="rec">
+      <button id="recbtn" class="recbtn cold"><span class="glyph"></span></button>
+      <div class="reclabel" id="reclabel">check first</div>
+    </div>
     <div class="g2" id="bcastbtns"></div>
     <div class="note">&#9888;&#65039; <b>Green means bytes are moving.</b> A destination is
       only feeding while its progress file is both fresh AND advancing &mdash; the relay's
@@ -1319,6 +1360,18 @@ const DEST_WHY = {
   stalled: 'alive but nothing is reaching the platform',
   stopped: 'not running',
 };
+/* ⚠️ EVERY CHANNEL IS ALWAYS LISTED, set up or not. Showing only what is currently pushing
+   meant an unconfigured rig rendered an empty box - technically true and useless, because
+   the question behind "what's going out" is usually "why isn't it". Setup state and live
+   state are the same row at different moments, so they share one. Ordered by how far
+   through setup the channel is, so the next thing to do is the top red row. */
+const SETUP = {
+  needs_app:     { col:'var(--dim)',    chip:'no app',       step:'app not registered — add its credentials to oauth.env' },
+  not_connected: { col:'var(--accent)', chip:'not signed in',step:'sign in once at the desk: python connect.py ' },
+  no_key:        { col:'var(--accent)', chip:'no key',       step:'signed in, no stream key yet: python connect.py ' },
+  off:           { col:'var(--dim)',    chip:'off',          step:'key is set but switched off — set ENABLED=1 in keys.env' },
+  ready:         { col:'var(--ok)',     chip:'ready',        step:'will receive the stream' },
+};
 let STREAM = null;
 
 function hhmmss(s){
@@ -1338,20 +1391,31 @@ function renderStream(){
   const live = ds.filter(d => d.health === 'feeding').length;
   const obs  = s.obs || {};
 
-  // Headline: three states, not two. "Degraded" is the whole reason this panel exists.
+  // ⚠️ THE DENOMINATOR IS WHAT IS ARMED, NOT WHAT IS RUNNING. Counting live pushers
+  // against live pushers can only ever say "all of them", so a channel that is ready and
+  // has no push at all would vanish from the count instead of showing as missing.
+  const armed = (s.platforms || []).filter(p => p.state === 'ready').length || ds.length;
   let head, col;
-  if (!obs.active)            { head = 'Not streaming';               col = 'var(--dim)'; }
-  else if (!ds.length)        { head = 'OBS sending, no destinations'; col = 'var(--accent)'; }
-  else if (live === ds.length){ head = 'LIVE';                         col = 'var(--ok)'; }
-  else if (live === 0)        { head = 'LIVE — nothing getting out'; col = 'var(--bad)'; }
-  else                        { head = 'DEGRADED — ' + live + ' of ' + ds.length;
-                                col = 'var(--bad)'; }
+  if (!obs.active)        { head = 'Not streaming';                col = 'var(--dim)'; }
+  else if (!armed)        { head = 'OBS sending, nothing armed';   col = 'var(--accent)'; }
+  else if (live === armed){ head = 'LIVE';                         col = 'var(--ok)'; }
+  else if (live === 0)    { head = 'LIVE — nothing getting out'; col = 'var(--bad)'; }
+  else                    { head = 'DEGRADED — ' + live + ' of ' + armed;
+                            col = 'var(--bad)'; }
   $('v_bcast_k').textContent = head;
   $('v_bcast_k').style.color = col;
   const longest = Math.max(0, ...ds.map(d => d.uptimeS || 0));
-  $('v_bcast').textContent = obs.active
-      ? (hhmmss(longest) || 'starting…')
-      : (obs.connected ? 'OBS idle' : 'OBS not reachable');
+  if (obs.active){
+    // Prefer a destination's real uptime; fall back to a client clock so a reload mid-set
+    // still shows something advancing rather than a dash.
+    if (!LIVE_SINCE) LIVE_SINCE = Date.now() - (longest || 0) * 1000;
+    const secs = longest || Math.floor((Date.now() - LIVE_SINCE) / 1000);
+    $('v_bcast').innerHTML = '<span class="livehdr"><span class="pulse"></span>'
+                           + hhmmss(secs) + '</span>';
+  } else {
+    LIVE_SINCE = 0;
+    $('v_bcast').textContent = obs.connected ? 'OBS idle' : 'OBS not reachable';
+  }
 
   const ing = s.ingest || {};
   $('v_ingest').textContent = ing.error ? 'relay not answering'
@@ -1361,47 +1425,84 @@ function renderStream(){
   $('v_ingest').style.color = ing.error ? 'var(--bad)'
       : (ing.ready ? 'var(--ok)' : 'var(--dim)');
 
+  const plats = s.platforms || [];
+  const byName = Object.fromEntries(ds.map(d => [d.name, d]));
   const box = $('destlist');
-  if (!ds.length){
-    box.innerHTML = '<span class="sub">no destinations pushing — enable one in the '
-                  + 'relay’s keys.env, then start streaming from OBS</span>';
+  if (!plats.length){
+    box.innerHTML = '<span class="sub">could not read the relay’s platform list '
+                  + '(connect.py status)</span>';
   } else {
-    box.innerHTML = ds.map(d => {
-      const c = DEST_COL[d.health] || 'var(--accent)';
+    box.innerHTML = plats.map(p => {
+      const setup = SETUP[p.state] || { col:'var(--accent)', chip:p.state, step:'' };
+      const d = byName[p.name];
+      // A configured channel that is pushing shows its LIVE state; one that is not yet
+      // set up shows how far along it is. Same row, different moment.
+      let col = setup.col, chip = setup.chip, why = setup.step;
+      if (setup.step.endsWith('connect.py ')) why = setup.step + p.name;
+      if (d){
+        col  = DEST_COL[d.health] || 'var(--accent)';
+        chip = d.retrying ? 'retrying' : d.health;
+        why  = DEST_WHY[d.health] || '';
+      } else if (p.state === 'ready' && ing.ready){
+        // ⚠️ Ready, ingest live, and no pusher of its own: the stream is arriving and this
+        // channel is not getting it. That is the case a green "ready" would hide.
+        col = 'var(--bad)'; chip = 'not getting it';
+        why = 'armed, but no push is running while OBS is sending';
+      }
+      const solid = !!(d && d.health === 'feeding');
       const bits = [];
-      if (d.kbps)            bits.push(d.kbps + ' kbps');
-      if (d.bytes)           bits.push(mb(d.bytes));
-      if (d.uptimeS != null) bits.push(hhmmss(d.uptimeS));
-      if (d.restarts)        bits.push(d.restarts + ' restart' + (d.restarts === 1 ? '' : 's'));
+      if (d){
+        if (d.kbps)            bits.push(d.kbps + ' kbps');
+        if (d.bytes)           bits.push(mb(d.bytes));
+        if (d.uptimeS != null) bits.push(hhmmss(d.uptimeS));
+        if (d.restarts)        bits.push(d.restarts + ' restart' + (d.restarts === 1 ? '' : 's'));
+      }
+      if (p.account) bits.push(p.account);
       return '<div class="brrow">'
-        + '<div class="hdr"><span class="nm">' + esc(d.name) + '</span>'
-        + '<span class="sub brstate" style="color:' + c + '">'
-        + '<span class="sdot" style="background:' + c + '"></span>'
-        + esc(d.retrying ? 'retrying' : d.health) + '</span></div>'
-        + (DEST_WHY[d.health] ? '<div class="sub brwhy">' + DEST_WHY[d.health] + '</div>' : '')
-        + (bits.length ? '<div class="sub brlast">' + bits.join(' · ') + '</div>' : '')
-        + (d.last ? '<div class="sub brlast">' + esc(d.last) + '</div>' : '')
+        + '<div class="hdr"><span class="nm">' + esc(p.label || p.name) + '</span>'
+        + '<span class="sub brstate" style="color:' + col + '">'
+        + '<span class="pdot' + (solid ? '' : (chip === 'stalled' ? ' warn' : ' hollow'))
+        + '" style="' + (solid ? 'background:' + col : '') + '"></span>'
+        + esc(chip) + '</span></div>'
+        + (why ? '<div class="sub brwhy">' + esc(why) + '</div>' : '')
+        + (bits.length ? '<div class="sub brlast">' + esc(bits.join(' · ')) + '</div>' : '')
+        + (d && d.last ? '<div class="sub brlast">' + esc(d.last) + '</div>' : '')
         + '</div>';
     }).join('');
   }
 
-  const bb = $('bcastbtns'); bb.innerHTML = '';
-  if (obs.active){
-    // ⚠️ Confirm on stop, never on start. Going live late is a mistake you can fix;
-    // ending a broadcast by mis-tap is not.
-    camBtn(bb, 'Stop streaming', CAM_ICON.lock, false, async () => {
+  // ⚠️ THREE BUTTON STATES, AND NONE OF THEM IS A DEAD CONTROL. Go Live stays cold until
+  // a pre-flight has actually passed - but a cold button that does nothing when pressed
+  // would be its own trap, especially after a reload clears the check mid-setup. So cold
+  // RUNS the check. One tap either arms it or tells you what is missing.
+  const btn = $('recbtn'), lab = $('reclabel');
+  btn.className = 'recbtn ' + (obs.active ? 'live' : (PREFLIGHT_OK && armed ? 'armed' : 'cold'));
+  lab.textContent = obs.active ? 'stop' : (PREFLIGHT_OK && armed ? 'go live' : 'check first');
+  btn.setAttribute('aria-label', lab.textContent);
+  btn.onclick = async () => {
+    if (obs.active){
       if (!confirm('Stop the broadcast?')) return;
       await post('/api/stream', {action:'obs_stop'});
-      setTimeout(loadStream, 1200);
-    });
-  } else {
-    camBtn(bb, 'Check destinations', CAM_ICON.tight, false, async () => {
+      setTimeout(loadStream, 1200); return;
+    }
+    if (PREFLIGHT_OK && armed) { goLive(false); return; }
+    showReport('checking…', []);
+    const r = await post('/api/stream', {action:'preflight'});
+    PREFLIGHT_OK = !!r.ok;
+    showReport(r.ok ? 'armed — press again to go live'
+                    : 'not ready — see below', r.lines || [], !r.ok);
+    renderStream();
+  };
+
+  const bb = $('bcastbtns'); bb.innerHTML = '';
+  if (!obs.active){
+    camBtn(bb, 'Re-check destinations', CAM_ICON.tight, false, async () => {
       showReport('checking…', []);
       const r = await post('/api/stream', {action:'preflight'});
-      showReport(r.ok ? 'every enabled destination is armed'
-                      : 'not ready — see below', r.lines || [], !r.ok);
+      PREFLIGHT_OK = !!r.ok;
+      showReport(r.ok ? 'armed' : 'not ready — see below', r.lines || [], !r.ok);
+      renderStream();
     });
-    camBtn(bb, 'Go live', CAM_ICON.hq, false, () => goLive(false));
   }
   const rb = $('relaybtns'); rb.innerHTML = '';
   camBtn(rb, 'Restart relay', CAM_ICON.flip, false, async () => {
@@ -1422,6 +1523,7 @@ function showReport(head, lines, bad){
       .join('');
 }
 
+let PREFLIGHT_OK = false, LIVE_SINCE = 0;
 let PRIVACY = 'unlisted';
 function renderPrivacy(){
   const box = $('privbtns'); if (!box) return;
