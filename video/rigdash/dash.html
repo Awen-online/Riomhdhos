@@ -1469,6 +1469,32 @@ function renderStream(){
         + (d && d.last ? '<div class="sub brlast">' + esc(d.last) + '</div>' : '')
         + '</div>';
     }).join('');
+
+    // ⚠️ ANYTHING PUSHING THAT IS NOT A KNOWN PLATFORM STILL GETS A ROW. The list above is
+    // keyed off connect.py's platforms, so a pusher the relay invented - a YouTube backup
+    // ingest, a test destination, anything added to keys.env that connect.py does not know
+    // about - would be running and completely invisible here. A process sending bytes off
+    // this machine that the panel does not show is the same failure as a dead camera
+    // reading "feeding", just pointed the other way.
+    const known = new Set(plats.map(p => p.name));
+    const orphans = ds.filter(d => !known.has(d.name));
+    box.innerHTML += orphans.map(d => {
+      const c = DEST_COL[d.health] || 'var(--accent)';
+      const solid = d.health === 'feeding';
+      const bits = [];
+      if (d.kbps)            bits.push(d.kbps + ' kbps');
+      if (d.bytes)           bits.push(mb(d.bytes));
+      if (d.uptimeS != null) bits.push(hhmmss(d.uptimeS));
+      return '<div class="brrow">'
+        + '<div class="hdr"><span class="nm">' + esc(d.name) + '</span>'
+        + '<span class="sub brstate" style="color:' + c + '">'
+        + '<span class="pdot' + (solid ? '' : ' hollow') + '" style="'
+        + (solid ? 'background:' + c : '') + '"></span>'
+        + esc(d.retrying ? 'retrying' : d.health) + '</span></div>'
+        + '<div class="sub brwhy">extra destination, not one of the known platforms</div>'
+        + (bits.length ? '<div class="sub brlast">' + esc(bits.join(' · ')) + '</div>' : '')
+        + '</div>';
+    }).join('');
   }
 
   // ⚠️ THREE BUTTON STATES, AND NONE OF THEM IS A DEAD CONTROL. Go Live stays cold until
