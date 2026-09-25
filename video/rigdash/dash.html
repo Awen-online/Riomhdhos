@@ -71,6 +71,16 @@
   .k{color:var(--dim);font-size:13px}
   .v{font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;font-size:13px}
   input[type=range]{width:100%;height:36px;accent-color:var(--accent);margin:0}
+  /* Text entry had no rule at all, so the title field rendered as a white browser box on
+     a dark panel. Same ground and border as a button, and a 16px minimum because iOS
+     zooms the whole page when you focus anything smaller - which on a phone mid-set means
+     the dashboard jumps and you lose your place. */
+  input[type=text]{width:100%;font:400 16px ui-sans-serif,system-ui,sans-serif;
+       background:#1b2129;color:var(--fg);border:1px solid var(--line);border-radius:10px;
+       padding:11px 12px;margin:2px 0 4px}
+  input[type=text]::placeholder{color:var(--dim)}
+  input[type=text]:focus{outline:2px solid var(--accent);outline-offset:1px;
+       border-color:var(--accent)}
   /* A control the camera is driving. Dimmed and inert rather than hidden: knowing
      the ISO the camera chose is useful even when you cannot set it. */
   input[type=range]:disabled{opacity:.3;cursor:not-allowed}
@@ -226,6 +236,14 @@
   <div class="card">
     <div class="row"><span class="k" id="v_bcast_k">Not streaming</span>
       <span class="v" id="v_bcast">&mdash;</span></div>
+    <div class="row"><span class="k">Title</span><span class="v" id="v_titlelen">0</span></div>
+    <input type="text" id="s_title" maxlength="140" autocomplete="off"
+           placeholder="what this set is">
+    <div class="row"><span class="k">Description</span>
+      <span class="v sub">YouTube and Facebook only</span></div>
+    <input type="text" id="s_desc" maxlength="400" autocomplete="off" placeholder="optional">
+    <div class="g3" id="privbtns"></div>
+    <div id="preflight"></div>
     <div class="g2" id="bcastbtns"></div>
     <div class="note">&#9888;&#65039; <b>Green means bytes are moving.</b> A destination is
       only feeding while its progress file is both fresh AND advancing &mdash; the relay's
@@ -1377,10 +1395,13 @@ function renderStream(){
       setTimeout(loadStream, 1200);
     });
   } else {
-    camBtn(bb, 'Go live', CAM_ICON.hq, false, async () => {
-      await post('/api/stream', {action:'obs_start'});
-      setTimeout(loadStream, 1800);
+    camBtn(bb, 'Check destinations', CAM_ICON.tight, false, async () => {
+      showReport('checking…', []);
+      const r = await post('/api/stream', {action:'preflight'});
+      showReport(r.ok ? 'every enabled destination is armed'
+                      : 'not ready — see below', r.lines || [], !r.ok);
     });
+    camBtn(bb, 'Go live', CAM_ICON.hq, false, () => goLive(false));
   }
   const rb = $('relaybtns'); rb.innerHTML = '';
   camBtn(rb, 'Restart relay', CAM_ICON.flip, false, async () => {
@@ -1389,10 +1410,72 @@ function renderStream(){
   });
 }
 
+/* The per-platform report. connect.py prints one line per platform, "<name>: ok, ..." or
+   "<name>: FAILED, ...", so colour each line on its own rather than colouring the block:
+   two of three working is the normal case and must not read as total failure. */
+function showReport(head, lines, bad){
+  const box = $('preflight');
+  box.innerHTML = '<div class="sub brwhy" style="color:' + (bad ? 'var(--bad)' : 'var(--dim)')
+    + '">' + esc(head) + '</div>'
+    + lines.map(l => '<div class="sub brlast" style="color:'
+        + (/FAILED|error/i.test(l) ? 'var(--bad)' : 'var(--ok)') + '">' + esc(l) + '</div>')
+      .join('');
+}
+
+let PRIVACY = 'unlisted';
+function renderPrivacy(){
+  const box = $('privbtns'); if (!box) return;
+  box.innerHTML = '';
+  for (const p of ['public','unlisted','private']){
+    camBtn(box, p, CAM_ICON.lock, PRIVACY === p, async () => {
+      PRIVACY = p;
+      try { localStorage.setItem('riastrad.privacy', p); } catch(e){}
+      renderPrivacy();
+    });
+  }
+}
+
+async function goLive(force){
+  const title = $('s_title').value.trim();
+  if (!title && !force){ showReport('give it a title first', [], true); $('s_title').focus(); return; }
+  try { localStorage.setItem('riastrad.title', title); } catch(e){}
+  showReport('setting titles, then starting OBS…', []);
+  const r = await post('/api/stream',
+      {action:'golive', title, desc:$('s_desc').value.trim(), privacy:PRIVACY, force:!!force});
+  if (r.started){
+    showReport('live', r.lines || []);
+  } else {
+    // ⚠️ A TITLING FAILURE MUST NOT TRAP HIM OFF-AIR. Stopping by default is right - being
+    // told the broadcast was never created is cheap now and expensive once you are sending
+    // - but there has to be a way past it mid-set, so offer the override explicitly rather
+    // than making him go and drive OBS by hand.
+    showReport('not started — nothing was sent', r.lines || [], true);
+    const bb = $('bcastbtns');
+    camBtn(bb, 'Start OBS anyway', CAM_ICON.flip, false, () => goLive(true));
+  }
+  setTimeout(loadStream, 2000);
+}
+
 async function loadStream(){
   try { STREAM = await (await fetch('/api/stream')).json(); renderStream(); }
   catch(e){ $('v_bcast').textContent = 'unreachable'; }
 }
+
+// Restore what was typed last time - a dash.py restart mid-setup should not cost the
+// title - and keep the character count honest against Twitch's 140 limit.
+try {
+  const t = localStorage.getItem('riastrad.title');
+  if (t) $('s_title').value = t;
+  const pv = localStorage.getItem('riastrad.privacy');
+  if (pv) PRIVACY = pv;
+} catch(e){}
+$('s_title').addEventListener('input', () => {
+  const n = $('s_title').value.length;
+  $('v_titlelen').textContent = n;
+  $('v_titlelen').style.color = n > 140 ? 'var(--bad)' : (n ? 'inherit' : 'var(--dim)');
+});
+$('v_titlelen').textContent = $('s_title').value.length;
+renderPrivacy();
 
 function renderBridges(){
   const box = $('brlist'); if (!box) return;

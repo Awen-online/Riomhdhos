@@ -136,6 +136,7 @@ except Exception:
 # runs on a laptop somewhere else with no dashboard at all.
 RELAY_DIR = Path(r"C:\Users\mccul\Awen\stream-relay")
 RELAY_STATUS = RELAY_DIR / "status"
+RELAY_CONNECT = RELAY_DIR / "connect.py"
 RELAY_TASK = "Awen stream relay"
 MEDIAMTX_API = "http://127.0.0.1:9997"
 # ⚠️ A DESTINATION IS GREEN ONLY WHILE BYTES ARE MOVING TO IT. The .state file the relay
@@ -634,6 +635,34 @@ def obs_stream_state():
                 "total": getattr(st, "output_total_frames", None)}
     except (Exception, SystemExit):
         return {"connected": False, "active": False}
+
+
+def connect_run(args, timeout=90):
+    """Run the relay's own connect.py. Riastrad NEVER speaks to a platform itself.
+
+    ⚠️ ALL OF THIS LIVES IN THE RELAY FOLDER ON PURPOSE. connect.py holds the OAuth
+    tokens and writes keys.env; keeping it there rather than importing it means the same
+    folder still works on a laptop with no dashboard, and Riastrad never handles a key or
+    a refresh token - it shells out and reads back the report.
+
+    ⚠️ AND IT IS HEADLESS ONLY. `golive` and `--dry-run` make no browser. The interactive
+    `connect.py <platform>` flow is deliberately NOT reachable from here: it opens a
+    consent screen on this machine, and the dashboard's whole point is being driven from
+    the couch - tapping Connect on a phone and having a Google login appear on a desktop
+    in another room is a failure, not a feature. First-time connection is a desk job.
+    """
+    if not RELAY_CONNECT.exists():
+        return {"ok": False, "exit": None, "lines": [f"not found: {RELAY_CONNECT}"]}
+    try:
+        p = subprocess.run([sys.executable, str(RELAY_CONNECT), *args],
+                           cwd=str(RELAY_DIR), capture_output=True, text=True,
+                           timeout=timeout, creationflags=NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "exit": None, "lines": ["timed out talking to the platforms"]}
+    except Exception as e:
+        return {"ok": False, "exit": None, "lines": [f"{type(e).__name__}: {e}"]}
+    lines = [l.strip() for l in ((p.stdout or "") + (p.stderr or "")).splitlines() if l.strip()]
+    return {"ok": p.returncode == 0, "exit": p.returncode, "lines": lines[-12:]}
 
 
 def relay_restart():
@@ -1422,6 +1451,45 @@ class Handler(BaseHTTPRequestHandler):
                 act = body.get("action")
                 if act == "relay_restart":
                     self._json(relay_restart()); return
+
+                if act == "preflight":
+                    # Creates nothing. Refreshes tokens and does one cheap read per
+                    # platform, so "armed" can be checked without littering the channel
+                    # with empty broadcasts.
+                    self._json(connect_run(["golive", "--dry-run"], timeout=60)); return
+
+                if act == "golive":
+                    # ⚠️ TITLES BEFORE OBS, AND OBS ONLY IF THEY WORKED. golive writes a
+                    # fresh FACEBOOK_KEY when it creates a live video, and push.ps1 reads
+                    # keys.env when the relay's supervisor starts - which is when OBS
+                    # begins sending. Start OBS first and Facebook gets last set's key.
+                    #
+                    # A failure here also STOPS the launch by default. Finding out the
+                    # broadcast was never created is survivable before you are sending and
+                    # expensive afterwards - but `force` exists so a titling failure can
+                    # never trap you off-air mid-set.
+                    title = (body.get("title") or "").strip()
+                    if not title and not body.get("force"):
+                        self._json({"error": "a title is required"}, 400); return
+                    res = {"ok": True, "exit": 0, "lines": []}
+                    if title:
+                        a = ["golive", "--title", title]
+                        if (body.get("desc") or "").strip():
+                            a += ["--desc", body["desc"].strip()]
+                        if body.get("privacy") in ("public", "unlisted", "private"):
+                            a += ["--privacy", body["privacy"]]
+                        res = connect_run(a, timeout=120)
+                    if not res["ok"] and not body.get("force"):
+                        res["started"] = False
+                        self._json(res); return
+                    try:
+                        obsctl.connect(timeout=4).start_stream()
+                        res["started"] = True
+                    except (Exception, SystemExit) as e:
+                        res["started"] = False
+                        res["lines"] = res["lines"] + [f"OBS: FAILED, {type(e).__name__}"]
+                        res["ok"] = False
+                    self._json(res); return
                 if act in ("obs_start", "obs_stop"):
                     try:
                         cl = obsctl.connect(timeout=4)
