@@ -1499,9 +1499,9 @@ class Handler(BaseHTTPRequestHandler):
                     # broadcast was never created is survivable before you are sending and
                     # expensive afterwards - but `force` exists so a titling failure can
                     # never trap you off-air mid-set.
+                    # An empty title skips connect.py altogether - that is the path for
+                    # a hand-pasted key with no app registered, and it must work.
                     title = (body.get("title") or "").strip()
-                    if not title and not body.get("force"):
-                        self._json({"error": "a title is required"}, 400); return
                     res = {"ok": True, "exit": 0, "lines": []}
                     if title:
                         a = ["golive", "--title", title]

@@ -1501,9 +1501,14 @@ function renderStream(){
   // a pre-flight has actually passed - but a cold button that does nothing when pressed
   // would be its own trap, especially after a reload clears the check mid-setup. So cold
   // RUNS the check. One tap either arms it or tells you what is missing.
+  // ⚠️ ARMED MEANS THE RELAY CAN STREAM, NOT THAT TITLING WORKS. This first gated the
+  // button on `golive --dry-run` passing, which needs OAuth - so with a hand-pasted key
+  // and no app registered the button could never arm, even though the relay would have
+  // streamed perfectly. Titles are a nice-to-have layered on top; a missing one must
+  // never be what keeps you off air. A channel with a key and ENABLED=1 is enough.
   const btn = $('recbtn'), lab = $('reclabel');
-  btn.className = 'recbtn ' + (obs.active ? 'live' : (PREFLIGHT_OK && armed ? 'armed' : 'cold'));
-  lab.textContent = obs.active ? 'stop' : (PREFLIGHT_OK && armed ? 'go live' : 'check first');
+  btn.className = 'recbtn ' + (obs.active ? 'live' : (armed ? 'armed' : 'cold'));
+  lab.textContent = obs.active ? 'stop' : (armed ? 'go live' : 'nothing armed');
   btn.setAttribute('aria-label', lab.textContent);
   btn.onclick = async () => {
     if (obs.active){
@@ -1511,7 +1516,7 @@ function renderStream(){
       await post('/api/stream', {action:'obs_stop'});
       setTimeout(loadStream, 1200); return;
     }
-    if (PREFLIGHT_OK && armed) { goLive(false); return; }
+    if (armed) { goLive(false); return; }
     showReport('checking…', []);
     const r = await post('/api/stream', {action:'preflight'});
     PREFLIGHT_OK = !!r.ok;
@@ -1565,7 +1570,9 @@ function renderPrivacy(){
 
 async function goLive(force){
   const title = $('s_title').value.trim();
-  if (!title && !force){ showReport('give it a title first', [], true); $('s_title').focus(); return; }
+  // No title is a legitimate choice, not an error - it is the whole no-OAuth path. Skip
+  // the platform calls entirely rather than failing on them.
+  if (!title) force = true;
   try { localStorage.setItem('riastrad.title', title); } catch(e){}
   showReport('setting titles, then starting OBS…', []);
   const r = await post('/api/stream',
