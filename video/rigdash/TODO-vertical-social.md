@@ -49,11 +49,19 @@ Free, and the 150-follower / 30-day bar is trivial. 16:9, no second encode.
 ### 3. TikTok — highest audience value, and the stream key does not exist
 🚩 Second vertical encode. No API of any kind for going live.
 
-⚠️ **Answered by hand 2026-09-26: there is no stream key.** Going live offers only the
-LIVE Studio desktop app. That settles the architecture — **TikTok cannot be a relay
-destination**, now or until the encoder permission appears. The relay pushes RTMP to a URL
-with a key; LIVE Studio has no RTMP ingest, so there is nothing to push to. Do not add a
-TikTok row to `keys.env`; there is no key to put in it.
+⚠️ **Checked by hand 2026-09-26: no stream key is offered.** Going live offers only the
+LIVE Studio desktop app. Unless that changes, **TikTok cannot be a relay destination** —
+the relay pushes RTMP to a URL with a key, and LIVE Studio has no RTMP ingest, so there is
+nothing to push to. Do not add a TikTok row to `keys.env`; there is no key to put in it.
+
+📋 **Status 2026-09-26: KYC submitted, age confirmed, LIVE Studio "Under review."** This
+establishes that the gate is *applied for*, not merely waited out — which was the open
+question. It does not by itself produce a key: LIVE Studio access and third-party encoder
+access are separate grants, and approval of the first says nothing about the second.
+**Re-check when the review clears, and treat the paragraph above as settled only if no
+Server URL + Stream Key pair has appeared by then.** The two places to look are TikTok LIVE
+Center (`livecenter.tiktok.com`) and LIVE Studio's own settings, for wording like "stream
+with third-party software."
 
 **What still works, and why the big piece of work is unchanged.** LIVE Studio captures a
 window, a display or a camera and does its own encode. So the vertical composition — the
@@ -112,8 +120,10 @@ Fanning out to all seven is fine.
 
 ## Open questions for Ian
 
-- ~~Does the TikTok account show a stream key?~~ **Answered 2026-09-26: no.** The open
-  question is now whether the encoder permission can be requested at all, or only waited for.
+- ~~Does the TikTok account show a stream key?~~ **Checked 2026-09-26: not offered.**
+  ~~Can the encoder permission be requested at all?~~ **Partly answered:** there is a
+  KYC/review path, submitted 2026-09-26 and pending. Open question is now narrower — does
+  clearing that review also unlock a stream key, or only the LIVE Studio app?
 - Does Live Producer appear on instagram.com for the account in question?
 - Is vertical a *crop* of the same performance or a separately framed shot? That is a
   camera decision before it is a software one, and the Pixel 6 is already on a WiFi bridge
