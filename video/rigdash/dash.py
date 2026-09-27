@@ -1073,6 +1073,15 @@ def twitch_chat_thread():
                 try:
                     data = sock.recv(8192)
                 except socket.timeout:
+                    # WATCH FOR A CHANGED CHANNEL. The config is only read where this
+                    # loop reconnects, so editing twitch_channel did nothing at all
+                    # until the socket happened to drop - which on a healthy link is
+                    # never. That is the worst shape of wrong: the panel says reading,
+                    # and truthfully, while the chat on screen belongs to someone else.
+                    # I shipped exactly that bug by guessing the channel name.
+                    want = str(chat_conf().get('twitch_channel') or '')
+                    if want.strip().lstrip('#').lower() != chan:
+                        raise OSError('channel changed in ' + CHAT_CONF.name)
                     sock.sendall(b"PING :riastrad\r\n")   # heartbeat; a PONG proves it
                     continue
                 if not data:
