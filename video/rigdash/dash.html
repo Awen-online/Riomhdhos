@@ -303,7 +303,7 @@
       <span class="v" id="v_bcast">&mdash;</span></div>
     <div class="row"><span class="k">Title</span><span class="v" id="v_titlelen">0</span></div>
     <div class="sub" id="v_titlenote"></div>
-    <input type="text" id="s_title" maxlength="140" autocomplete="off"
+    <input type="text" id="s_title" maxlength="200" autocomplete="off"
            placeholder="what this set is">
     <div class="row"><span class="k">Description</span>
       <span class="v sub">YouTube and Facebook only</span></div>
@@ -1797,12 +1797,20 @@ try {
   const pv = localStorage.getItem('riastrad.privacy');
   if (pv) PRIVACY = pv;
 } catch(e){}
-$('s_title').addEventListener('input', () => {
+/* ⚠️ THE PLATFORMS DISAGREE ABOUT LENGTH, so warn at the TIGHTEST limit rather than the
+   loosest. The field allowed 140 because that is Twitch's cap, and connect.py truncates
+   safely there with `title[:140]` - but YouTube's title limit is 100 and it gets the
+   string passed straight through. A 120-character title would therefore set Twitch and
+   fail YouTube, which is the sort of split outcome you would only notice afterwards. */
+const TITLE_LIMITS = [[100, 'YouTube'], [140, 'Twitch']];
+function titleLen(){
   const n = $('s_title').value.length;
-  $('v_titlelen').textContent = n;
-  $('v_titlelen').style.color = n > 140 ? 'var(--bad)' : (n ? 'inherit' : 'var(--dim)');
-});
-$('v_titlelen').textContent = $('s_title').value.length;
+  const over = TITLE_LIMITS.filter(([lim]) => n > lim).map(([lim, who]) => who + ' ' + lim);
+  $('v_titlelen').textContent = over.length ? n + ' — over ' + over.join(', ') : String(n);
+  $('v_titlelen').style.color = over.length ? 'var(--bad)' : (n ? 'inherit' : 'var(--dim)');
+}
+$('s_title').addEventListener('input', titleLen);
+titleLen();
 renderPrivacy();
 
 function renderBridges(){
