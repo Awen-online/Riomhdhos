@@ -1876,7 +1876,11 @@ titleLen();
    cost the broadcast its name. Say it locally while there is time to fix it. */
 function tagsInfo(){
   const raw = $('s_tags').value.split(',').map(t => t.trim()).filter(Boolean);
-  const bad = raw.filter(t => t.length > 25 || /[^A-Za-z0-9]/.test(t));
+  // ⚠️ MATCH connect.py'S RULE, NOT A STRICTER ONE. It validates with Python's
+  // str.isalnum, which is Unicode-aware - "Café" and "Ceol" both pass there. An ASCII-only
+  // regex here would paint a perfectly valid tag red and send him hunting for a problem
+  // that does not exist. \p{L}\p{N} is the closest JS equivalent.
+  const bad = raw.filter(t => t.length > 25 || !/^[\p{L}\p{N}]+$/u.test(t));
   const el = $('v_taglen');
   if (!raw.length){ el.textContent = 'Twitch only'; el.style.color = 'var(--dim)'; return; }
   const probs = [];
