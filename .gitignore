@@ -22,3 +22,6 @@ video/synctest/sync*.png
 # OS cruft
 .DS_Store
 Thumbs.db
+
+# timestamped safety copies made before edits; git is the real history
+*.bak-*
