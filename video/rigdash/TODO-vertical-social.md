@@ -46,8 +46,30 @@ Free, and the 150-follower / 30-day bar is trivial. 16:9, no second encode.
 - Audience fit is the real question. **Sync.Land is the only brand where this obviously
   makes sense**; a live set on a professional-network feed is an odd match otherwise.
 
-### 3. TikTok — highest audience value, worst reliability
-🚩 Second vertical encode. Per-broadcast key. No API of any kind for going live.
+### 3. TikTok — highest audience value, and the stream key does not exist
+🚩 Second vertical encode. No API of any kind for going live.
+
+⚠️ **Answered by hand 2026-09-26: there is no stream key.** Going live offers only the
+LIVE Studio desktop app. That settles the architecture — **TikTok cannot be a relay
+destination**, now or until the encoder permission appears. The relay pushes RTMP to a URL
+with a key; LIVE Studio has no RTMP ingest, so there is nothing to push to. Do not add a
+TikTok row to `keys.env`; there is no key to put in it.
+
+**What still works, and why the big piece of work is unchanged.** LIVE Studio captures a
+window, a display or a camera and does its own encode. So the vertical composition — the
+expensive part — is needed either way, and only the last mile differs: instead of an RTMP
+leg, LIVE Studio window-captures the vertical canvas. If the encoder permission ever
+appears, the last mile swaps to a relay leg with no rework to the composition.
+
+Three costs to go in with eyes open:
+- **Riastrad goes blind.** LIVE Studio is outside MediaMTX, so the dashboard cannot arm it,
+  disarm it, or tell you it dropped. It cannot be a row in the STREAM tab, and it must not
+  be given one — a control that cannot act has no business looking operable.
+- **Virtual-camera slots are already taken.** OBS Virtual Camera is the Pixel 6 bridge and
+  Unity Video Capture is the Pixel 8, so LIVE Studio cannot be fed that way without
+  evicting a phone. Feed it an OBS *windowed projector* of the vertical scene instead.
+  (Whether Aitum Vertical exposes a projector of its own canvas is unconfirmed.)
+- **A third encoder on a box already decoding two phone H.264 streams.** Unmeasured.
 
 - Two separate gates: mobile LIVE (≈1,000 followers, 18+, 30-day-old account) **and a
   distinct, undocumented permission for third-party encoder / stream-key access.** Having
@@ -90,7 +112,8 @@ Fanning out to all seven is fine.
 
 ## Open questions for Ian
 
-- Does the TikTok account show a stream key in Stream Settings? Everything else is moot.
+- ~~Does the TikTok account show a stream key?~~ **Answered 2026-09-26: no.** The open
+  question is now whether the encoder permission can be requested at all, or only waited for.
 - Does Live Producer appear on instagram.com for the account in question?
 - Is vertical a *crop* of the same performance or a separately framed shot? That is a
   camera decision before it is a software one, and the Pixel 6 is already on a WiFi bridge
