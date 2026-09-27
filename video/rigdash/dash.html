@@ -1992,11 +1992,33 @@ function renderCategories(info){
   dl.innerHTML = names.map(n => '<option value="' + esc(n) + '"></option>').join('');
   note.style.color = 'var(--dim)';
   if (info && info.why)      note.textContent = info.why;
-  else if (names.length)     note.textContent = 'remembered: ' + names.length + ' categor'
-                               + (names.length === 1 ? 'y' : 'ies')
-                               + ' Twitch has accepted before — not a live list, and '
-                               + 'any other name still works';
+  else if (names.length)     note.textContent = catNote(c);
   else                       note.textContent = '';
+}
+
+/* ⚠️ SAY WHEN THE LIST WAS TAKEN. These names come from Twitch's most-watched list via
+   `connect.py categories`, which is a SNAPSHOT, not a live query - the dashboard never
+   talks to a platform. Categories get renamed and retired, and a stale one does not fail
+   politely: Twitch rejects the whole PATCH, so the title goes down with the category. A
+   list shown without its age is claiming to be current, and this one cannot make that
+   claim. Names the channel has actually used are counted separately because those were
+   confirmed by Twitch at the moment they were used, which is a stronger thing to say. */
+function catNote(c){
+  const total = (c.names || []).length, used = c.used || 0;
+  const bits = [];
+  if (used)  bits.push(used + ' you have used');
+  if (c.top) bits.push(c.top + ' from Twitch’s most-watched');
+  let s = total + ' categories — ' + bits.join(', ');
+  if (c.top_at){
+    const d = new Date(c.top_at);
+    const days = isNaN(d) ? null : Math.floor((Date.now() - d.getTime()) / 86400000);
+    s += days === null ? '' :
+         days <= 0 ? ', fetched today'
+       : days === 1 ? ', fetched yesterday'
+       : ', fetched ' + days + ' days ago';
+    if (days !== null && days > 30) s += ' — worth refreshing';
+  }
+  return s + '. Any other name still works.';
 }
 
 /* Remembered tag sets. These are his own previous entries and nothing else - no claim is

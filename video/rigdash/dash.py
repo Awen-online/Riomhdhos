@@ -809,9 +809,30 @@ def twitch_categories():
     games = tw.get("games") or {}
     if not isinstance(games, dict):
         return {"names": [], "why": "twitch.games in tokens.json is not an object"}
-    names = sorted(k for k in games if isinstance(k, str) and k.strip())
-    return {"names": names,
-            "why": "" if names else "no category has been set from here yet"}
+    # Two sources, and the order is the point. What this channel has actually used comes
+    # first, because after a few shows the right answer is almost always one of three or
+    # four names and burying them under three hundred game titles helps nobody. Twitch's
+    # own most-watched list follows, in Twitch's order, so the field can offer real
+    # category names rather than only a memory.
+    used = sorted(k for k in games if isinstance(k, str) and k.strip())
+    top = [n for n in (tw.get("top_categories") or [])
+           if isinstance(n, str) and n.strip()]
+    seen, names = set(), []
+    for n in used + top:
+        k = n.strip().lower()
+        if k not in seen:
+            seen.add(k)
+            names.append(n.strip())
+    why = ""
+    if not names:
+        why = ("no categories cached yet - run: python connect.py categories")
+    return {"names": names, "used": len(used), "top": len(top),
+            # ⚠️ THE AGE TRAVELS WITH THE LIST. Categories get renamed and retired, and a
+            # stale name does not fail quietly - it fails the whole PATCH and takes the
+            # title down with it. A list offered without saying when it was taken is
+            # claiming to be current, which is a claim this cannot make.
+            "top_at": tw.get("top_categories_at") or "",
+            "why": why}
 
 
 def set_enabled(name, on):
