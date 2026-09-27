@@ -640,6 +640,15 @@ const TAB_ICON = {
 // Order matches the strip above; cams leads because it is the landing tab.
 // Cams then Stream: the two you touch while a set is actually running, side by side and
 // leftmost. Perform, Look and Rig are set-up work you do before anyone is watching.
+/* ⚠️ DECLARED UP HERE, ABOVE selectTab, AND THAT IS THE WHOLE POINT. chatPoll() is a
+   hoisted function declaration so it exists from the first line, but these are `let`,
+   so touching them before this statement runs throws a temporal-dead-zone
+   ReferenceError. The tab-restore block below calls selectTab(), which calls
+   chatPoll(), about eighty thousand characters before the old declaration site - so
+   restoring onto the Chat tab threw, the catch swallowed it, and the panel rendered
+   empty with no error anywhere. Keep these above their first possible caller. */
+let CHAT_SEQ = 0, CHAT_TIMER = null;
+
 const TABS = [['t_cams','cams'], ['t_stream','stream'], ['t_chat','chat'],
               ['t_perform','perform'], ['t_look','look'], ['t_rig','rig']];
 function selectTab(sec, scroll){
@@ -677,7 +686,14 @@ for (const [btn, sec] of TABS){
 try {
   const saved = localStorage.getItem('riastrad.tab');
   if (saved && TABS.some(([, s]) => s === saved)) selectTab(saved, false);
-} catch (e) {}
+} catch (e) {
+  // ⚠️ SAY SOMETHING. This catch is here because localStorage throws in a private window,
+  // which is genuinely not worth breaking the page over. But it used to swallow EVERY
+  // error, and it hid a real one for hours: restoring onto the Chat tab threw before the
+  // chat state existed, so the panel came up blank with a clean console. A catch this
+  // broad has to leave a trace, or it is a place bugs go to be quiet.
+  console.error('tab restore failed:', e);
+}
 
 // ⚠️ POLLED ONLY WHILE THE TAB IS OPEN. Mid-set this has to be current to the second, but
 // a dashboard sitting on Cams has no business hammering the relay - and the phones are
@@ -2256,7 +2272,6 @@ const CHAT_COL = { live:'var(--ok)', stalled:'var(--bad)', failed:'var(--bad)',
 const CHAT_WORD = { live:'reading', stalled:'no proof of life', failed:'dropped',
                     connecting:'connecting', off:'not set up', none:'not connected',
                     idle:'waiting', quota:'out of quota' };
-let CHAT_SEQ = 0, CHAT_TIMER = null;
 
 function renderChatSources(list){
   const box = $('chatsrc');
