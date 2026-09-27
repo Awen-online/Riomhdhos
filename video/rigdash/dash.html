@@ -334,12 +334,15 @@
     <input type="text" id="s_desc" maxlength="400" autocomplete="off" placeholder="optional">
     <div class="row"><span class="k">Category</span>
       <span class="v sub">Twitch only</span></div>
-    <input type="text" id="s_cat" maxlength="60" autocomplete="off"
+    <input type="text" id="s_cat" maxlength="60" autocomplete="off" list="catlist"
            placeholder="e.g. Music — must match a Twitch category exactly">
+    <datalist id="catlist"></datalist>
+    <div class="sub" id="v_catnote"></div>
     <div class="row"><span class="k">Tags</span>
       <span class="v sub" id="v_taglen">Twitch only</span></div>
-    <input type="text" id="s_tags" maxlength="300" autocomplete="off"
+    <input type="text" id="s_tags" maxlength="300" autocomplete="off" list="taglist"
            placeholder="comma separated, no spaces inside a tag">
+    <datalist id="taglist"></datalist>
     <div class="row"><span class="k">YouTube privacy</span>
       <span class="v sub" id="v_privnote">&mdash;</span></div>
     <div class="g3" id="privbtns"></div>
@@ -1862,6 +1865,7 @@ async function goLive(force){
         localStorage.setItem('riastrad.desc', $('s_desc').value.trim());
         localStorage.setItem('riastrad.cat',  $('s_cat').value.trim());
         localStorage.setItem('riastrad.tags', $('s_tags').value.trim()); } catch(e){}
+  rememberTagset($('s_tags').value.trim());
   showReport('setting titles, then starting OBS…', []);
   const r = await post('/api/stream',
       {action:'golive', title, desc:$('s_desc').value.trim(),
@@ -1887,6 +1891,7 @@ async function loadStream(){
     STREAM = await (await fetch('/api/stream')).json();
     STREAM_AT = Date.now();
     renderStream();
+    renderCategories(STREAM && STREAM.twitch_categories);
   } catch(e){
     /* ⚠️ A FAILED FETCH MUST LOOK LIKE A FAILED FETCH. Leaving the last good numbers on
        screen makes a dead dashboard look like a live one, and that is how a healthy rig
@@ -1951,11 +1956,61 @@ function tagsInfo(){
   el.style.color = probs.length ? 'var(--bad)' : 'var(--dim)';
 }
 $('s_tags').addEventListener('input', tagsInfo);
+
+/* ⚠️ THESE ARE SUGGESTIONS, AND THE FIELD STAYS FREE TEXT ON PURPOSE. Twitch rejects any
+   category name that is not an exact match, and it fails the whole PATCH when it does -
+   taking the title down with it - so the value here is not having to remember whether it
+   is "Music" or "Music & Performing Arts" thirty seconds before a show.
+
+   It is NOT a claim about what Twitch currently offers, and it must never read as one.
+   Riastrad never talks to Twitch; these names come from connect.py's own cache in
+   tokens.json, where an entry is only written after /helix/games returned an id for that
+   exact string - so every suggestion was confirmed by Twitch at the moment it was used.
+   That is what earns them a place. But a cache can go stale, which is exactly why this is
+   a <datalist> and not a <select>: it offers without constraining, anything typed still
+   goes through untouched, and an empty or unreadable list costs nothing but the note. */
+function renderCategories(info){
+  const dl = $('catlist'), note = $('v_catnote');
+  if (!dl || !note) return;
+  const names = (info && info.names) || [];
+  dl.innerHTML = names.map(n => '<option value="' + esc(n) + '"></option>').join('');
+  note.style.color = 'var(--dim)';
+  if (info && info.why)      note.textContent = info.why;
+  else if (names.length)     note.textContent = 'remembered: ' + names.length + ' categor'
+                               + (names.length === 1 ? 'y' : 'ies')
+                               + ' Twitch has accepted before — not a live list, and '
+                               + 'any other name still works';
+  else                       note.textContent = '';
+}
+
+/* Remembered tag sets. These are his own previous entries and nothing else - no claim is
+   made about them being valid at Twitch, which is what the validator above is for. */
+const TAGSETS_KEY = 'riastrad.tagsets';
+function loadTagsets(){
+  try { return JSON.parse(localStorage.getItem(TAGSETS_KEY) || '[]') || []; }
+  catch(e){ return []; }
+}
+function renderTagsets(){
+  const dl = $('taglist'); if (!dl) return;
+  dl.innerHTML = loadTagsets()
+    .map(t => '<option value="' + esc(t) + '"></option>').join('');
+}
+function rememberTagset(s){
+  s = (s || '').trim(); if (!s) return;
+  try {
+    const list = loadTagsets().filter(x => x !== s);
+    list.unshift(s);
+    localStorage.setItem(TAGSETS_KEY, JSON.stringify(list.slice(0, 8)));
+  } catch(e){}
+  renderTagsets();
+}
+
 try {
   $('s_cat').value  = localStorage.getItem('riastrad.cat')  || '';
   $('s_tags').value = localStorage.getItem('riastrad.tags') || '';
 } catch(e){}
 tagsInfo();
+renderTagsets();
 renderPrivacy();
 
 function renderBridges(){

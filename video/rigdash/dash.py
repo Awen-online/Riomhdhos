@@ -35,6 +35,7 @@ import re
 import socket
 import ssl
 import subprocess
+import urllib.error
 import urllib.parse
 import urllib.request
 import sys
@@ -771,6 +772,48 @@ def connect_run(args, timeout=90):
     return {"ok": p.returncode == 0, "exit": p.returncode, "lines": lines[-12:]}
 
 
+def twitch_categories():
+    """Category names Twitch itself has already accepted from this channel.
+
+    ⚠️ THIS IS A MEMORY, NOT A SEARCH, AND THE UI HAS TO SAY SO. Riastrad never speaks to
+    a platform (see connect_run), so it cannot ask Twitch what categories exist right now.
+    What it can do is read the cache connect.py builds in tokens.json under twitch.games,
+    and every name in there is EARNED: twitch_game_id() writes an entry only after
+    /helix/games returned an id for that exact string, so each key is a name Twitch
+    confirmed at the moment it was used. That is positive evidence, which is the standard
+    everything else here is held to, and it is the only reason these may be offered at all.
+
+    ⚠️ AND A MEMORY CAN GO STALE, SO IT STAYS A SUGGESTION AND NEVER A CONSTRAINT. The
+    field remains free text. Twitch can retire or rename a category, and a picker that
+    quietly offered a name that no longer resolves would fail the whole PATCH and take the
+    title down with it - the same split outcome the tag validator exists to prevent. An
+    empty list is therefore a perfectly good answer and must read as "nothing remembered
+    yet", not as "no such category exists".
+
+    The keys are stored lower-cased by connect.py and are deliberately NOT re-capitalised
+    here. Turning "music" into "Music" would be presenting a guess as a fact, and since
+    the /helix/games lookup is case-insensitive the guess would buy nothing anyway.
+
+    Reads one small JSON file and returns only the category names out of it. The tokens in
+    that file are never read, never held and never returned.
+    """
+    try:
+        raw = json.loads((RELAY_DIR / "tokens.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"names": [], "why": "the relay has no tokens.json yet - sign in at the desk first"}
+    except Exception as e:
+        # Same rule as chat_conf(): unreadable is not the same as empty, and saying which
+        # is the difference between "you have not used one yet" and "this file is broken".
+        return {"names": [], "why": "tokens.json unreadable: %s" % (type(e).__name__,)}
+    tw = (raw or {}).get("twitch") or {}
+    games = tw.get("games") or {}
+    if not isinstance(games, dict):
+        return {"names": [], "why": "twitch.games in tokens.json is not an object"}
+    names = sorted(k for k in games if isinstance(k, str) and k.strip())
+    return {"names": names,
+            "why": "" if names else "no category has been set from here yet"}
+
+
 def set_enabled(name, on):
     """Flip one <NAME>_ENABLED flag in the relay's keys.env. Never reads or writes a key.
 
@@ -948,7 +991,6 @@ CHAT_PING_S = 60.0         # how long a quiet read waits before we prod the serv
 CHAT_SOURCES = [("twitch", "Twitch"), ("youtube", "YouTube"), ("facebook", "Facebook"),
                 ("x", "X"), ("tiktok", "TikTok"), ("instagram", "Instagram")]
 CHAT_WHYNOT = {
-    "facebook":  "not wired yet - needs a Page token and Meta App Review",
     "x":         "not wired yet - Livestream API access is form-gated",
     "tiktok":    "no live-chat API exists at all - nothing to connect to",
     "instagram": "needs a public webhook URL Meta can reach - awkward from this box",
@@ -1256,6 +1298,50 @@ def _yt_state(err):
     return ("failed", "%s: %s" % (reason, msg))
 
 
+YT_SEEN_KEEP = 1000        # message ids remembered, so a replayed page cannot duplicate
+
+
+def _yt_display(it):
+    """Turn one liveChat item into (author, text), or (author, "") if it is silent.
+
+    ⚠️ A PAID MESSAGE MUST NOT VANISH, AND READING displayMessage ALONE NEARLY LOSES ONE.
+    Google's own stream_list.proto says "at the moment only messages of type TOMBSTONE and
+    CHAT_ENDED_EVENT are silent", so Super Chats, Super Stickers and every membership event
+    do carry displayMessage and none of them were being dropped outright. The real fault is
+    subtler: displayMessage for a Super Chat is the comment, with nothing about the money,
+    so a fiver rendered as an ordinary line of chat. Someone paid to be seen. The amount
+    goes in front, built from superChatDetails rather than trusted to the display string.
+
+    ⚠️ AND AN UNKNOWN TYPE GETS NAMED, NOT DROPPED. The type enum grows - giftEvent and
+    pollEvent both postdate the first version of this reader - and the old code discarded
+    anything without displayMessage without trace. A line reading "[giftEvent]" is ugly;
+    a silent hole in the feed during a show is worse, because nothing on screen says the
+    reader met something it did not understand.
+    """
+    sn = it.get("snippet") or {}
+    au = it.get("authorDetails") or {}
+    who = au.get("displayName") or "someone"
+    typ = str(sn.get("type") or "")
+    text = str(sn.get("displayMessage") or "")
+
+    if typ == "superChatEvent":
+        d = sn.get("superChatDetails") or {}
+        # amountDisplayString is already localised by the server ("$1.00", "1,50$").
+        amt = str(d.get("amountDisplayString") or "")
+        note = str(d.get("userComment") or "")
+        text = (amt + " " + note).strip() or amt or text
+    elif typ == "superStickerEvent":
+        d = sn.get("superStickerDetails") or {}
+        amt = str(d.get("amountDisplayString") or "")
+        # Super Stickers carry no user comment at all - altText is the only text there is,
+        # and the sticker image is deliberately not available through the API.
+        alt = str((d.get("superStickerMetadata") or {}).get("altText") or "sticker")
+        text = (amt + " [" + alt + "]").strip()
+    elif not text and typ not in ("tombstone", "chatEndedEvent"):
+        text = "[" + typ + "]" if typ else ""
+    return who, text
+
+
 def youtube_chat_thread():
     """Read YouTube live chat with nothing but an API key.
 
@@ -1265,13 +1351,26 @@ def youtube_chat_thread():
     was left out. An unlisted or private broadcast is invisible to a key - it would need
     the OAuth path - so the panel says "no broadcast found" rather than pretending.
 
-    Quota: liveChatMessages.list is one unit, the pool is 10,000 a day, and the server
-    hands back the interval it wants in pollingIntervalMillis. That value is a MINIMUM
-    wait, so polling slower is always safe and polling faster earns rateLimitExceeded;
-    YT_MIN_POLL_S is a floor under it, not a target.
+    Quota, checked against Google's quota calculator on 2026-09-27: liveChatMessages.list
+    costs ONE unit against a pool of 10,000 a day. The widely repeated figure of five is a
+    fossil - it was correct under the per-part pricing Google retired in April 2019, where
+    a read cost 1 and each part added 2, making part=snippet,authorDetails exactly 5. At
+    one unit, 10,000 polls a day is a poll every 8.6 s sustained around the clock, and a
+    four-hour show could poll every 1.4 s and still fit. The current interval is nowhere
+    near the wall.
+
+    ⚠️ pollingIntervalMillis IS A FLOOR, BUT "SLOWER IS SAFE" IS AN ASSUMPTION, NOT A
+    PROMISE. Google says only that it is how long the client "should wait before polling
+    again", and documents rateLimitExceeded for requests sent "more frequently than
+    YouTube's refresh rates" - so polling faster is a documented error and clamping upward
+    cannot earn one. What Google does NOT document, in either direction, is whether a
+    client that polls far slower than the chat's message rate can lose messages off the
+    back of a server-side buffer. Nothing here should come to depend on slow polling being
+    lossless. YT_MIN_POLL_S is a floor under the server's number, not a target.
     """
     chat_id = title = page = None
     quiet_until = 0.0
+    yt_seen, yt_order = set(), []
     while True:
         now = time.time()
         if now < quiet_until:
@@ -1310,14 +1409,45 @@ def youtube_chat_thread():
 
         # Bytes came back, so the link is proven alive even when nobody has spoken.
         _chat_mark("youtube", "live", title or "live", alive=True)
-        page = d.get("nextPageToken") or page
-        for it in d.get("items") or []:
-            sn = it.get("snippet") or {}
-            au = it.get("authorDetails") or {}
-            txt = sn.get("displayMessage") or ""
-            if txt:
-                _chat_add("youtube", au.get("displayName") or "someone", txt)
 
+        # ⚠️ ADVANCE THE CURSOR ONLY ON A REAL TOKEN. pageToken is a resume point, not an
+        # index into a fixed collection - Google's wording is that the API "will resume
+        # sending messages from the point where you left off". So re-sending the previous
+        # token asks the server to resume from BEFORE the messages just consumed, and the
+        # next response redelivers them; a client doing that on every pass can wedge itself
+        # re-reading one window for the length of a show. `page = d.get("nextPageToken")
+        # or page` was precisely that. Google documents no fallback and does not promise
+        # the token is always present, so when it is missing the only safe move is to hold
+        # the cursor still and let de-duplication absorb the overlap.
+        tok_next = d.get("nextPageToken")
+        if tok_next:
+            page = tok_next
+
+        for it in d.get("items") or []:
+            mid = str(it.get("id") or "")
+            typ = str((it.get("snippet") or {}).get("type") or "")
+            # ⚠️ giftEvent IS THE ONE TYPE THAT MAY ARRIVE TWICE UNDER ONE ID. Google warns
+            # that for gift events "the same ID may be reused to update the combo count",
+            # so de-duplicating it by id would show the first gift of a combo and silently
+            # swallow every update after it.
+            if mid and typ != "giftEvent":
+                if mid in yt_seen:
+                    continue
+                yt_seen.add(mid)
+                yt_order.append(mid)
+                while len(yt_order) > YT_SEEN_KEEP:
+                    yt_seen.discard(yt_order.pop(0))
+            who, txt = _yt_display(it)
+            if txt:
+                _chat_add("youtube", who, txt)
+
+        # ⚠️ offlineAt MEANS IT HAS ALREADY HAPPENED, not that it is scheduled to. Google:
+        # "The date and time when the underlying livestream went offline. This property is
+        # only present if the stream is already offline." It is also the RELIABLE end-of-
+        # show signal, where chatEndedEvent is not - that one "is not sent for live chats
+        # on a channel's default broadcast". Note this check deliberately runs AFTER the
+        # items above are drained: the final payload carries both the last words spoken
+        # and the notice that it is over, and bailing out first would drop them.
         if d.get("offlineAt"):
             chat_id = None
             _chat_mark("youtube", "idle", "the broadcast has ended")
@@ -1326,6 +1456,349 @@ def youtube_chat_thread():
 
         wait = (d.get("pollingIntervalMillis") or 0) / 1000.0
         quiet_until = time.time() + max(YT_MIN_POLL_S, wait)
+
+
+# ⚠️ THE TOKEN LIVES IN SOMEONE ELSE'S FILE, AND IT IS RE-READ EVERY PASS. connect.py owns
+# tokens.json and rewrites facebook.live_video_id every time a broadcast is created. That
+# file was rewritten underneath this reader while this reader was being written, which is
+# not a curiosity - it is the normal case, because going live is precisely what changes
+# that id. Reading either value once at thread start would leave the panel happily green
+# on a broadcast that ended hours ago.
+#
+# ⚠️ THE TOKEN MUST NEVER REACH THE PANEL, A LOG LINE OR AN EXCEPTION. Every string that
+# can escape this section goes through _fb_scrub first. Graph does not normally echo the
+# token back inside an error message, but "normally" is not a guarantee worth putting a
+# Page credential behind, and these detail lines are rendered on a dashboard that gets
+# screen-shared. The token is never formatted, never logged, never returned.
+
+FB_TOKENS = RELAY_DIR / "tokens.json"      # connect.py's file; read here, never written
+FB_GRAPH = "https://graph.facebook.com/v21.0"
+FB_STREAM = "https://streaming-graph.facebook.com"
+FB_POLL_S = 4.0            # comment poll interval while a broadcast is live
+FB_IDLE_S = 20.0           # re-check interval while nothing is live
+FB_SEEN_KEEP = 800         # comment ids remembered, so a re-poll cannot duplicate
+FB_SSE_QUIET_S = 70.0      # a stream silent this long has stopped proving anything
+FB_SSE_RETRY_S = 1800.0    # how long to stop attempting SSE after it refuses us
+
+# Graph's own words for a live video's status field. Only LIVE means there is anything to
+# read; the rest are ordinary resting states and must not wear red.
+FB_STATUS_WORD = {
+    "LIVE_STOPPED": "the broadcast has ended",
+    "VOD": "the broadcast has ended and become a recording",
+    "PROCESSING": "the broadcast is still processing",
+    "UNPUBLISHED": "a live video is waiting, unpublished",
+    "SCHEDULED_UNPUBLISHED": "a broadcast is scheduled but not started",
+    "SCHEDULED_LIVE": "a broadcast is scheduled but not started",
+    "SCHEDULED_EXPIRED": "the scheduled broadcast expired without starting",
+    "PREVIEW": "the broadcast is in preview, not public yet",
+}
+
+
+def _fb_scrub(text, tok):
+    """Remove a token from anything about to be displayed. Both raw and percent-encoded,
+    because the value travels in a query string and could come back either way."""
+    if not tok or not text:
+        return text
+    text = text.replace(tok, "<token>")
+    quoted = urllib.parse.quote(tok, safe="")
+    if quoted != tok:
+        text = text.replace(quoted, "<token>")
+    return text
+
+
+def fb_conf():
+    """Page token and live video id out of connect.py's tokens.json, read fresh.
+
+    Returns (token, video_id, problem) where problem is (state, detail) or None.
+
+    The three "nothing to do" cases are deliberately kept apart, because they send you to
+    three different places: no file at all, a file with no token, and a token with no
+    broadcast. Only the middle one is anyone's fault. A file that exists but will not
+    parse is a fourth case and is NOT a resting state - same reasoning as chat_conf().
+    """
+    try:
+        if not FB_TOKENS.exists():
+            return "", "", ("off", "no tokens.json at " + str(FB_TOKENS))
+        raw = json.loads(FB_TOKENS.read_text(encoding="utf-8"))
+        fb = (raw or {}).get("facebook") or {}
+    except Exception as e:
+        return "", "", ("failed", "tokens.json unreadable: %s: %s" % (type(e).__name__, e))
+    tok = str(fb.get("page_token") or "").strip()
+    vid = str(fb.get("live_video_id") or "").strip()
+    if not tok:
+        return "", "", ("off", "no facebook.page_token - run: python connect.py facebook")
+    if not vid:
+        return tok, "", ("off", "no live video yet - nothing to read until you go live")
+    return tok, vid, None
+
+
+def _fb_get(tok, path, timeout=20, **params):
+    """One Graph API GET. Returns (data, None) or (None, (code, subcode, message)).
+
+    ⚠️ GET-ONLY IS THE READ-ONLY GUARANTEE, AND IT IS STRUCTURAL. urlopen() called with no
+    data argument cannot issue a POST or a DELETE, and this module contains no other HTTP
+    call. The Page token in hand is perfectly capable of commenting, replying, hiding and
+    banning - the protection is not that this code chooses not to, it is that this code
+    contains no way to. Adding a `data=` argument here is the single edit that would break
+    that, which is why the guarantee is written down next to the function rather than in a
+    design document nobody opens.
+
+    The code and subcode are kept separate from the prose because the caller branches on
+    them: 190 (token rejected) and 100/33 (the object is gone) are opposite situations and
+    collapsing them into one string was exactly the mistake worth avoiding.
+    """
+    params["access_token"] = tok
+    url = FB_GRAPH + path + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace")), None
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")
+        try:
+            err = json.loads(body)["error"]
+            return None, (err.get("code"), err.get("error_subcode"),
+                          _fb_scrub(str(err.get("message") or "")[:160], tok))
+        except Exception:
+            # Not a Graph JSON error. The streaming host answers with an HTML page, and
+            # so does an edge behind a load balancer having a bad day.
+            return None, ("http%d" % e.code, None, _fb_scrub(body[:160], tok))
+    except Exception as e:
+        return None, ("network", None, _fb_scrub("%s: %s" % (type(e).__name__, e), tok))
+
+
+def _fb_state(err):
+    """Turn a Graph error into a state the panel can show honestly.
+
+    ⚠️ 190 IS THE ONE THAT MUST NEVER LOOK LIKE A QUIET CHAT. A Page token dies from an
+    expiry, a password change, a permissions change or a straight revocation, and it is by
+    some distance the most likely real-world failure of this reader. If it were allowed to
+    fall through to a generic "failed" the panel would show red with no instruction, and
+    the fix - one command - would not be on screen. Verified live on 2026-09-27: a
+    deliberately malformed token returns HTTP 400, type OAuthException, code 190.
+    """
+    code, sub, msg = err
+    if code == 190:
+        # The subcode says WHY, and the why changes what he has to go and do: a token that
+        # merely expired is a re-run, a Page role that was removed is a trip to Facebook.
+        return ("failed", {
+            463: "the Page token expired - re-run: python connect.py facebook",
+            467: "the Page token was revoked - re-run: python connect.py facebook",
+            460: "the password changed, so the token died - re-run: python connect.py facebook",
+            492: "this token's user no longer has a role on the Page - fix that first",
+        }.get(sub, "the Page token was rejected - re-run: python connect.py facebook"))
+    if code == 102:
+        return ("failed", "the Page session is invalid - re-run: python connect.py facebook")
+    if code in (10, 200, 299):
+        return ("failed", "permission denied - the token is missing pages_read_engagement")
+    if code in (4, 17, 32, 613):
+        # A wall we hit rather than broke, same as YouTube's quota: not red.
+        return ("quota", "Graph rate limit reached - backing off")
+    if code == 100 and sub == 33:
+        # Verified live on 2026-09-27 against a nonexistent id: code 100, subcode 33.
+        return ("idle", "tokens.json points at a live video that no longer exists")
+    if code == 100 and "nonexisting field" in (msg or ""):
+        # ⚠️ THE SAME DISAPPEARANCE WEARS TWO DIFFERENT ERRORS. Asking for a dead video's
+        # fields gives 100/33, but asking for its /comments edge gives a bare 100 reading
+        # "Tried accessing nonexisting field (comments)" with no subcode at all - observed
+        # on 2026-09-27 when a broadcast ended between the status check and the next poll.
+        # Both mean the broadcast is gone, which is the ordinary end of every show, so
+        # neither may show up red.
+        return ("idle", "the broadcast ended - its comments are no longer readable")
+    if code == "network":
+        return ("failed", msg)
+    return ("failed", "graph %s: %s" % (code, msg))
+
+
+# ⚠️ THE DOCUMENTED STREAM DOES NOT WORK ON THIS PAGE, SO THE POLL IS NOT A FALLBACK, IT
+# IS THE PATH. Meta documents Server-Sent Events at streaming-graph.facebook.com/{id}/
+# live_comments (/docs/live-video-api/interact-with-viewers). On 2026-09-27, against a
+# video whose status field read LIVE, with the same Page token Graph had accepted for /me
+# in the same second, that host returned HTTP 400 and a generic HTML error page - not a
+# Graph JSON error, so there is no machine-readable reason to act on - for every
+# documented shape tried: bare, with comment_rate=one_per_two_seconds, with
+# comment_rate=ten_per_second, with flat fields, with from{} expansion, with an explicit
+# Accept: text/event-stream, and against the permalink's video id instead of the live
+# video id. The likeliest explanation is an access-level gate on the streaming host, since
+# this app holds only Standard Access, but Meta does not say so and I will not claim it.
+#
+# ⚠️ AND THE SPEC FOR THIS ENDPOINT IS NO LONGER PUBLISHED, so do not go looking for it to
+# check these parameters. Meta deleted the whole docs/graph-api/server-sent-events tree -
+# including the live_comments page that carried the comment_rate and fields tables - and it
+# now 301s to /docs/live-video-api, which describes the endpoint in prose and documents no
+# parameters at all. The node reference for Live Video itself 404s too, having gone dark
+# around the v21.0 boundary. The parameter details relied on here come from Meta's own
+# archived pages (Wayback, captures of 2023-09-05 and 2024-05-21), cross-checked against
+# the v21.0 through v24.0 changelogs, which record no change to any of it. That means the
+# usual early warning - a doc diff - does not exist for this call, and the only signal of a
+# break will be this reader failing.
+#
+# So: the stream is still attempted, because if it starts working it is strictly better
+# than polling, and the panel NAMES the transport actually carrying the chat. Falling back
+# silently would have meant "reading" on screen with no way to tell which of two very
+# different mechanisms was behind it. After a refusal the attempt is parked for half an
+# hour rather than retried every reconnect, because a request that has failed identically
+# eight times in a row is not diagnosis, it is noise.
+_fb_sse = {"off_until": 0.0, "why": ""}
+
+
+def _fb_emit(c, seen, seen_q, quiet=False):
+    """Record one comment and, unless priming, show it. True if it was new.
+
+    ⚠️ THE FIRST POLL IS PRIMED SILENTLY. /comments hands back the most recent fifty
+    comments whether or not this reader has seen them, and _chat_add stamps everything
+    with the time it arrives here - so replaying that page on startup would drop an hour
+    of old conversation into the bottom of a live feed wearing fresh timestamps. That is
+    not a cosmetic problem: it is the panel stating, in the only way it states anything,
+    that those words were just said.
+    """
+    cid = str(c.get("id") or "")
+    if not cid or cid in seen:
+        return False
+    seen.add(cid)
+    seen_q.append(cid)
+    while len(seen_q) > FB_SEEN_KEEP:
+        seen.discard(seen_q.pop(0))
+    if quiet:
+        return True
+    # `from` is not guaranteed. Meta has progressively restricted commenter identity on
+    # Page content for apps without Page Public Content Access, so an anonymous-looking
+    # comment is an expected shape here, not a parse failure.
+    who = ((c.get("from") or {}).get("name") or "").strip() or "someone on Facebook"
+    _fb_text = str(c.get("message") or "")
+    if _fb_text:
+        _chat_add("facebook", who, _fb_text)
+    return True
+
+
+def _fb_sse_try(tok, vid, title, seen, seen_q):
+    """Attempt the SSE comment stream and drain it. Returns True if it carried us.
+
+    A read timeout is not a failure here, it is the absence of proof: the stream is
+    supposed to keep talking, and if it has not produced a byte in FB_SSE_QUIET_S then
+    whatever is on the other end has stopped demonstrating that it is there. Dropping back
+    to the status check re-proves the link cheaply rather than sitting on a socket that
+    may already be dead.
+    """
+    if time.time() < _fb_sse["off_until"]:
+        return False
+    # ⚠️ comment_rate IS A SAMPLING RATE, NOT A PACING HINT, AND THE OBVIOUS VALUE IS THE
+    # WRONG ONE. Meta documents three: one_per_two_seconds, ten_per_second and
+    # one_hundred_per_second, and of the first it says only "up to one comment will be
+    # delivered per two seconds", with "comments prioritized based on quality so if the
+    # comment rate exceeds the requested rate then you will receive the higher quality
+    # comments". That is lossy sampling with no notification - a busy minute would silently
+    # drop most of the chat and the panel would show a calm, plausible, incomplete feed,
+    # which is the exact failure this whole section is built to prevent. Meta calls
+    # one_hundred_per_second "sufficient to receive every comment even on extremely popular
+    # broadcasts", so completeness is picked over tidiness.
+    url = FB_STREAM + "/" + vid + "/live_comments?" + urllib.parse.urlencode({
+        "access_token": tok, "comment_rate": "one_hundred_per_second",
+        "fields": "from{name,id},message,created_time"})
+    r = None
+    try:
+        r = urllib.request.urlopen(url, timeout=FB_SSE_QUIET_S)
+        _chat_mark("facebook", "live", (title or "live") + " - streaming", alive=True)
+        for raw in r:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            # Any byte at all counts, a ":" keepalive comment included. Something on the
+            # far end is still choosing to talk to us, and that is the whole definition of
+            # proof of life - it is deliberately not the same test as "a comment arrived".
+            _chat_mark("facebook", "live", (title or "live") + " - streaming", alive=True)
+            if not line.startswith("data:"):
+                continue
+            try:
+                _fb_emit(json.loads(line[5:].strip()), seen, seen_q)
+            except Exception:
+                continue
+        return True
+    except Exception as e:
+        # ⚠️ THE STREAMING HOST DOES NOT SPEAK GRAPH. It answers with a bare HTTP status
+        # and an HTML page, not the JSON envelope with code 190 that graph.facebook.com
+        # returns - so a dead token shows up here as a plain 401 and _fb_state would never
+        # see it. Branch on the status directly, and let a 401 say what it means; the
+        # status check on the Graph host will confirm it a second later anyway.
+        why = _fb_scrub("%s" % (type(e).__name__,), tok)
+        if isinstance(e, urllib.error.HTTPError):
+            why = {401: "HTTP 401, the token was refused",
+                   400: "HTTP 400", 500: "HTTP 500"}.get(e.code, "HTTP %d" % e.code)
+        _fb_sse["off_until"] = time.time() + FB_SSE_RETRY_S
+        _fb_sse["why"] = why
+        return False
+    finally:
+        try:
+            if r:
+                r.close()
+        except Exception:
+            pass
+
+
+def facebook_chat_thread():
+    """Read comments on the Page's current Facebook live video. Reads only.
+
+    Nothing here authenticates a human, posts, replies, hides or bans; see _fb_get. The
+    Page token is borrowed from connect.py's tokens.json, which is never written to and
+    never echoed.
+    """
+    seen, seen_q = set(), []
+    primed = ""            # the video id whose backlog has already been absorbed
+    while True:
+        tok, vid, problem = fb_conf()
+        if problem:
+            _chat_mark("facebook", problem[0], problem[1])
+            threading.Event().wait(15)
+            continue
+
+        # Is there actually a broadcast to read? This call doubles as the liveness proof:
+        # Graph answering about THIS video with THIS token, just now, is positive evidence
+        # that every part of the path works, and it is the only evidence a silent audience
+        # will ever generate.
+        d, err = _fb_get(tok, "/" + vid, fields="status,title")
+        if err:
+            state, detail = _fb_state(err)
+            _chat_mark("facebook", state, detail)
+            threading.Event().wait(300.0 if state == "quota" else FB_IDLE_S)
+            continue
+
+        status = str(d.get("status") or "").upper()
+        title = str(d.get("title") or "")
+        if status != "LIVE":
+            _chat_mark("facebook", "idle",
+                       FB_STATUS_WORD.get(status, "broadcast status " + (status or "unknown")),
+                       alive=True)
+            primed = ""          # a new broadcast gets its backlog absorbed again
+            threading.Event().wait(FB_IDLE_S)
+            continue
+
+        if _fb_sse_try(tok, vid, title, seen, seen_q):
+            continue             # the stream ended; re-check status and reconnect
+
+        note = "polling"
+        if _fb_sse["why"]:
+            note += " - the SSE stream refused us (%s)" % _fb_sse["why"]
+        # ⚠️ live_filter=no_filter IS NOT OPTIONAL. This edge defaults to
+        # filter_low_quality, which drops comments Meta judges low quality without saying
+        # it did - so the default setting quietly hides part of the audience and the panel
+        # would have no way to know. reverse_chronological is Meta's own documented best
+        # practice for polling a live video.
+        d, err = _fb_get(tok, "/" + vid + "/comments", order="reverse_chronological",
+                         live_filter="no_filter", limit=50,
+                         fields="id,message,created_time,from{name,id}")
+        if err:
+            state, detail = _fb_state(err)
+            _chat_mark("facebook", state, detail)
+            threading.Event().wait(300.0 if state == "quota" else FB_IDLE_S)
+            continue
+
+        _chat_mark("facebook", "live", (title or "live") + " - " + note, alive=True)
+        quiet = (primed != vid)
+        # reverse_chronological is newest-first, so walk it backwards to add in the order
+        # the words were actually said.
+        for c in reversed(d.get("data") or []):
+            _fb_emit(c, seen, seen_q, quiet=quiet)
+        primed = vid
+        threading.Event().wait(FB_POLL_S)
 
 
 def chat_health(rec, now):
@@ -2012,6 +2485,7 @@ class Handler(BaseHTTPRequestHandler):
                 s = relay_status()
                 s["obs"] = obs_stream_state()
                 s["record"] = obs_record_state()
+                s["twitch_categories"] = twitch_categories()
                 self._json(s); return
 
             if p == "/api/camera":
@@ -2577,6 +3051,7 @@ def main():
     threading.Thread(target=scene_preset_thread, daemon=True).start()
     threading.Thread(target=twitch_chat_thread, daemon=True).start()
     threading.Thread(target=youtube_chat_thread, daemon=True).start()
+    threading.Thread(target=facebook_chat_thread, daemon=True).start()
     # A CONTENT HASH OF THIS FILE, printed at startup and served at /api/state.
     #
     # Stale servers holding the port have now cost real time THREE times in one session:
