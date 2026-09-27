@@ -1592,6 +1592,12 @@ class Handler(BaseHTTPRequestHandler):
                             a += ["--desc", body["desc"].strip()]
                         if body.get("privacy") in ("public", "unlisted", "private"):
                             a += ["--privacy", body["privacy"]]
+                        # Twitch-only extras. Passed through untouched; connect.py owns
+                        # what each platform does with them, and rejects what it cannot use.
+                        if (body.get("category") or "").strip():
+                            a += ["--category", body["category"].strip()]
+                        if (body.get("tags") or "").strip():
+                            a += ["--tags", body["tags"].strip()]
                         res = connect_run(a, timeout=120)
                     if not res["ok"] and not body.get("force"):
                         res["started"] = False

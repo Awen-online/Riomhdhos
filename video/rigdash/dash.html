@@ -327,6 +327,14 @@
     <div class="row"><span class="k">Description</span>
       <span class="v sub">YouTube and Facebook only</span></div>
     <input type="text" id="s_desc" maxlength="400" autocomplete="off" placeholder="optional">
+    <div class="row"><span class="k">Category</span>
+      <span class="v sub">Twitch only</span></div>
+    <input type="text" id="s_cat" maxlength="60" autocomplete="off"
+           placeholder="e.g. Music — must match a Twitch category exactly">
+    <div class="row"><span class="k">Tags</span>
+      <span class="v sub" id="v_taglen">Twitch only</span></div>
+    <input type="text" id="s_tags" maxlength="300" autocomplete="off"
+           placeholder="comma separated, no spaces inside a tag">
     <div class="row"><span class="k">YouTube privacy</span>
       <span class="v sub" id="v_privnote">&mdash;</span></div>
     <div class="g3" id="privbtns"></div>
@@ -1791,10 +1799,14 @@ async function goLive(force){
   // the platform calls entirely rather than failing on them.
   if (!title) force = true;
   try { localStorage.setItem('riastrad.title', title);
-        localStorage.setItem('riastrad.desc', $('s_desc').value.trim()); } catch(e){}
+        localStorage.setItem('riastrad.desc', $('s_desc').value.trim());
+        localStorage.setItem('riastrad.cat',  $('s_cat').value.trim());
+        localStorage.setItem('riastrad.tags', $('s_tags').value.trim()); } catch(e){}
   showReport('setting titles, then starting OBS…', []);
   const r = await post('/api/stream',
-      {action:'golive', title, desc:$('s_desc').value.trim(), privacy:PRIVACY, force:!!force});
+      {action:'golive', title, desc:$('s_desc').value.trim(),
+       category:$('s_cat').value.trim(), tags:$('s_tags').value.trim(),
+       privacy:PRIVACY, force:!!force});
   if (r.started){
     showReport('live', r.lines || []);
   } else {
@@ -1857,6 +1869,29 @@ function titleLen(){
 }
 $('s_title').addEventListener('input', titleLen);
 titleLen();
+
+/* ⚠️ VALIDATE TAGS HERE, NOT AT THE PLATFORM. Twitch's documented shape is up to 10 tags,
+   25 characters each, alphanumeric with no spaces. A rejected tag fails the whole PATCH,
+   which during pre-flight means the title does not get set either - so a typo here would
+   cost the broadcast its name. Say it locally while there is time to fix it. */
+function tagsInfo(){
+  const raw = $('s_tags').value.split(',').map(t => t.trim()).filter(Boolean);
+  const bad = raw.filter(t => t.length > 25 || /[^A-Za-z0-9]/.test(t));
+  const el = $('v_taglen');
+  if (!raw.length){ el.textContent = 'Twitch only'; el.style.color = 'var(--dim)'; return; }
+  const probs = [];
+  if (raw.length > 10) probs.push('max 10, you have ' + raw.length);
+  if (bad.length)      probs.push('not allowed: ' + bad.slice(0, 3).join(', '));
+  el.textContent = probs.length ? probs.join(' · ') : raw.length + ' tag'
+                   + (raw.length === 1 ? '' : 's');
+  el.style.color = probs.length ? 'var(--bad)' : 'var(--dim)';
+}
+$('s_tags').addEventListener('input', tagsInfo);
+try {
+  $('s_cat').value  = localStorage.getItem('riastrad.cat')  || '';
+  $('s_tags').value = localStorage.getItem('riastrad.tags') || '';
+} catch(e){}
+tagsInfo();
 renderPrivacy();
 
 function renderBridges(){
