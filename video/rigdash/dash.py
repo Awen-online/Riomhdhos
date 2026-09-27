@@ -659,7 +659,7 @@ def relay_status():
 def obs_stream_state():
     """Is OBS actually sending? OBS closed is a normal answer, not an error."""
     try:
-        cl = obsctl.connect(timeout=3)
+        cl = client()                  # shared connection + the negative cache above
         st = cl.get_stream_status()
         return {"connected": True, "active": bool(getattr(st, "output_active", False)),
                 "congestion": getattr(st, "output_congestion", None),
@@ -863,6 +863,8 @@ STATE.update({"rms": 0.0, "centroid": 0.0, "peak": 0.0, "mood": "COSMOS",
               "echo": 0.0, "echoTime": 1.0})
 _subs, _lock = [], threading.Lock()
 _cl = None
+_cl_fail_until = 0.0
+OBS_RETRY_AFTER_S = 6.0
 # ⚠️ RE-ENTRANT, AND IT GUARDS EVERY REQUEST - NOT JUST RECONNECTION.
 #
 # obsws-python's ReqClient is NOT thread-safe: it writes a request to the websocket and
@@ -904,13 +906,34 @@ class _LockedClient:
 
 def client():
     """One shared OBS connection, reconnected on demand - a dropped websocket must not
-    need a restart of a process meant to be left running through a show."""
-    global _cl
+    need a restart of a process meant to be left running through a show.
+
+    ⚠️ A CLOSED OBS MUST FAIL INSTANTLY, NOT SLOWLY. obsctl.connect takes 4.1 s to give up
+    when nothing is listening - it tries ::1 and then 127.0.0.1, so the timeout argument
+    does not cap it - and this function holds _clock the whole time, so every caller
+    queues behind it. With the 1 Hz state poll and the 2 s stream poll both arriving, the
+    dashboard fell 8 s behind and the browser reported "Failed to fetch" while the rig
+    itself was completely healthy. Closing OBS is a normal thing to do between sets; it
+    must not take the panel down with it.
+
+    So a failure is remembered briefly and the next attempts are refused locally. The
+    window is short enough that reopening OBS is picked up within seconds.
+    """
+    global _cl, _cl_fail_until
     with _clock:
         try:
             _cl.get_version()
+            return _LockedClient(_cl)
         except Exception:
+            pass
+        if time.time() < _cl_fail_until:
+            raise ConnectionError("OBS not reachable (retry suppressed)")
+        try:
             _cl = obsctl.connect(timeout=10)
+        except (Exception, SystemExit):
+            _cl_fail_until = time.time() + OBS_RETRY_AFTER_S
+            raise
+        _cl_fail_until = 0.0
         return _LockedClient(_cl)
 
 
