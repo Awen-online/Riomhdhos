@@ -694,8 +694,14 @@ def connect_run(args, timeout=90):
     if not RELAY_CONNECT.exists():
         return {"ok": False, "exit": None, "lines": [f"not found: {RELAY_CONNECT}"]}
     try:
+        # ⚠️ DECODE AS UTF-8 EXPLICITLY. text=True uses the locale encoding, which is
+        # cp1252 on this box, and connect.py echoes back the title and tags it was given -
+        # so a set called "Café" would be reported as "CafÃ©" and read as though the wrong
+        # thing had been sent to the platform. This is the one subprocess here that carries
+        # text the user typed, so it is the one that has to get this right.
         p = subprocess.run([sys.executable, str(RELAY_CONNECT), *args],
                            cwd=str(RELAY_DIR), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
                            timeout=timeout, creationflags=NO_WINDOW)
     except subprocess.TimeoutExpired:
         return {"ok": False, "exit": None, "lines": ["timed out talking to the platforms"]}
