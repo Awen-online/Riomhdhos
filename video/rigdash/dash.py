@@ -1161,13 +1161,50 @@ def _yt_pushing():
         return False
 
 
+YT_VERIFY_S = 600.0
+_yt_checked = {"at": 0.0, "ok": None, "why": ""}
+
+
+def _yt_verify(key, cid):
+    """Prove the key still works during the long stretches when nothing is live.
+
+    ⚠️ WITHOUT THIS, A DEAD KEY AND A QUIET EVENING ARE THE SAME PICTURE. The broadcast
+    lookup is gated on the relay pushing, so between shows nothing calls the API at all
+    and the row sits on "waiting for a broadcast" - truthfully, and identically, whether
+    the key is fine, revoked, or attached to a project whose quota is zero. This rig has
+    now been bitten by exactly that: the quota on the old project was not exhausted, it
+    was zero, and nothing said so until someone went looking.
+
+    One unit every ten minutes, against ten thousand a day, buys the difference.
+    """
+    now = time.time()
+    if now - _yt_checked["at"] < YT_VERIFY_S and _yt_checked["ok"] is not None:
+        return _yt_checked["ok"], _yt_checked["why"]
+    d, err = _yt_get(key, "channels", part="id", id=cid)
+    _yt_checked["at"] = now
+    if err:
+        _yt_checked["ok"], _yt_checked["why"] = False, _yt_state(err)[1]
+    elif not (d.get("items") or []):
+        _yt_checked["ok"] = False
+        _yt_checked["why"] = "the key works but youtube_channel_id matches no channel"
+    else:
+        _yt_checked["ok"], _yt_checked["why"] = True, ""
+    return _yt_checked["ok"], _yt_checked["why"]
+
+
 def _yt_find_chat(key, conf):
     """Resolve a live chat id. Returns (chat_id, title, None) or (None, None, (state, detail))."""
     vid = str(conf.get("youtube_video_id") or "").strip()
+    cid = str(conf.get("youtube_channel_id") or "").strip()
     if not vid:
         if not _yt_pushing():
-            return None, None, ("idle", "no broadcast - nothing is being pushed to YouTube")
-        cid = str(conf.get("youtube_channel_id") or "").strip()
+            # Idle is the normal resting state, but only say so once the key has been
+            # shown to work - otherwise this is the friendliest possible way to hide a
+            # credential that stopped working weeks ago.
+            ok, why = _yt_verify(key, cid)
+            if ok is False:
+                return None, None, ("failed", why)
+            return None, None, ("idle", "key checks out - waiting for a broadcast")
         d, err = _yt_get(key, "search", part="id", channelId=cid,
                          eventType="live", type="video", maxResults=1)
         if err:
