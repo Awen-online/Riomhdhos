@@ -1357,6 +1357,7 @@ function renderPresets(){
    falls through to peach rather than green, because the failure that started all this was
    a bad state painted as a good one. */
 const BR_COL = {
+  'unknown':   'var(--accent)',
   'feeding':   'var(--ok)',
   'starting':  'var(--accent)',
   'dropped':   'var(--accent)',
@@ -1364,15 +1365,18 @@ const BR_COL = {
   'failing':   'var(--bad)',
   'stalled':   'var(--bad)',
   'stopped':   'var(--dim)',
+  'unknown':   'var(--accent)',
 };
 // Said the way you would say it at the desk - the raw last line is usually ffmpeg's.
 const BR_WHY = {
+  'unknown':   'could not read the scheduled task — not the same as stopped',
   'starting':  'opening the stream — a few seconds before frames count',
   'dropped':   'the stream broke; the bridge is already retrying',
   'no signal': 'nothing is arriving — phone off, asleep, or off the network',
   'failing':   'the sink would not open; a reset releases it',
   'stalled':   'alive, but nothing written in 90 s — the counter is frozen',
   'stopped':   'the scheduled task is not running',
+  'unknown':   'could not read the task - this is not the same as stopped',
 };
 
 // Labels here are 'Pixel 6 (WiFi)' while the icon keys are 'Pixel 6'. Match on the key
@@ -1759,9 +1763,25 @@ async function goLive(force){
   setTimeout(loadStream, 2000);
 }
 
+let STREAM_AT = 0;
 async function loadStream(){
-  try { STREAM = await (await fetch('/api/stream')).json(); renderStream(); }
-  catch(e){ $('v_bcast').textContent = 'unreachable'; }
+  try {
+    STREAM = await (await fetch('/api/stream')).json();
+    STREAM_AT = Date.now();
+    renderStream();
+  } catch(e){
+    /* ⚠️ A FAILED FETCH MUST LOOK LIKE A FAILED FETCH. Leaving the last good numbers on
+       screen makes a dead dashboard look like a live one, and that is how a healthy rig
+       came to read "Stopped": the answer never arrived and the panel showed something
+       confident anyway. Name it, and say how old what you are looking at is. */
+    const age = STREAM_AT ? Math.round((Date.now() - STREAM_AT) / 1000) : null;
+    $('v_bcast').innerHTML = '<span style="color:var(--bad)">dashboard unreachable</span>';
+    const note = $('preflight');
+    if (note) note.innerHTML =
+      '<div class="sub brwhy" style="color:var(--bad)">Could not reach Riastrad itself'
+      + (age === null ? '.' : ' — everything below is ' + age + 's old.')
+      + ' The rig may be fine; this only means the panel did not get an answer.</div>';
+  }
 }
 
 // Restore what was typed last time - a dash.py restart mid-setup should not cost the

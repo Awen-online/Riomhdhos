@@ -401,6 +401,14 @@ def _bridge_health(last, age, state):
     Only a frame report proves frames. Everything else is named for what it actually is,
     because 'feeding' on a dead camera costs a take and 'no signal' does not.
     """
+    # ⚠️ "I COULD NOT ASK" IS NOT "IT IS NOT RUNNING". _task_state returns "unknown" when
+    # the schtasks query itself fails or times out, and that was being reported as
+    # "stopped" - so when this box was saturated (a closed OBS making every poll queue
+    # behind a 4 s connect attempt), both bridges read Stopped on screen while they were
+    # feeding at 25 fps. The panel turned the absence of an answer into a confident wrong
+    # one, which is the same failure as a dead camera reading "feeding", inverted.
+    if state == "unknown":
+        return "unknown"
     if state != "running":
         return "stopped"
     if age is None or age >= BRIDGE_FRESH_S:
