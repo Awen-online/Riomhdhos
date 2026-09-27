@@ -891,7 +891,6 @@ CHAT_PING_S = 60.0         # how long a quiet read waits before we prod the serv
 CHAT_SOURCES = [("twitch", "Twitch"), ("youtube", "YouTube"), ("facebook", "Facebook"),
                 ("x", "X"), ("tiktok", "TikTok"), ("instagram", "Instagram")]
 CHAT_WHYNOT = {
-    "youtube":   "not wired yet - needs a YouTube Data API key (free, no OAuth)",
     "facebook":  "not wired yet - needs a Page token and Meta App Review",
     "x":         "not wired yet - Livestream API access is form-gated",
     "tiktok":    "no live-chat API exists at all - nothing to connect to",
@@ -904,16 +903,32 @@ _chat_seq = 0
 _chat_src = {}             # name -> {state, detail, last_msg, last_alive}
 
 
+_chat_conf_err = ""
+
+
 def chat_conf():
-    """Read the chat config. Missing or malformed means nothing is configured, which is a
-    legitimate resting state and is shown as one - not as an error."""
+    """Read the chat config.
+
+    An absent file means nothing is configured, which is a legitimate resting state. A
+    file that is present but unparseable is NOT the same thing and must not read as one:
+    a human hand-edits this to paste keys in, and one trailing comma would otherwise
+    present as "no channel configured" and send you looking at the wrong thing while the
+    real fault is a character you can see.
+    """
+    global _chat_conf_err
     try:
-        if CHAT_CONF.exists():
-            c = json.loads(CHAT_CONF.read_text(encoding="utf-8"))
-            return c if isinstance(c, dict) else {}
-    except Exception:
-        pass
-    return {}
+        if not CHAT_CONF.exists():
+            _chat_conf_err = ""
+            return {}
+        c = json.loads(CHAT_CONF.read_text(encoding="utf-8"))
+        if not isinstance(c, dict):
+            _chat_conf_err = CHAT_CONF.name + " is not a JSON object"
+            return {}
+        _chat_conf_err = ""
+        return c
+    except Exception as e:
+        _chat_conf_err = "%s: %s" % (CHAT_CONF.name, e)
+        return {}
 
 
 def _chat_rec(name):
@@ -989,7 +1004,8 @@ def twitch_chat_thread():
     while True:
         chan = str(chat_conf().get("twitch_channel") or "").strip().lstrip("#").lower()
         if not chan:
-            _chat_mark("twitch", "off", "no twitch_channel in " + CHAT_CONF.name)
+            _chat_mark("twitch", "failed" if _chat_conf_err else "off",
+                       _chat_conf_err or ("no twitch_channel in " + CHAT_CONF.name))
             threading.Event().wait(10)
             continue
         sock = None
@@ -1038,10 +1054,181 @@ def twitch_chat_thread():
         backoff = min(backoff * 2, 60.0)
 
 
+YT_API = "https://www.googleapis.com/youtube/v3/"
+YT_MIN_POLL_S = 5.0        # floor under whatever interval the server asks for
+YT_IDLE_S = 20.0           # how often to re-check for a broadcast while nothing is live
+
+
+def _yt_get(key, path, **params):
+    """One YouTube Data API call. Returns (data, None) or (None, (reason, message)).
+
+    The reason is Google's own machine-readable code - quotaExceeded, forbidden,
+    liveChatEnded - and is kept separate from the prose because the caller has to branch
+    on it. Collapsing both into a string was tempting and would have made "out of quota"
+    indistinguishable from "the broadcast ended", which are opposite situations: one is
+    our fault and lasts until midnight Pacific, the other is normal and lasts seconds.
+    """
+    params["key"] = key
+    url = YT_API + path + "?" + urllib.parse.urlencode(params)
+    try:
+        with urllib.request.urlopen(url, timeout=20) as r:
+            return json.loads(r.read().decode("utf-8")), None
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")
+        try:
+            err = json.loads(body)["error"]
+            reason = ((err.get("errors") or [{}])[0].get("reason") or "").strip()
+            msg = (err.get("message") or "")[:120]
+        except Exception:
+            reason, msg = "http%d" % e.code, body[:120]
+        return None, (reason or ("http%d" % e.code), msg)
+    except Exception as e:
+        return None, ("network", "%s: %s" % (type(e).__name__, e))
+
+
+def _yt_pushing():
+    """Is the relay actually sending to YouTube right now?
+
+    ⚠️ THIS GATES THE BROADCAST LOOKUP, AND IT HAS TO. search.list lives in its own
+    hundred-calls-a-day bucket, so a timer that hunted for a broadcast around the clock
+    would burn the whole allowance before breakfast and then fail for the rest of the day.
+    Gating on the push costs one lookup per show - and it is also simply true, because
+    there is no broadcast of ours to find while nothing is being sent to one.
+
+    The cost is that a broadcast started some other way, not through this relay, will not
+    be found. Set youtube_video_id in the config to read that one directly.
+    """
+    try:
+        f = RELAY_STATUS / "youtube.progress"
+        return f.exists() and (time.time() - f.stat().st_mtime) < EGRESS_FRESH_S * 3
+    except Exception:
+        return False
+
+
+def _yt_find_chat(key, conf):
+    """Resolve a live chat id. Returns (chat_id, title, None) or (None, None, (state, detail))."""
+    vid = str(conf.get("youtube_video_id") or "").strip()
+    if not vid:
+        if not _yt_pushing():
+            return None, None, ("idle", "no broadcast - nothing is being pushed to YouTube")
+        cid = str(conf.get("youtube_channel_id") or "").strip()
+        d, err = _yt_get(key, "search", part="id", channelId=cid,
+                         eventType="live", type="video", maxResults=1)
+        if err:
+            return None, None, _yt_state(err)
+        items = d.get("items") or []
+        if not items:
+            return None, None, ("idle", "pushing to YouTube, but no live broadcast found yet")
+        vid = items[0]["id"]["videoId"]
+
+    d, err = _yt_get(key, "videos", part="liveStreamingDetails,snippet", id=vid)
+    if err:
+        return None, None, _yt_state(err)
+    items = d.get("items") or []
+    if not items:
+        return None, None, ("failed", "video %s not found or not public" % vid)
+    det = items[0].get("liveStreamingDetails") or {}
+    chat = det.get("activeLiveChatId")
+    title = (items[0].get("snippet") or {}).get("title", "")
+    if not chat:
+        # A real and common state: the broadcast exists but chat is off, members-only, or
+        # it is not actually live. Say which rather than looking broken.
+        return None, None, ("idle", "broadcast found but it has no active chat")
+    return chat, title, None
+
+
+def _yt_state(err):
+    """Turn an API error into a state the panel can show honestly."""
+    reason, msg = err
+    if reason == "quotaExceeded":
+        return ("quota", "daily quota spent - refills at midnight Pacific")
+    if reason in ("liveChatEnded", "liveChatNotFound"):
+        return ("idle", "the broadcast chat has ended")
+    if reason in ("keyInvalid", "badRequest"):
+        return ("failed", "the API key was rejected: " + msg)
+    if reason == "forbidden":
+        return ("failed", "forbidden - chat may be disabled or members-only")
+    if reason == "network":
+        return ("failed", msg)
+    return ("failed", "%s: %s" % (reason, msg))
+
+
+def youtube_chat_thread():
+    """Read YouTube live chat with nothing but an API key.
+
+    ⚠️ AN API KEY IS ENOUGH HERE, AND ONLY BECAUSE THIS IS READ-ONLY ON A PUBLIC STREAM.
+    No OAuth app, no consent screen, no verification, no token to refresh. Posting a single
+    reply would cost all of that plus a sensitive scope, which is the whole reason sending
+    was left out. An unlisted or private broadcast is invisible to a key - it would need
+    the OAuth path - so the panel says "no broadcast found" rather than pretending.
+
+    Quota: liveChatMessages.list is one unit, the pool is 10,000 a day, and the server
+    hands back the interval it wants in pollingIntervalMillis. That value is a MINIMUM
+    wait, so polling slower is always safe and polling faster earns rateLimitExceeded;
+    YT_MIN_POLL_S is a floor under it, not a target.
+    """
+    chat_id = title = page = None
+    quiet_until = 0.0
+    while True:
+        now = time.time()
+        if now < quiet_until:
+            threading.Event().wait(min(2.0, quiet_until - now))
+            continue
+
+        conf = chat_conf()
+        key = str(conf.get("youtube_api_key") or "").strip()
+        if not key:
+            _chat_mark("youtube", "off",
+                       _chat_conf_err or ("no youtube_api_key in " + CHAT_CONF.name))
+            quiet_until = time.time() + 15
+            continue
+
+        if not chat_id:
+            chat_id, title, problem = _yt_find_chat(key, conf)
+            if problem:
+                _chat_mark("youtube", problem[0], problem[1])
+                # Out of quota is a wall, not a hiccup: retrying every few seconds for
+                # hours would spend the moment it refills and log nothing useful.
+                quiet_until = time.time() + (300.0 if problem[0] == "quota" else YT_IDLE_S)
+                continue
+            page = None
+            _chat_mark("youtube", "live", title or "live", alive=True)
+
+        d, err = _yt_get(key, "liveChat/messages", liveChatId=chat_id,
+                         part="snippet,authorDetails", maxResults=200,
+                         **({"pageToken": page} if page else {}))
+        if err:
+            state, detail = _yt_state(err)
+            _chat_mark("youtube", state, detail)
+            if state in ("idle", "failed"):
+                chat_id = None          # make the next pass rediscover
+            quiet_until = time.time() + (300.0 if state == "quota" else YT_IDLE_S)
+            continue
+
+        # Bytes came back, so the link is proven alive even when nobody has spoken.
+        _chat_mark("youtube", "live", title or "live", alive=True)
+        page = d.get("nextPageToken") or page
+        for it in d.get("items") or []:
+            sn = it.get("snippet") or {}
+            au = it.get("authorDetails") or {}
+            txt = sn.get("displayMessage") or ""
+            if txt:
+                _chat_add("youtube", au.get("displayName") or "someone", txt)
+
+        if d.get("offlineAt"):
+            chat_id = None
+            _chat_mark("youtube", "idle", "the broadcast has ended")
+            quiet_until = time.time() + YT_IDLE_S
+            continue
+
+        wait = (d.get("pollingIntervalMillis") or 0) / 1000.0
+        quiet_until = time.time() + max(YT_MIN_POLL_S, wait)
+
+
 def chat_health(rec, now):
     """Green is the one answer that has to be earned. Anything not positively proven alive
     within CHAT_STALE_S reads as stalled, however recently it was working."""
-    if rec["state"] in ("off", "failed", "connecting"):
+    if rec["state"] in ("off", "failed", "connecting", "quota", "idle"):
         return rec["state"]
     if now - rec["last_alive"] > CHAT_STALE_S:
         return "stalled"
@@ -2238,6 +2425,7 @@ def main():
     threading.Thread(target=video_thread, args=(SOURCE,), daemon=True).start()
     threading.Thread(target=scene_preset_thread, daemon=True).start()
     threading.Thread(target=twitch_chat_thread, daemon=True).start()
+    threading.Thread(target=youtube_chat_thread, daemon=True).start()
     # A CONTENT HASH OF THIS FILE, printed at startup and served at /api/state.
     #
     # Stale servers holding the port have now cost real time THREE times in one session:

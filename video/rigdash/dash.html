@@ -2163,9 +2163,14 @@ const BARS = [['sub','Sub'],['low','Low'],['mid','Mid'],['high','High'],['rms','
    produces silence, and silence is what a quiet chat looks like. "quiet" is how long
    since anyone spoke and is deliberately NOT a health signal. */
 const CHAT_COL = { live:'var(--ok)', stalled:'var(--bad)', failed:'var(--bad)',
-                   connecting:'var(--accent)', off:'var(--dim)', none:'var(--dim)' };
+                   connecting:'var(--accent)', off:'var(--dim)', none:'var(--dim)',
+                   /* Neither of these is a fault. "idle" is the normal resting state
+                      between shows and "quota" is a wall we hit rather than broke, so
+                      neither may wear the red that means something needs fixing now. */
+                   idle:'var(--dim)', quota:'var(--accent)' };
 const CHAT_WORD = { live:'reading', stalled:'no proof of life', failed:'dropped',
-                    connecting:'connecting', off:'not set up', none:'not connected' };
+                    connecting:'connecting', off:'not set up', none:'not connected',
+                    idle:'waiting', quota:'out of quota' };
 let CHAT_SEQ = 0, CHAT_TIMER = null;
 
 function renderChatSources(list){
