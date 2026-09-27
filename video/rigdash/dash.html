@@ -68,7 +68,26 @@
   .brrow .hdr .nm{flex:1 1 auto;min-width:0}
   .nm{font-weight:600}
   .sub{color:var(--dim);font-size:11px;font-family:ui-monospace,Consolas,monospace}
+  /* ⚠️ THESE NOTES EARNED THEIR LENGTH AND STILL CANNOT HAVE IT. Each records a real
+     failure and why a control behaves as it does, which is worth keeping - but this panel
+     is driven from a phone, and four paragraphs of grey text between you and the next
+     control is its own failure mid-set. So: first line always visible, rest one tap away.
+     Native <details> does the work. An earlier attempt clamped with max-height and a
+     class, which reads fine and demonstrably worked on a freshly built element, yet left
+     these particular nodes stuck at the collapsed height for reasons I could not pin
+     down - even with the height set inline. Not worth more time when the platform has a
+     disclosure widget that cannot lose a cascade argument. */
   .note{color:var(--dim);font-size:11px;line-height:1.55;margin-top:8px}
+  .note details summary{list-style:none;cursor:pointer;display:flex;gap:6px;
+        align-items:flex-start;padding:2px 0}
+  .note details summary::-webkit-details-marker{display:none}
+  .note details summary::before{content:'b8';flex:0 0 auto;transition:transform .15s ease;
+        line-height:1.55}
+  .note details[open] summary::before{transform:rotate(90deg)}
+  .note details summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;
+        border-radius:4px}
+  .note details .full{padding-top:6px}
+  @media (prefers-reduced-motion:reduce){ .note details summary::before{transition:none} }
   .row{display:flex;justify-content:space-between;align-items:baseline;margin:9px 0 1px}
   .k{color:var(--dim);font-size:13px}
   .v{font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;font-size:13px}
@@ -623,6 +642,33 @@ try {
 // ⚠️ POLLED ONLY WHILE THE TAB IS OPEN. Mid-set this has to be current to the second, but
 // a dashboard sitting on Cams has no business hammering the relay - and the phones are
 // already the expensive thing on this box.
+/* Every .note becomes a disclosure on load. Done once, generically - there are seventeen
+   of them and any note added later should get this for free. */
+function foldNotes(){
+  for (const n of document.querySelectorAll('.note')){
+    if (n.dataset.folded) continue;
+    n.dataset.folded = '1';
+    const full = n.innerHTML;
+    const text = (n.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length < 90) continue;          // already one line; a caret would be noise
+    // Summary is the first sentence where there is one, else a hard trim. Plain text, so
+    // it can never be cut inside a tag.
+    let head = text.slice(0, 150);
+    const stop = head.search(/\.\s/);
+    head = stop > 30 ? head.slice(0, stop + 1) : head.slice(0, 84).trim() + '…';
+    const d = document.createElement('details');
+    const sm = document.createElement('summary');
+    sm.textContent = head;
+    const body = document.createElement('div');
+    body.className = 'full';
+    body.innerHTML = full;
+    d.append(sm, body);
+    n.innerHTML = '';
+    n.append(d);
+  }
+}
+foldNotes();
+
 setInterval(() => { if ($('stream').classList.contains('on')) loadStream(); }, 2000);
 
 // ⚠️ SCROLL GUARD. touch-action stops a slider being dragged by a scroll, but a BUTTON
@@ -1643,10 +1689,10 @@ function renderStream(){
                                    .map(p => p.label || p.name);
   $('howto').textContent = obs.active
     ? 'OBS is sending to the relay, which is forwarding to '
-      + (names.join(' and ') || 'nothing') + '. Press to stop.'
+      + (names.join(' and ') || 'nothing — no channel is armed') + '. Press to stop.'
     : (armed
         ? 'Press this and OBS starts sending to the relay here on this machine; the relay '
-          + 'forwards that one stream out to ' + names.join(' and ')
+          + 'forwards that one stream out to ' + (names.join(' and ') || 'the armed channels')
           + '. Nothing to press in OBS.'
         : 'Switch a channel on below first. This starts OBS sending to the local relay, '
           + 'and the relay forwards it to whatever is armed.');
