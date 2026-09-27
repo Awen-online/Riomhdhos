@@ -1,69 +1,97 @@
-# Later: Instagram, TikTok, and the vertical path
+# Later: X, LinkedIn, Instagram, TikTok
 
-Deferred on purpose, 2026-09-25. Horizontal (YouTube / Twitch / Facebook) works first and
-gets boring before any of this starts.
+Researched 2026-09-26. Horizontal (YouTube / Twitch / Facebook) works first and gets
+boring before any of this starts.
 
-## Why these two are not just two more entries in `keys.env`
+## The one architectural fact
 
-Adding a horizontal destination is three lines in `push.ps1` and two in `keys.env`. IG and
-TikTok are not that, for two reasons that have nothing to do with the relay.
+**X and LinkedIn are 16:9 and join the existing `-c copy` fan-out cleanly. Instagram and
+TikTok are both 9:16 and neither will.** A vertical output is a genuinely separate
+composition — not a crop, a different layout — so it needs a second OBS canvas (Aitum
+Vertical) and a second encode. That breaks the "one encode, N copies" property the relay
+depends on, and it is the single biggest piece of work here. Treat Instagram and TikTok as
+one combined project, never as two more rows in `keys.env`.
 
-**They are 9:16.** A vertical output is a *second encode* — there is no arrangement that
-avoids it, because the relay is deliberately `-c copy` and copying cannot reframe. So this
-is the real work, and it is shared by both platforms.
+## Ranked by effort to value
 
-**Neither gives a stable key.** Both hand out a per-session ingest URL and key that you
-fetch immediately before going live:
+### 1. X — do this first
+The only one with a **persistent, paste-once key**, so it drops into `keys.env` with no new
+machinery at all. 16:9 native. Bitrate ceiling ~40 Mbps against our 6 — enormous headroom.
 
-- **Instagram** — Live Producer issues an RTMP URL plus key per session. The Instagram
-  Live API is effectively closed to ordinary apps, so assume manual retrieval each time.
-  `connect.py` cannot help here the way it does for Facebook, even though both are Meta.
-- **TikTok** — LIVE via RTMP requires the account to have been granted LIVE access, and
-  the key comes from the LIVE dashboard per session. The TikTok Live API is partner-gated.
-  Check the account actually has RTMP LIVE before building anything.
+- **Cost: X Premium, $8/mo web.** Basic is not enough. Account must be public.
+- Key comes from an **RTMP source** created in Live Studio (`studio.x.com`, launched 1 Jul
+  2026) or the older Media Studio Producer. Sources are reusable across broadcasts.
+- X documents a **3-second keyframe** where everything else here wants 2. Shorter is safe,
+  so our single OBS GOP setting is fine — just know the docs differ.
+- Broadcasts are cut at 24 hours. No H.265 on ingest.
+- A rebuilt Livestream API shipped 22–25 Sep 2026 but is approval-gated and its public docs
+  are not up yet. **Irrelevant to us** — the persistent key means we never need it.
 
-So the shape is: the *vertical path* is engineering, and the *keys* are a manual step that
-should be made as painless as possible rather than automated away.
+### 2. LinkedIn — free, but a manual step before every single broadcast
+Free, and the 150-follower / 30-day bar is trivial. 16:9, no second encode.
 
-## The vertical path
+- ⚠️ **Since 22 June 2026 you cannot go live spontaneously.** Every broadcast must hang off
+  a scheduled LinkedIn Event.
+- ⚠️ **The key only exists 1–2 hours before the scheduled start** (2 h for verified Pages,
+  1 h otherwise) and is per-broadcast. So: create an Event, wait, fetch a fresh URL+key,
+  inject it. Unautomatable — the Live Events API is partner-only, requires a certification
+  video and background verification, and its docs are stale enough to predate the June 2026
+  change.
+- ⚠️ **Our current encoder settings violate LinkedIn's spec.** Their documented ceilings:
+  **6 Mbps video (we are exactly at it, zero headroom), 128 kbps audio (we send 160),
+  1080p max, 30 fps max, 2 s keyframe, Baseline profile recommended.** LinkedIn is reported
+  to refuse the connection outright rather than degrade. A LinkedIn leg needs its own
+  encode, or the whole rig drops to fit.
+- Cannot stream to a profile and a Page simultaneously — matters with three brands.
+- Audience fit is the real question. **Sync.Land is the only brand where this obviously
+  makes sense**; a live set on a professional-network feed is an odd match otherwise.
 
-Recommended, and the reasoning is in the audit: a second OBS canvas via the **Aitum
-Vertical** plugin, feeding a **second MediaMTX path** (`vertical`), with its own pushers.
+### 3. TikTok — highest audience value, worst reliability
+🚩 Second vertical encode. Per-broadcast key. No API of any kind for going live.
 
-- Keeps the relay dumb and `-c copy` on both paths.
-- Keeps framing decisions in OBS, where they are visible. A relay-side AMF crop is less to
-  build, but you are blind to what it frames and it spends GPU already carrying the
-  horizontal encode.
-- Costs a second encode either way. Budget for it: the horizontal is 6000 kbps on an
-  RX 9060 XT via AMF, and upload measured ~90 Mbps, so headroom is not the constraint.
+- Two separate gates: mobile LIVE (≈1,000 followers, 18+, 30-day-old account) **and a
+  distinct, undocumented permission for third-party encoder / stream-key access.** Having
+  LIVE on the phone does not mean a stream key exists. Some reports say it is unlocked only
+  by joining a creator network.
+- ⚠️ **Credible reports that a raw OBS/ffmpeg push gets dropped or visibility-restricted**,
+  because TikTok LIVE Studio sends extra stream-side metadata that a bare `-c copy` leg does
+  not. Unverified against TikTok, but it means TikTok may not behave as a plain RTMP sink.
+- **Check by hand before committing any work: does Stream Settings actually show a key?**
 
-## What has to change
+### 4. Instagram — lowest priority, possibly not available at all
+🚩 Second vertical encode. Per-broadcast key ("the stream key is not static, and will
+refresh each time"). **No API, and Meta has said it is not building one.**
 
-- `mediamtx.yml` — a second path, `vertical`, with its own `runOnReady`.
-- `push.ps1` — currently one `if` block per platform (`YOUTUBE_ENABLED`, `TWITCH_ENABLED`,
-  `FACEBOOK_ENABLED`). Adding two more works, but at five it is worth making the
-  destination table data rather than code, keyed by name with `{ingest, path}`.
-- `keys.env` — `INSTAGRAM_*`, `TIKTOK_*`, each also naming which path it reads
-  (`horizontal` / `vertical`).
-- OBS — Aitum Vertical installed and a 9:16 scene collection that is not an afterthought.
-  Framing a vertical crop of a horizontal set badly is worse than not going vertical.
+- Two stacked gates: a hard **1,000-follower + public account** floor imposed 1 Aug 2025,
+  and Live Producer's own "limited access at this time" status — wording Meta's page has
+  carried since 2022 and never updated. He may simply not have the option, with no appeal.
+- Sending 1920×1080 gets **centre-cropped and zoomed** to 9:16, which destroys the framing.
+- **Check by hand: does Live Producer appear on instagram.com?**
+- If the vertical work happens for TikTok anyway, Instagram is a cheap rider on it.
 
-## What does NOT have to change
+## Simulcasting is not a problem
 
-The STREAM tab already renders whatever destinations the relay reports and derives health
-per destination from its own progress file. Two more rows need no UI work. Verify rather
-than assume, but that was the design intent.
+Twitch dropped its broad simulcast restriction in October 2023; Affiliates and Partners may
+stream anywhere concurrently. Nothing at X, LinkedIn, Instagram or TikTok restricts it.
+Fanning out to all seven is fine.
 
-## Acceptance
+## How much of this to trust
 
-Not "it connected once". Both vertical destinations feeding for a full set, each
-recoverable on its own, with the horizontal three unaffected throughout — and a deliberate
-kill of one vertical destination showing `stalled` in the tab within ~5s and then
-recovering by itself.
+- **X:** `help.x.com` returned 403 to every automated fetch, so the X claims come from
+  secondary sources dated 2026. The required Premium tier is contested — one source claims
+  $3 Basic suffices, most say $8 Premium and a verified account. Confirm at signup.
+- **Instagram:** Meta's own Live Producer page is from Nov 2022 and unchanged; general
+  availability could not be confirmed from a primary source.
+- **TikTok:** publishes almost nothing. One guide claims 10,000 followers for non-gaming
+  RTMP access; that could not be corroborated and every other source says 1,000. The
+  existence of a second undocumented gate is well attested; its threshold is not.
+- **LinkedIn:** encoder limits and access criteria are from LinkedIn's own help pages and
+  are solid. The API documentation is stale (last updated Dec 2023).
 
 ## Open questions for Ian
 
-- Does the TikTok account have RTMP LIVE access granted? Everything else is moot until so.
-- Is vertical a *crop* of the same performance, or a separately framed shot? If separate,
-  that is a camera decision before it is a software one, and the Pixel 6 is already on a
-  WiFi bridge that could be pointed differently.
+- Does the TikTok account show a stream key in Stream Settings? Everything else is moot.
+- Does Live Producer appear on instagram.com for the account in question?
+- Is vertical a *crop* of the same performance or a separately framed shot? That is a
+  camera decision before it is a software one, and the Pixel 6 is already on a WiFi bridge
+  that could be pointed differently.
