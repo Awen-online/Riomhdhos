@@ -61,6 +61,10 @@
 
   h2{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);
      margin:16px 2px 7px;font-weight:600}
+  /* The chat log is the one card with an intrinsic length, so it gets a viewport-
+     relative cap and its own scroller rather than growing the page forever. */
+  #chatbox{max-height:60vh;overflow-y:auto;overscroll-behavior:contain}
+  #chatbox .sub{padding:3px 0;white-space:pre-wrap;word-break:break-word}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
         padding:12px 14px;margin-bottom:9px}
   .hdr{display:flex;justify-content:space-between;align-items:center;gap:10px}
@@ -306,6 +310,7 @@
 <div class="tabs">
   <button id="t_cams" class="sel"></button>
   <button id="t_stream"></button>
+  <button id="t_chat"></button>
   <button id="t_perform"></button>
   <button id="t_look"></button>
   <button id="t_rig"></button>
@@ -365,6 +370,22 @@
       does not touch OBS, and OBS keeps sending while it comes back.<br><br>
       Keys live in the relay's own <code>keys.env</code>, never here and never in a log.</div>
   </div>
+</section>
+
+<!-- ⚠️ READ-ONLY, AND THAT IS STRUCTURAL. Nothing in this tab can post, reply or
+     moderate, and Twitch is read anonymously, so there is no credential here to leak.
+     Sending would mean a Google OAuth app with a sensitive scope and a hard ceiling of
+     200 replies a day; it was weighed and left out. -->
+<section id="chat">
+  <h2>Sources</h2>
+  <div class="card" id="chatsrc"></div>
+  <p class="note">Chat has no fan-out. The relay pushes one encode to every platform at
+     once, but each platform's chat is a separate inbound connection on its own protocol,
+     so every one is its own integration. Twitch reads anonymously with no account at all.
+     YouTube needs only a free API key. The rest need paperwork, or in TikTok's case have
+     no chat API in existence.</p>
+  <h2>Chat</h2>
+  <div class="card" id="chatbox"></div>
 </section>
 
 <section id="perform">
@@ -605,14 +626,17 @@ const TAB_ICON = {
   rig:     SVG('<path d="M4 18V9M9 18V5M14 18v-7M19 18v-4"/>', 1.8),
   // Broadcast: one source throwing arcs outward. Not a cloud - nothing here leaves the
   // building except the pushes themselves, and a cloud would imply a service in the middle.
+  // Chat: a speech bubble with the tail on the left, because everything in this tab
+  // arrives from somewhere else. Read-only - nothing here ever speaks back.
+  chat:    SVG('<path d="M20 12a7 6 0 0 1-7 6H8.6L5 20.3V17a6.7 6.7 0 0 1-2-4.9 7 6 0 0 1 7-6h3a7 6 0 0 1 7 5.9z"/>'),
   stream:  SVG('<circle cx="12" cy="17.5" r="2.1" fill="currentColor" stroke="none"/><path d="M8.3 13.8a5 5 0 0 1 7.4 0"/><path d="M5.4 10.6a9 9 0 0 1 13.2 0"/>'),
 };
 
 // Order matches the strip above; cams leads because it is the landing tab.
 // Cams then Stream: the two you touch while a set is actually running, side by side and
 // leftmost. Perform, Look and Rig are set-up work you do before anyone is watching.
-const TABS = [['t_cams','cams'], ['t_stream','stream'], ['t_perform','perform'],
-              ['t_look','look'], ['t_rig','rig']];
+const TABS = [['t_cams','cams'], ['t_stream','stream'], ['t_chat','chat'],
+              ['t_perform','perform'], ['t_look','look'], ['t_rig','rig']];
 function selectTab(sec, scroll){
   for (const [b,s] of TABS){
     $(b).classList.toggle('sel', s === sec);
@@ -630,6 +654,9 @@ function selectTab(sec, scroll){
   // Unlike the camera read, this one is cheap and entirely local, so it refreshes on
   // every visit rather than once - a stale broadcast panel is worse than no panel.
   if (sec === 'stream') loadStream();
+  // The readers run in dash.py whether or not anyone is looking, so the backlog is
+  // already there when this opens - the poll only decides how fast the page catches up.
+  chatPoll(sec === 'chat');
 }
 
 for (const [btn, sec] of TABS){
@@ -2130,6 +2157,84 @@ const BARS = [['sub','Sub'],['low','Low'],['mid','Mid'],['high','High'],['rms','
     box.append(m);
   }
 })();
+
+/* ⚠️ GREEN HAS TO BE EARNED HERE TOO. "live" means the source proved it was alive
+   inside the last two and a half minutes, not that it has not errored - a hung socket
+   produces silence, and silence is what a quiet chat looks like. "quiet" is how long
+   since anyone spoke and is deliberately NOT a health signal. */
+const CHAT_COL = { live:'var(--ok)', stalled:'var(--bad)', failed:'var(--bad)',
+                   connecting:'var(--accent)', off:'var(--dim)', none:'var(--dim)' };
+const CHAT_WORD = { live:'reading', stalled:'no proof of life', failed:'dropped',
+                    connecting:'connecting', off:'not set up', none:'not connected' };
+let CHAT_SEQ = 0, CHAT_TIMER = null;
+
+function renderChatSources(list){
+  const box = $('chatsrc');
+  box.innerHTML = list.map(s => {
+    const col = CHAT_COL[s.health] || 'var(--dim)';
+    const quiet = (s.health === 'live' && s.quiet_s !== null)
+      ? ('quiet ' + (s.quiet_s < 90 ? Math.round(s.quiet_s) + 's'
+                                    : Math.round(s.quiet_s / 60) + 'm'))
+      : '';
+    return '<div class="row"><span class="k" style="color:' + col + '">' + esc(s.label)
+         + '</span><span class="v" style="color:' + col + '">'
+         + esc(CHAT_WORD[s.health] || s.health) + '</span></div>'
+         + '<div class="sub">' + esc(s.detail || '') + (quiet ? ' &middot; ' + quiet : '')
+         + '</div>';
+  }).join('');
+}
+
+/* An empty box is ambiguous - it reads the same whether nothing has been said, nothing
+   is connected, or the page is broken. Say which. */
+function chatEmpty(sources){
+  const box = $('chatbox');
+  if (box.children.length && !box.firstChild.dataset.ph) return;
+  const reading = (sources || []).filter(s => s.health === 'live');
+  const txt = reading.length
+    ? 'nothing said yet on ' + reading.map(s => esc(s.label)).join(', ')
+    : 'no source is connected \u2014 see Sources above';
+  box.innerHTML = '<div class="sub" style="color:var(--dim)" data-ph="1">' + txt + '</div>';
+}
+
+function appendChat(msgs){
+  const box = $('chatbox');
+  if (box.firstChild && box.firstChild.dataset.ph) box.innerHTML = '';
+  // Stick to the bottom only if the reader was already there. Yanking the view down while
+  // someone is scrolled up reading is the classic chat-client bug.
+  const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  for (const m of msgs){
+    const d = document.createElement('div');
+    d.className = 'sub';
+    d.innerHTML = '<b style="color:' + (m.color || 'var(--fg)') + '">' + esc(m.user)
+                + '</b> ' + esc(m.text);
+    box.append(d);
+  }
+  while (box.children.length > 300) box.firstChild.remove();
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}
+
+async function loadChat(){
+  let r = null;
+  try { r = await (await fetch('/api/chat?since=' + CHAT_SEQ)).json(); } catch (e) {}
+  if (!r){
+    // Say the page lost the server rather than leaving the last good numbers sitting
+    // there looking current.
+    $('chatsrc').innerHTML = '<div class="sub" style="color:var(--bad)">'
+      + 'lost the dashboard &mdash; retrying</div>';
+    return;
+  }
+  CHAT_SEQ = r.seq;
+  renderChatSources(r.sources || []);
+  if (r.msgs && r.msgs.length) appendChat(r.msgs);
+  chatEmpty(r.sources);
+}
+
+function chatPoll(on){
+  if (CHAT_TIMER){ clearInterval(CHAT_TIMER); CHAT_TIMER = null; }
+  if (!on) return;
+  loadChat();
+  CHAT_TIMER = setInterval(loadChat, 1000);
+}
 
 let lastFeed = 0;
 new EventSource('/feed').onmessage = e => {

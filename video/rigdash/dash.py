@@ -30,7 +30,10 @@ import argparse
 import json
 import os
 import queue
+import random
 import re
+import socket
+import ssl
 import subprocess
 import urllib.parse
 import urllib.request
@@ -857,6 +860,214 @@ def relay_restart():
     return {"ok": True, "steps": steps}
 
 
+# ---------------------------------------------------------------- chat (read-only)
+# ⚠️ CHAT DOES NOT RIDE /feed, AND THAT IS DELIBERATE. That pipe is a 20 Hz broadcast of
+# the whole STATE dict through a queue.Queue(maxsize=4) that drops rather than blocks,
+# which is exactly right for animation frames and is silent data loss for chat. Chat is
+# pulled from /api/chat with a monotonic cursor instead: nothing is dropped, and a phone
+# that slept through a song catches up on wake instead of showing a hole it cannot see.
+#
+# ⚠️ READ-ONLY STRUCTURALLY, NOT BY POLICY. Nothing here can post, reply, moderate or
+# authenticate. Twitch is read as justinfan<random>, the anonymous login the server hands
+# out for free - no token, no account, no OAuth app - so there is no credential in this
+# path to leak and nothing here that can act as the user. Sending would mean a Google
+# OAuth app with a sensitive scope and a 200-replies-a-day ceiling; it was considered and
+# deliberately left out.
+#
+# ⚠️ A QUIET CHAT AND A DEAD SOCKET LOOK IDENTICAL, so every source carries two clocks:
+# when it last carried a message, and when it last PROVED it was alive. Only the second
+# earns green. Twitch only PINGs every few minutes, far too slow to notice a hung socket,
+# so this sends its own PING whenever the read goes quiet and counts the bytes coming back
+# as the proof. An empty pane is a lie that looks like a quiet audience, so a source with
+# nothing behind it says so in words.
+
+CHAT_CONF = Path.home() / ".riastrad-chat.json"
+CHAT_KEEP = 300            # messages held in memory; oldest fall off
+CHAT_STALE_S = 150.0       # no proof of life for this long and the source is not green
+CHAT_PING_S = 60.0         # how long a quiet read waits before we prod the server
+
+# Every platform the rig can stream to gets a row, including the ones with nothing behind
+# them. The reason is written out rather than implied by an empty list.
+CHAT_SOURCES = [("twitch", "Twitch"), ("youtube", "YouTube"), ("facebook", "Facebook"),
+                ("x", "X"), ("tiktok", "TikTok"), ("instagram", "Instagram")]
+CHAT_WHYNOT = {
+    "youtube":   "not wired yet - needs a YouTube Data API key (free, no OAuth)",
+    "facebook":  "not wired yet - needs a Page token and Meta App Review",
+    "x":         "not wired yet - Livestream API access is form-gated",
+    "tiktok":    "no live-chat API exists at all - nothing to connect to",
+    "instagram": "needs a public webhook URL Meta can reach - awkward from this box",
+}
+
+_chat_lock = threading.Lock()
+_chat_msgs = []            # newest last
+_chat_seq = 0
+_chat_src = {}             # name -> {state, detail, last_msg, last_alive}
+
+
+def chat_conf():
+    """Read the chat config. Missing or malformed means nothing is configured, which is a
+    legitimate resting state and is shown as one - not as an error."""
+    try:
+        if CHAT_CONF.exists():
+            c = json.loads(CHAT_CONF.read_text(encoding="utf-8"))
+            return c if isinstance(c, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _chat_rec(name):
+    return _chat_src.setdefault(name, {"state": "off", "detail": "",
+                                       "last_msg": 0.0, "last_alive": 0.0})
+
+
+def _chat_mark(name, state, detail="", alive=False):
+    with _chat_lock:
+        r = _chat_rec(name)
+        r["state"], r["detail"] = state, detail
+        if alive:
+            r["last_alive"] = time.time()
+
+
+def _chat_add(name, user, text, color=""):
+    global _chat_seq
+    if not text:
+        return
+    now = time.time()
+    with _chat_lock:
+        _chat_seq += 1
+        _chat_msgs.append({"seq": _chat_seq, "src": name, "user": user[:40],
+                           "text": text[:500], "color": color[:7], "t": now})
+        if len(_chat_msgs) > CHAT_KEEP:
+            del _chat_msgs[:len(_chat_msgs) - CHAT_KEEP]
+        r = _chat_rec(name)
+        r["last_msg"] = r["last_alive"] = now
+
+
+def _irc_tags(chunk):
+    """Parse an IRCv3 tag string. The escaping is a real spec, not ad hoc: a literal
+    semicolon or space cannot appear raw inside a tag value."""
+    out = {}
+    for part in chunk.split(";"):
+        k, _, v = part.partition("=")
+        if k:
+            out[k] = (v.replace(r"\s", " ").replace(r"\:", ";")
+                       .replace(r"\r", "").replace(r"\n", "").replace("\\\\", "\\"))
+    return out
+
+
+def irc_privmsg(line):
+    """Pull (display name, text, colour) out of one tagged IRC line, or None if it is not
+    a chat message. Split out of the reader deliberately: inside the socket loop this was
+    untestable without a live channel talking, which meant the parse would have shipped on
+    inspection alone."""
+    tags, rest = {}, line
+    if line.startswith("@"):
+        head, _, rest = line.partition(" ")
+        tags = _irc_tags(head[1:])
+    if " PRIVMSG #" not in rest:
+        return None
+    who = rest.split("!", 1)[0].lstrip(":")
+    body = rest.split(" PRIVMSG #", 1)[1]
+    body = body.split(" :", 1)[1] if " :" in body else ""
+    return (tags.get("display-name") or who, body, tags.get("color") or "")
+
+
+def twitch_chat_thread():
+    """Read one Twitch channel's chat anonymously over TLS IRC.
+
+    Verified against the live server before this shipped: the CAP REQ for tags and
+    commands is ACKed, 001 arrives, JOIN and ROOMSTATE follow, all as justinfan<random>
+    with no credential of any kind. Tags carry the display name and colour, so rendering
+    needs no second lookup and no API app.
+
+    Note the socket timeout is a heartbeat, not a failure. Twitch stays silent for minutes
+    in a quiet channel, so a read timing out means "prod it"; only a failed write or a
+    closed socket means "reconnect".
+    """
+    backoff = 2.0
+    while True:
+        chan = str(chat_conf().get("twitch_channel") or "").strip().lstrip("#").lower()
+        if not chan:
+            _chat_mark("twitch", "off", "no twitch_channel in " + CHAT_CONF.name)
+            threading.Event().wait(10)
+            continue
+        sock = None
+        try:
+            _chat_mark("twitch", "connecting", "#" + chan)
+            ctx = ssl.create_default_context()
+            sock = ctx.wrap_socket(
+                socket.create_connection(("irc.chat.twitch.tv", 6697), timeout=15),
+                server_hostname="irc.chat.twitch.tv")
+            sock.settimeout(CHAT_PING_S)
+            nick = "justinfan%d" % random.randint(10000, 99999)
+            for line in ("CAP REQ :twitch.tv/tags twitch.tv/commands",
+                         "NICK " + nick, "JOIN #" + chan):
+                sock.sendall((line + "\r\n").encode("utf-8"))
+            buf = ""
+            backoff = 2.0
+            while True:
+                try:
+                    data = sock.recv(8192)
+                except socket.timeout:
+                    sock.sendall(b"PING :riastrad\r\n")   # heartbeat; a PONG proves it
+                    continue
+                if not data:
+                    raise OSError("closed by Twitch")
+                _chat_mark("twitch", "live", "#" + chan, alive=True)
+                buf += data.decode("utf-8", "replace")
+                while "\r\n" in buf:
+                    line, buf = buf.split("\r\n", 1)
+                    if not line:
+                        continue
+                    if line.startswith("PING"):
+                        sock.sendall(("PONG" + line[4:] + "\r\n").encode("utf-8"))
+                        continue
+                    got = irc_privmsg(line)
+                    if got:
+                        _chat_add("twitch", got[0], got[1], got[2])
+        except Exception as e:
+            _chat_mark("twitch", "failed", ("%s: %s" % (type(e).__name__, e))[:120])
+        finally:
+            try:
+                if sock:
+                    sock.close()
+            except Exception:
+                pass
+        threading.Event().wait(backoff)
+        backoff = min(backoff * 2, 60.0)
+
+
+def chat_health(rec, now):
+    """Green is the one answer that has to be earned. Anything not positively proven alive
+    within CHAT_STALE_S reads as stalled, however recently it was working."""
+    if rec["state"] in ("off", "failed", "connecting"):
+        return rec["state"]
+    if now - rec["last_alive"] > CHAT_STALE_S:
+        return "stalled"
+    return "live"
+
+
+def chat_status(since=0):
+    now = time.time()
+    with _chat_lock:
+        msgs = [m for m in _chat_msgs if m["seq"] > since]
+        seq = _chat_seq
+        out = []
+        for name, label in CHAT_SOURCES:
+            rec = _chat_src.get(name)
+            if rec is None:
+                out.append({"name": name, "label": label, "health": "none",
+                            "detail": CHAT_WHYNOT.get(name, "not connected"),
+                            "quiet_s": None})
+                continue
+            out.append({"name": name, "label": label,
+                        "health": chat_health(rec, now), "detail": rec["detail"],
+                        "quiet_s": (round(now - rec["last_msg"], 1)
+                                    if rec["last_msg"] else None)})
+    return {"seq": seq, "msgs": msgs, "sources": out}
+
+
 # ---------------------------------------------------------------- phone settings reset
 # The baseline is imported from rigsettings.py rather than restated here. Two copies of
 # "what the cameras should be set to" is exactly the drift this whole thing exists to stop.
@@ -1494,6 +1705,17 @@ class Handler(BaseHTTPRequestHandler):
                             _subs.remove(q)
                 return
 
+            if p == "/api/chat":
+                # Cheap by construction - a cursor slice of an in-memory list. The readers
+                # are threads of their own, so this never waits on a network round trip
+                # and is safe on the 1 Hz poll tier.
+                try:
+                    since = int((parse_qs(urlparse(self.path).query)
+                                 .get("since") or ["0"])[0])
+                except ValueError:
+                    since = 0
+                self._json(chat_status(since)); return
+
             if p == "/api/stream":
                 # Cheap and entirely local - a 2 s-capped loopback call plus a few small
                 # file reads - so this one IS safe on the poll tier, unlike /api/camera.
@@ -2015,6 +2237,7 @@ def main():
     # went unnoticed while every test hit old code.
     threading.Thread(target=video_thread, args=(SOURCE,), daemon=True).start()
     threading.Thread(target=scene_preset_thread, daemon=True).start()
+    threading.Thread(target=twitch_chat_thread, daemon=True).start()
     # A CONTENT HASH OF THIS FILE, printed at startup and served at /api/state.
     #
     # Stale servers holding the port have now cost real time THREE times in one session:
