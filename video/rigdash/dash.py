@@ -667,6 +667,53 @@ def relay_status():
     return out
 
 
+PREFS_FILE = Path.home() / ".riastrad-prefs.json"
+
+
+def prefs():
+    """Small persisted UI preferences owned by this dashboard. Unreadable means default,
+    never an error - losing a preference must not take the panel down."""
+    try:
+        if PREFS_FILE.exists():
+            d = json.loads(PREFS_FILE.read_text(encoding="utf-8"))
+            if isinstance(d, dict):
+                return d
+    except Exception:
+        pass
+    return {}
+
+
+def set_pref(key, value):
+    """Write one preference, atomically. dash.py restarts constantly during a show and a
+    half-written file read on the way back up would look like a corrupt config."""
+    d = prefs()
+    d[key] = value
+    tmp = PREFS_FILE.with_name(PREFS_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(d, indent=2), encoding="utf-8")
+    os.replace(tmp, PREFS_FILE)
+    return d
+
+
+def obs_record_state():
+    """Is OBS recording to disk? Shaped like obs_stream_state - OBS closed is an answer,
+    not a fault, and shares the same negative cache so a shut OBS stays instant.
+
+    `armed` is a stored preference and needs no OBS at all, so it is still truthful when
+    the rest of this is unknown: it says what WILL happen, not what is happening.
+    """
+    out = {"armed": bool(prefs().get("record_with_golive"))}
+    try:
+        st = client().get_record_status()
+        out.update(connected=True,
+                   active=bool(getattr(st, "output_active", False)),
+                   paused=bool(getattr(st, "output_paused", False)),
+                   seconds=int((getattr(st, "output_duration", 0) or 0) / 1000),
+                   bytes=getattr(st, "output_bytes", None))
+    except (Exception, SystemExit):
+        out.update(connected=False, active=False)
+    return out
+
+
 def obs_stream_state():
     """Is OBS actually sending? OBS closed is a normal answer, not an error."""
     try:
@@ -1908,6 +1955,7 @@ class Handler(BaseHTTPRequestHandler):
                 # file reads - so this one IS safe on the poll tier, unlike /api/camera.
                 s = relay_status()
                 s["obs"] = obs_stream_state()
+                s["record"] = obs_record_state()
                 self._json(s); return
 
             if p == "/api/camera":
@@ -2104,20 +2152,67 @@ class Handler(BaseHTTPRequestHandler):
                         res["started"] = False
                         self._json(res); return
                     try:
-                        obsctl.connect(timeout=4).start_stream()
+                        cl = obsctl.connect(timeout=4)
+                        cl.start_stream()
                         res["started"] = True
+                        # ⚠️ A FAILED RECORDING MUST NOT SILENTLY NOT HAPPEN. The whole
+                        # point of arming it is that you are not watching this panel once
+                        # the set starts, so if the disk is full or OBS refuses, that has
+                        # to be in the report. It does NOT fail the broadcast, though -
+                        # losing the archive is bad, losing the show is worse.
+                        if prefs().get("record_with_golive"):
+                            try:
+                                cl.start_record()
+                                res["lines"] = res["lines"] + ["recording: started"]
+                            except Exception as e:
+                                res["lines"] = res["lines"] + [
+                                    f"recording: FAILED, {type(e).__name__} - "
+                                    f"the stream is live but nothing is being saved"]
                     except (Exception, SystemExit) as e:
                         res["started"] = False
                         res["lines"] = res["lines"] + [f"OBS: FAILED, {type(e).__name__}"]
                         res["ok"] = False
                     self._json(res); return
+                if act == "rec_arm":
+                    # Pure preference write - touches no OBS, so it works with OBS shut.
+                    on = bool(body.get("on"))
+                    try:
+                        set_pref("record_with_golive", on)
+                    except Exception as e:
+                        self._json({"error": f"could not save: {type(e).__name__}"}, 500)
+                        return
+                    self._json({"ok": True, "armed": on}); return
+                if act in ("rec_start", "rec_stop"):
+                    try:
+                        cl = obsctl.connect(timeout=4)
+                        if act == "rec_start":
+                            cl.start_record()
+                        else:
+                            cl.stop_record()
+                    except (Exception, SystemExit) as e:
+                        self._json({"error": f"OBS not reachable: {type(e).__name__}"}, 503)
+                        return
+                    self._json({"ok": True, "action": act}); return
                 if act in ("obs_start", "obs_stop"):
                     try:
                         cl = obsctl.connect(timeout=4)
                         if act == "obs_start":
                             cl.start_stream()
+                            if prefs().get("record_with_golive"):
+                                try:
+                                    cl.start_record()
+                                except Exception:
+                                    pass
                         else:
                             cl.stop_stream()
+                            # Symmetry: if arming it started the recording, stopping the
+                            # broadcast ends it. Leaving a recording running after the set
+                            # fills a disk overnight and nobody notices until it is full.
+                            if prefs().get("record_with_golive"):
+                                try:
+                                    cl.stop_record()
+                                except Exception:
+                                    pass
                     except (Exception, SystemExit) as e:
                         self._json({"error": f"OBS not reachable: {type(e).__name__}"}, 503)
                         return

@@ -349,6 +349,8 @@
       <div class="reclabel" id="reclabel">check first</div>
       <div class="sub howto" id="howto"></div>
     </div>
+    <div class="g2" id="recbtns"></div>
+    <div class="sub" id="recstate">&mdash;</div>
     <div class="g2" id="bcastbtns"></div>
     <div class="note">&#9888;&#65039; <b>Green means bytes are moving.</b> A destination is
       only feeding while its progress file is both fresh AND advancing &mdash; the relay's
@@ -1731,6 +1733,31 @@ function renderStream(){
           + '. Nothing to press in OBS.'
         : 'Switch a channel on below first. This starts OBS sending to the local relay, '
           + 'and the relay forwards it to whatever is armed.');
+  /* Local recording. Armed is a stored preference, so it is still true with OBS shut -
+     it says what WILL happen. Whether it IS happening is a separate fact and gets its
+     own line, because "armed" and "recording" being the same indicator is how you end up
+     with a set that was never saved. */
+  const rec = s.record || {};
+  const rb2 = $('recbtns'); rb2.innerHTML = '';
+  camBtn(rb2, 'Record with stream', CAM_ICON.one, !!rec.armed, async () => {
+    await post('/api/stream', {action:'rec_arm', on: !rec.armed});
+    loadStream();
+  });
+  camBtn(rb2, rec.active ? 'Stop recording' : 'Record now', CAM_ICON.one, !!rec.active,
+    async () => {
+      const r = await post('/api/stream', {action: rec.active ? 'rec_stop' : 'rec_start'});
+      if (r && r.error) showReport(r.error, [], true);
+      setTimeout(loadStream, 900);
+    });
+  $('recstate').textContent = !rec.connected
+    ? 'OBS not reachable \u2014 cannot tell whether anything is recording'
+    : rec.active
+      ? ('recording \u2014 ' + Math.floor((rec.seconds||0)/60) + 'm '
+         + ((rec.seconds||0)%60) + 's'
+         + (rec.bytes ? ', ' + (rec.bytes/1073741824).toFixed(2) + ' GB' : ''))
+      : (rec.armed ? 'not recording \u2014 will start when you go live'
+                   : 'not recording, and not armed \u2014 nothing will be saved');
+
   btn.onclick = async () => {
     if (obs.active){
       if (!confirm('Stop the broadcast?')) return;
