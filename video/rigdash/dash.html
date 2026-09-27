@@ -1748,7 +1748,10 @@ function renderStream(){
   }
   const rb = $('relaybtns'); rb.innerHTML = '';
   camBtn(rb, 'Restart relay', CAM_ICON.flip, false, async () => {
-    await post('/api/stream', {action:'relay_restart'});
+    showReport('restarting relay…', []);
+    const r = await post('/api/stream', {action:'relay_restart'});
+    showReport(r.ok ? 'relay restarted' : (r.error || 'restart failed'),
+               r.steps || [], !r.ok);
     setTimeout(loadStream, 4000);
   });
 }
@@ -1761,7 +1764,7 @@ function showReport(head, lines, bad){
   box.innerHTML = '<div class="sub brwhy" style="color:' + (bad ? 'var(--bad)' : 'var(--dim)')
     + '">' + esc(head) + '</div>'
     + lines.map(l => '<div class="sub brlast" style="color:'
-        + (/FAILED|error/i.test(l) ? 'var(--bad)' : 'var(--ok)') + '">' + esc(l) + '</div>')
+        + (/FAILED|error|^⚠/i.test(l) ? 'var(--bad)' : 'var(--ok)') + '">' + esc(l) + '</div>')
       .join('');
 }
 

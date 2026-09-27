@@ -758,16 +758,102 @@ def set_enabled(name, on):
     return {"ok": True, "platform": name.lower(), "enabled": bool(on)}, 200
 
 
+def _mediamtx_pid():
+    """PID of the relay process; None if it is not running; False if the question failed.
+
+    Three-valued on purpose. "Could not ask" is not "not running", and the restart button
+    must not report success on the strength of a lookup that never answered.
+    """
+    try:
+        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq mediamtx.exe",
+                            "/NH", "/FO", "CSV"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=10, creationflags=NO_WINDOW)
+        if r.returncode != 0:
+            return False
+        for line in r.stdout.splitlines():
+            cells = [c.strip().strip('"') for c in line.split('","')]
+            if len(cells) >= 2 and cells[0].lower() == "mediamtx.exe":
+                try:
+                    return int(cells[1])
+                except ValueError:
+                    return False
+        return None
+    except Exception:
+        return False
+
+
 def relay_restart():
-    steps = []
+    """Bounce the relay's task, then prove it actually came back.
+
+    Two separate lies were possible here. schtasks does not raise on failure - it exits
+    non-zero and prints to stderr - so the original try/except caught nothing and this
+    returned ok:True unconditionally, reporting "restarted" even with no such task.
+
+    Worse, and the reason the PID check exists: even when schtasks succeeds the relay may
+    not restart at all. start-relay.bat launches MediaMTX through `start`, which detaches
+    it from the task, so /End kills the task's tree and leaves MediaMTX running; the fresh
+    instance then cannot bind 1935 and dies. Exit code 0 is absence of error, not evidence
+    of a restart. Compare the PID and let only a genuinely new process count as success.
+    The real fix is in start-relay.bat, which this session does not own.
+    """
+    before = _mediamtx_pid()
+    steps, ok, missing = [], True, False
     for verb in ("/End", "/Run"):
         try:
-            subprocess.run(["schtasks", verb, "/TN", RELAY_TASK], capture_output=True,
-                           text=True, timeout=30, creationflags=NO_WINDOW)
+            p = subprocess.run(["schtasks", verb, "/TN", RELAY_TASK], capture_output=True,
+                               text=True, encoding="utf-8", errors="replace",
+                               timeout=30, creationflags=NO_WINDOW)
         except Exception as e:
             steps.append(f"{verb} failed: {type(e).__name__}")
+            ok = False
+            continue
+        if p.returncode == 0:
+            steps.append(f"{verb} ok")
+            continue
+        said = [l.strip() for l in
+                ((p.stderr or "").splitlines() + (p.stdout or "").splitlines())
+                if l.strip()]
+        said = said[-1] if said else f"exit {p.returncode}"
+        low = said.lower()
+        # Ending a task that was not running is a no-op, not a failure.
+        if verb == "/End" and ("is not running" in low or "not currently running" in low):
+            steps.append("/End: was not running")
+            continue
+        if "cannot find the file" in low or "does not exist" in low:
+            missing = True
+        steps.append(f"{verb}: {said}")
+        ok = False
+
     _egress_seen.clear()
-    steps.append("restarted " + RELAY_TASK)
+
+    if not ok:
+        err = (f'no scheduled task named "{RELAY_TASK}" is registered' if missing
+               else f'could not bounce the "{RELAY_TASK}" task')
+        return {"ok": False, "steps": steps, "error": err}
+
+    # schtasks was happy. That is not the same as the relay having restarted.
+    after = _mediamtx_pid()
+    for _ in range(12):
+        if isinstance(after, int) and after != before:
+            break
+        threading.Event().wait(0.5)
+        after = _mediamtx_pid()
+
+    if after is False:
+        steps.append("⚠ could not check whether MediaMTX came back")
+        return {"ok": False, "steps": steps,
+                "error": "task bounced, but the relay could not be verified"}
+    if after is None:
+        steps.append("⚠ MediaMTX is not running after the restart")
+        return {"ok": False, "steps": steps, "error": "the relay did not come back"}
+    if after == before:
+        steps.append(f"⚠ MediaMTX is still pid {before}, the same process as before - "
+                     "start-relay.bat launches it through `start`, which detaches it from "
+                     "the task, so /End cannot kill it")
+        return {"ok": False, "steps": steps, "error": "the relay did not actually restart"}
+
+    steps.append(f"MediaMTX restarted, pid {after}")
     return {"ok": True, "steps": steps}
 
 
