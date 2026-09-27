@@ -636,6 +636,16 @@ def relay_status():
     for p in progs:
         name = p.stem
         health, total, age, secs = _egress_health(name, p)
+        # RED HAS TO BE EARNED, THE SAME WAY GREEN DOES. A cold progress file means
+        # "stalled" only while something is actually being sent. Between shows nothing
+        # publishes, every leftover file is cold, and this panel sat on three red rows
+        # permanently - which trains you to ignore red, so a real mid-show stall then
+        # reads exactly like the resting state. Not knowing is the one exception: if
+        # MediaMTX could not be reached we cannot claim the rig is idle, so the raw
+        # verdict stands and the ingest row carries the error.
+        if (health == "stalled" and not out["ingest"]["ready"]
+                and out["ingest"]["error"] is None):
+            health = "idle"
         state = err = ""
         try:
             state = (RELAY_STATUS / f"{name}.state").read_text(encoding="utf-8",

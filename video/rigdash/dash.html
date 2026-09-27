@@ -1474,10 +1474,13 @@ function phoneMark(label){
    from the progress file being fresh AND its byte counter advancing; this only paints it.
    'stalled' is the state that matters - a pusher alive and sending nothing - and it is the
    one a single green/red pair would hide. */
-const DEST_COL = { feeding:'var(--ok)', stalled:'var(--bad)', stopped:'var(--dim)' };
+const DEST_COL = { feeding:'var(--ok)', stalled:'var(--bad)', stopped:'var(--dim)',
+                   /* Idle is the resting state between shows, not a fault. */
+                   idle:'var(--dim)' };
 const DEST_WHY = {
   stalled: 'alive but nothing is reaching the platform',
   stopped: 'not running',
+  idle:    'nothing is being sent yet - start the stream in OBS',
 };
 /* ⚠️ EVERY CHANNEL IS ALWAYS LISTED, set up or not. Showing only what is currently pushing
    meant an unconfigured rig rendered an empty box - technically true and useless, because
