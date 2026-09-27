@@ -1616,7 +1616,12 @@ def _fb_state(err):
         return ("quota", "Graph rate limit reached - backing off")
     if code == 100 and sub == 33:
         # Verified live on 2026-09-27 against a nonexistent id: code 100, subcode 33.
-        return ("idle", "tokens.json points at a live video that no longer exists")
+        # ⚠️ NAME THE BUTTON, NOT THE COMMAND. This used to read "tokens.json points at a
+        # live video that no longer exists" - exactly true, and useless at a glance mid-set,
+        # because it describes an internal file and implies a fault where there is none.
+        # A resting state should say what it is waiting for in terms of something the
+        # person can actually press.
+        return ("idle", "no broadcast yet - one is created when you go live")
     if code == 100 and "nonexisting field" in (msg or ""):
         # ⚠️ THE SAME DISAPPEARANCE WEARS TWO DIFFERENT ERRORS. Asking for a dead video's
         # fields gives 100/33, but asking for its /comments edge gives a bare 100 reading
