@@ -131,6 +131,141 @@ def adb_forward(serial, url, remote=8090):
         return f"failed ({type(e).__name__})"
 
 
+def adb_state(serial):
+    """"device", "unauthorized", "offline", or "" when adb has never heard of it.
+
+    Three-valued on purpose, because "unauthorized" is the one the person can fix: the
+    cable is in and the phone is awake, it just has an un-tapped "Allow USB debugging?"
+    dialog on screen. Collapsing that into "no USB" would send someone to check a cable
+    that is already fine.
+    """
+    try:
+        r = subprocess.run([ADB, "-s", serial, "get-state"], capture_output=True,
+                           text=True, timeout=10, creationflags=NO_WINDOW)
+        out = (r.stdout or "").strip()
+        if out:
+            return out
+        err = (r.stderr or "").lower()
+        return "unauthorized" if "unauthorized" in err else ""
+    except Exception:
+        return ""
+
+
+_serial_cache = {}          # host -> (serial_or_None, looked_at)
+_SERIAL_TTL = 30.0
+
+
+def adb_devices():
+    """[(serial, state)] from `adb devices`. Never raises; [] when adb is absent."""
+    try:
+        r = subprocess.run([ADB, "devices"], capture_output=True, text=True,
+                           timeout=10, creationflags=NO_WINDOW)
+    except Exception:
+        return []
+    out = []
+    for line in (r.stdout or "").splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and not parts[0].startswith("emulator-"):
+            out.append((parts[0], parts[1]))
+    return out
+
+
+def phone_wifi_ip(serial):
+    """The phone's own wlan0 address, asked over the cable. "" if it cannot be read."""
+    try:
+        r = subprocess.run([ADB, "-s", serial, "shell", "ip", "-f", "inet", "addr",
+                            "show", "wlan0"], capture_output=True, text=True,
+                           timeout=10, creationflags=NO_WINDOW)
+        m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", r.stdout or "")
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+def find_usb_serial(host):
+    """Serial of an attached phone whose own WiFi address is `host`, or None.
+
+    ⚠️ MATCHED BY IP, NOT CONFIGURED. Asking each attached phone what its own wlan0
+    address is, and comparing that to the host this bridge already streams from, makes
+    plugging the cable in the entire configuration - no serial in the scheduled task, no
+    second place to keep in sync, and two phones on two bridges sort themselves out
+    because each matches only its own address.
+
+    The alternative was hardcoding a serial per task, which is also where this would have
+    gone wrong quietly: a task edited for one phone and then copied for the other would
+    have both bridges tunnelling to the same handset, and the picture would look fine.
+
+    Cached briefly. The reconnect loop can spin every five seconds while a phone is
+    asleep, and that is no reason to shell out to adb twice a second.
+    """
+    now = time.time()
+    hit = _serial_cache.get(host)
+    if hit and now - hit[1] < _SERIAL_TTL:
+        return hit[0]
+    found = None
+    for serial, state in adb_devices():
+        if state != "device":
+            continue                      # unauthorized/offline: cannot be asked
+        if phone_wifi_ip(serial) == host:
+            found = serial
+            break
+    _serial_cache[host] = (found, now)
+    return found
+
+
+def host_of(url):
+    m = re.match(r"^https?://([^:/]+)", url)
+    return m.group(1) if m else ""
+
+
+def to_usb(url, port):
+    """Point a phone URL at the local end of an adb forward, keeping scheme and path."""
+    m = re.match(r"^(https?://)[^/]+(/.*)?$", url)
+    return url if not m else "%s127.0.0.1:%d%s" % (m.group(1), port, m.group(2) or "")
+
+
+def pick_transport(serial, url, api, port):
+    """Prefer USB when the cable is actually usable, and fall back to WiFi otherwise.
+
+    ⚠️ DECIDED EVERY RECONNECT PASS, NOT ONCE AT STARTUP. The cable gets plugged in
+    mid-session and pulled out mid-session, and a bridge that chose its transport once
+    would keep trying a tunnel that no longer exists - which presents as the phone being
+    off, because a dead forward refuses the connection exactly like an absent phone.
+
+    ⚠️ AND THE CHOICE IS ANNOUNCED. USB is not obviously faster here - the measurement in
+    the header puts camera-to-decode at 80 ms over WiFi, with the remaining ~710 ms
+    downstream in OBS - so the reason to prefer it is stability, not speed. That makes a
+    silent fallback to WiFi genuinely costly: the picture keeps working and the thing you
+    switched to USB to avoid is quietly back. Whichever is in use gets printed.
+    """
+    if not serial:
+        # Nothing configured, so go looking. This is the path that makes "plug it in and
+        # it switches" true without anyone editing a scheduled task.
+        serial = find_usb_serial(host_of(url))
+        if not serial:
+            pending = [s for s, st in adb_devices() if st == "unauthorized"]
+            if pending:
+                # Deliberately hedged. An unauthorized device cannot be asked for its
+                # IP, so we genuinely do not know whether it is this bridge's phone -
+                # and naming it as though we did would send someone to the wrong handset.
+                return url, api, ("WiFi (a phone is on USB with an unanswered "
+                                  '"Allow USB debugging?" prompt - cannot tell if it is '
+                                  "this one until that is tapped)"), None
+            return url, api, "WiFi (no USB)", None
+    state = adb_state(serial)
+    if state == "device":
+        u, a = to_usb(url, port), to_usb(api, port)
+        fwd = adb_forward(serial, u)
+        if "->" in fwd:
+            return u, a, "USB", serial
+        return url, api, "WiFi (adb forward failed: %s)" % fwd, None
+    if state == "unauthorized":
+        return url, api, 'WiFi (USB cable is in, but "Allow USB debugging?" is unanswered on the phone)', None
+    if state:
+        return url, api, "WiFi (adb says %s)" % state, None
+    return url, api, "WiFi (no USB)", None
+
+
 def unlocked_functions(dumpsys_text):
     """Parse `screen_unlocked_functions` out of `dumpsys usb`. Pure, so it can be tested
     without a phone attached - which matters, see the warning in no_webcam_handover."""
@@ -219,6 +354,9 @@ def main():
                     help="capture source to keep in step; found by device if omitted")
     ap.add_argument("--adb-serial", default=None,
                     help="phone serial; re-establishes the adb forward each reconnect")
+    ap.add_argument("--usb-port", type=int, default=8190, metavar="PORT",
+                    help="local port for the adb forward when the phone is on USB; the "
+                         "stream and the state API share one tunnel")
     ap.add_argument("--no-obs-match", action="store_true",
                     help="do not touch OBS settings")
     # ⚠️ A scheduled task runs this with pythonw and NO console, so everything it prints -
@@ -315,10 +453,20 @@ def main():
         # when the adb server restarts - and once it is gone the URL simply refuses, which
         # looks exactly like the phone being off. `adb forward` is idempotent and cheap, so
         # the reconnect loop that already exists for the stream heals the tunnel too.
-        if args.adb_serial:
-            print(f"    adb forward: {adb_forward(args.adb_serial, args.url)}", flush=True)
-            print(f"    usb mode:    {no_webcam_handover(args.adb_serial)}", flush=True)
-        size = fixed or probe_size(args.api)
+        url, api, how, usb_serial = pick_transport(args.adb_serial, args.url, args.api,
+                                                   args.usb_port)
+        # ⚠️ ALWAYS PRINT THE REASON, not only when a serial was configured. The whole
+        # point of auto-discovery is that nobody configures anything - so gating the
+        # explanation on a flag nobody sets means the one line that says WHY it is on
+        # WiFi, and what to tap to change that, never appears. The session line below
+        # shows the transport; this shows the reason it was chosen.
+        print(f"    transport:   {how}", flush=True)
+        if how == "USB":
+            # Stop the phone handing itself over to UVC webcam mode when the cable goes
+            # in - that would take RigCam's HTTP server down with it, and the dashboard's
+            # whole Phones panel reads that server.
+            print(f"    usb mode:    {no_webcam_handover(usb_serial)}", flush=True)
+        size = fixed or probe_size(api)
         if not size:
             # Covers both cases honestly: the phone may be unreachable, or reachable and
             # deliberately asleep. Neither is a fault, and both are cured by waiting.
@@ -328,7 +476,7 @@ def main():
             continue
         w, h = size
         session += 1
-        print(f"[{session}] {w}x{h} from {args.url}", flush=True)
+        print(f"[{session}] {w}x{h} from {url} over {how.split(' (')[0]}", flush=True)
 
 
         # ⚠️ Every flag here is about not accumulating frames. `-fflags nobuffer` and
@@ -344,7 +492,7 @@ def main():
         # one. stdin is pinned to DEVNULL as well so the handle is never inherited at all.
         cmd = [ff, "-hide_banner", "-nostdin", "-loglevel", "error",
                "-fflags", "nobuffer", "-flags", "low_delay",
-               "-f", "h264", "-i", args.url,
+               "-f", "h264", "-i", url,
                # ⚠️ NV12, NOT rgb24. RGB is 3 bytes per pixel; at 1080p30 that is 6.2 MB a
                # frame and 186 MB/s through a Python loop, which pegged the CPU and stalled
                # the pipe - TCP then back-pressured the phone and its frames were dropped
