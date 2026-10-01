@@ -435,8 +435,23 @@ def main():
                 if beat["live"] and time.time() - beat["at"] > args.stall_exit:
                     print("    STALLED: no frame for %.0fs at %d frames - exiting so the "
                           "task restarts us" % (args.stall_exit, beat["frames"]), flush=True)
-                    # os._exit, not sys.exit: the main thread is blocked inside the sink and
-                    # will never unwind. A clean shutdown that cannot happen is not clean.
+                    # ⚠️ KILL FFMPEG FIRST, because os._exit does not. os._exit is right
+                    # here - the main thread is blocked inside the sink and will never
+                    # unwind, and a clean shutdown that cannot happen is not clean - but it
+                    # skips the `finally` below that calls proc.terminate(), so the ffmpeg
+                    # child outlived the bridge. It is not idle when it does: it holds its
+                    # TCP connection to RigCam open and keeps pulling frames, so the phone
+                    # sees TWO clients and encodes and uploads two copies. Observed at
+                    # 1080p: clients.video = 2 and ~30 Mbps leaving the phone instead of
+                    # 15, draining the battery and competing with the live bridge for the
+                    # same WiFi - on a stall, which is exactly when the picture is already
+                    # in trouble. One orphan per stall, accumulating.
+                    try:
+                        pr = beat.get("proc")
+                        if pr is not None:
+                            pr.terminate()
+                    except Exception:
+                        pass
                     os._exit(3)
         threading.Thread(target=_watchdog, daemon=True).start()
 
@@ -527,6 +542,9 @@ def main():
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, bufsize=0,
                                 creationflags=NO_WINDOW)
+        # Published for the stall watchdog, which cannot see this local and has to be
+        # able to take the child down before os._exit skips every cleanup path there is.
+        beat["proc"] = proc
         frame_bytes = w * h * bpp // 2
         # ⚠️ ONE BUFFER, REUSED, FILLED IN PLACE. The previous loop accumulated a list of
         # chunks and joined them, so every frame was copied two or three times: at 1080p30
