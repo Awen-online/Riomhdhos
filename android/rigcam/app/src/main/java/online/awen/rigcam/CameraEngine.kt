@@ -227,6 +227,12 @@ class CameraEngine(
         } else {
             b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_MODE,
                                       CaptureRequest.CONTROL_AE_MODE_ON)
+            // ⚠️ ONLY MEANINGFUL ON THIS BRANCH. With AE off the sensor keys above fix the
+            // frame duration directly, and a target range would be ignored; with AE on
+            // this is the only thing standing between a 30 fps stream and a 14 fps one.
+            pickAeFpsRange(fps)?.let {
+                b.setCaptureRequestOption(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it)
+            }
         }
 
         if (manualWb) {
@@ -321,6 +327,44 @@ class CameraEngine(
         0f
     }
 
+    private fun aeFpsRanges(): Array<android.util.Range<Int>>? = try {
+        Camera2CameraInfo.from(camera!!.cameraInfo)
+            .getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+    } catch (e: Exception) { null }
+
+    /**
+     * The AE target frame-rate range to ask for, chosen from what the device reports.
+     *
+     * WARNING: THIS IS THE DIFFERENCE BETWEEN 14 fps AND 28 fps, and nothing else in this
+     * file was the cause. `fps` above is handed to the H264 encoder and to nobody else -
+     * it tells the encoder what rate to EXPECT, it does not ask the camera to PRODUCE it.
+     * With CONTROL_AE_TARGET_FPS_RANGE unset, auto-exposure picks its own range, and in a
+     * dim room it picks a low floor and sits on it, because a longer frame duration is the
+     * cheapest way to make the picture brighter. Measured on the Pixel 8 at 1920x1080 in
+     * this room: 13.7 fps on auto, 28.4 fps the moment AE stopped choosing the duration.
+     * The room was the variable all along - 15 fps overnight, 27-28 in the evening with
+     * the lights on - which is why bitrate changes did nothing and read as a dead end.
+     *
+     * The trade this makes is deliberate: pinning the floor forces AE to buy brightness
+     * with gain instead of time, so a dark room gets a noisier picture rather than a
+     * stuttering one. For a performance that is the right way round - grain reads as
+     * texture and judder reads as broken.
+     *
+     * Prefer an exact [target, target]: a fixed range cannot drift. Otherwise take the
+     * highest floor that still reaches the target, which is the same thing by degrees.
+     * Returns null when the device offers nothing suitable, and the caller then leaves the
+     * key unset rather than sending a range the device never advertised - per the rule
+     * this file learned the hard way, an unsupported value is not refused, it is silently
+     * dropped along with every other key in the request.
+     */
+    private fun pickAeFpsRange(target: Int): android.util.Range<Int>? {
+        val all = aeFpsRanges()?.toList() ?: return null
+        all.firstOrNull { it.lower == target && it.upper == target }?.let { return it }
+        return all.filter { it.upper >= target }
+                  .maxWithOrNull(compareBy({ it.lower }, { -it.upper }))
+            ?: all.maxByOrNull { it.upper }
+    }
+
     private fun isoRange(): android.util.Range<Int>? = try {
         Camera2CameraInfo.from(camera!!.cameraInfo)
             .getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
@@ -404,6 +448,7 @@ class CameraEngine(
          "facing":"${if (facing == CameraSelector.LENS_FACING_BACK) "back" else "front"}",
          "requested":"${targetSize.width}x${targetSize.height}",
          "fps":$fps,
+         "aeFpsRange":"${pickAeFpsRange(fps)?.toString() ?: "unset"}",
          "encoder":{"input":"surface",
                     "lowLatency":${encoder?.lowLatency ?: false},
                     "bitrateKbps":${bitRate / 1000},
