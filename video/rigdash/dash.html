@@ -93,6 +93,18 @@
   .note details .full{padding-top:6px}
   @media (prefers-reduced-motion:reduce){ .note details summary::before{transition:none} }
   .row{display:flex;justify-content:space-between;align-items:baseline;margin:9px 0 1px}
+  /* ⚠️ WHICH FIELD REACHES WHICH PLATFORM USED TO BE PROSE - "YouTube and Facebook
+     only", "Twitch only" - and prose in a label is read once and then skipped forever.
+     These marks are scanned instead, and they carry a second fact the words could not:
+     whether that platform is actually switched on right now. A description typed for
+     YouTube when YouTube is off is wasted work you find out about afterwards. */
+  .pchips{display:inline-flex;gap:5px;align-items:center;vertical-align:-3px}
+  .pchip{width:15px;height:15px;display:block;opacity:.25;filter:grayscale(1)}
+  .pchip.on{opacity:1;filter:none}
+  .chanwarn{color:var(--accent)}
+  /* Dimmed, never disabled. Locking the input would stop you preparing a title before
+     switching the channel on, which is exactly the order you actually work in. */
+  input.offchan{opacity:.5}
   .k{color:var(--dim);font-size:13px}
   .v{font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;font-size:13px}
   input[type=range]{width:100%;height:36px;accent-color:var(--accent);margin:0}
@@ -325,29 +337,31 @@
   <div class="card">
     <div class="row"><span class="k" id="v_bcast_k">Not streaming</span>
       <span class="v" id="v_bcast">&mdash;</span></div>
-    <div class="row"><span class="k">Title</span><span class="v" id="v_titlelen">0</span></div>
+    <div class="row"><span class="k">Title</span>
+      <span class="v sub"><span class="pchips" id="pc_title"></span><span id="pw_title"></span>
+      <span class="v" id="v_titlelen">0</span></span></div>
     <div class="sub" id="v_titlenote"></div>
     <input type="text" id="s_title" maxlength="200" autocomplete="off"
            placeholder="what this set is">
     <div class="row"><span class="k">Description</span>
-      <span class="v sub">YouTube and Facebook only</span></div>
+      <span class="v sub"><span class="pchips" id="pc_desc"></span><span id="pw_desc"></span></span></div>
     <input type="text" id="s_desc" maxlength="400" autocomplete="off" placeholder="optional">
     <div class="row"><span class="k">Category</span>
-      <span class="v sub">Twitch only</span></div>
+      <span class="v sub"><span class="pchips" id="pc_cat"></span><span id="pw_cat"></span></span></div>
     <input type="text" id="s_cat" maxlength="60" autocomplete="off" list="catlist"
            placeholder="e.g. Music — must match a Twitch category exactly">
     <datalist id="catlist"></datalist>
     <div class="sub" id="v_catnote"></div>
     <div class="row"><span class="k">Tags</span>
-      <span class="v sub" id="v_taglen">Twitch only</span></div>
+      <span class="v sub"><span class="pchips" id="pc_tags"></span><span id="pw_tags"></span><span id="v_taglen"></span></span></div>
     <input type="text" id="s_tags" maxlength="300" autocomplete="off" list="taglist"
            placeholder="comma separated, no spaces inside a tag">
     <datalist id="taglist"></datalist>
-    <div class="row"><span class="k">YouTube privacy</span>
-      <span class="v sub" id="v_privnote">&mdash;</span></div>
+    <div class="row"><span class="k">Privacy</span>
+      <span class="v sub"><span class="pchips" id="pc_priv"></span><span id="v_privnote">&mdash;</span></span></div>
     <div class="g3" id="privbtns"></div>
     <div class="row"><span class="k">Thumbnail</span>
-      <span class="v sub">YouTube only</span></div>
+      <span class="v sub"><span class="pchips" id="pc_thumb"></span><span id="pw_thumb"></span></span></div>
     <div class="g2" id="thumbbtns"></div>
     <div class="sub" id="thumbnote">&mdash;</div>
     <div id="preflight"></div>
@@ -1818,6 +1832,7 @@ function renderStream(){
      authoritative.
      Overwrite only a field he has not touched: still equal to what we last seeded, and
      not currently focused. Clobbering half-typed text is help nobody asks for twice. */
+  renderChannelChips(s.platforms);
   const meta = s.meta || {};
   for (const [id, key] of [['s_title','title'], ['s_desc','desc']]){
     const el = $(id);
@@ -1938,6 +1953,70 @@ let PRIVACY = 'unlisted';
    concept and Facebook's is set on its own object. With a hand-pasted key and no app
    registered these buttons are decoration - so say that on the row rather than let three
    confident-looking buttons imply the stream is private when it is not. */
+/* Platform marks. Filled silhouettes rather than the stroked glyphs used elsewhere,
+   because these are being RECOGNISED, not read - and a brand is recognised by its
+   outline. Each is one evenodd path so the counter-shape (the play triangle, the f) is a
+   hole rather than a second element in the page's background colour, which would have
+   been wrong on one of the two themes. Brand hue only when the channel is live; grey and
+   faded when it is off, so "which platforms does this field reach" and "which of those
+   are actually on" are the same glance. */
+const PLAT_SVG = (body, color) =>
+  '<svg viewBox="0 0 24 24" fill="' + color + '" fill-rule="evenodd" aria-hidden="true">'
+  + body + '</svg>';
+
+const PLAT_MARK = {
+  twitch: ['#9146FF',
+    '<path d="M4.3 2.5h16.2v10.9l-4.4 4.4h-3.3l-2.7 2.7H8v-2.7H4.3zm1.6 1.6v11.5h2.8v2.2l2.2-2.2h3.7l3.5-3.5V4.1zm4.8 2.7h1.6v4.9h-1.6zm4.4 0h1.6v4.9h-1.6z"/>'],
+  youtube: ['#FF0000',
+    '<path d="M21.6 7.2a2.5 2.5 0 0 0-1.8-1.8C18.2 5 12 5 12 5s-6.2 0-7.8.4A2.5 2.5 0 0 0 2.4 7.2 26 26 0 0 0 2 12a26 26 0 0 0 .4 4.8 2.5 2.5 0 0 0 1.8 1.8C5.8 19 12 19 12 19s6.2 0 7.8-.4a2.5 2.5 0 0 0 1.8-1.8A26 26 0 0 0 22 12a26 26 0 0 0-.4-4.8zM10.2 15V9l5.2 3z"/>'],
+  facebook: ['#1877F2',
+    '<path d="M12 2.2a9.8 9.8 0 1 0 0 19.6 9.8 9.8 0 0 0 0-19.6zm1.6 10.2v6.5h-2.7v-6.5H8.8V9.9h2.1V8.3c0-2.1 1.3-3.3 3.2-3.3.9 0 1.7.07 1.9.1v2.2h-1.3c-1 0-1.2.5-1.2 1.2v1.4h2.4l-.3 2.5z"/>'],
+  x: ['#71767B',
+    '<path d="M3.2 3h5.5l4 5.6L17.6 3h2.9l-6.4 7.3L21.3 21h-5.5l-4.3-6-5.2 6H3.4l6.9-7.9z"/>'],
+};
+
+/* Which platforms each field actually reaches. X carries video only - no titling of any
+   kind - so it never appears here, and that absence is the honest answer rather than a
+   greyed mark implying it might work one day. */
+const FIELD_PLATFORMS = {
+  title: ['twitch', 'youtube', 'facebook'],
+  desc:  ['youtube', 'facebook'],
+  cat:   ['twitch'],
+  tags:  ['twitch'],
+  priv:  ['youtube'],
+  thumb: ['youtube'],
+};
+
+function renderChannelChips(platforms){
+  const on = new Set((platforms || []).filter(p => p.enabled).map(p => p.name));
+  for (const [field, names] of Object.entries(FIELD_PLATFORMS)){
+    const box = $('pc_' + field);
+    if (!box) continue;
+    box.innerHTML = names.map(n => {
+      const m = PLAT_MARK[n];
+      if (!m) return '';
+      const live = on.has(n);
+      return '<span class="pchip' + (live ? ' on' : '') + '" title="' + n
+           + (live ? ' - enabled' : ' - not enabled') + '">'
+           + PLAT_SVG(m[1], live ? m[0] : 'currentColor') + '</span>';
+    }).join('');
+    // Say something only when it matters: every mark grey means typing here changes
+    // nothing tonight.
+    const none = !names.some(n => on.has(n));
+    const warn = $('pw_' + field);
+    if (warn) warn.innerHTML = none
+      ? ' <span class="chanwarn">no channel on</span>' : '';
+    for (const id of ['s_' + field])
+      if ($(id)) $(id).classList.toggle('offchan', none);
+  }
+  // The two that are controls rather than text inputs dim their whole group instead.
+  for (const [field, boxId] of [['priv','privbtns'], ['thumb','thumbbtns']]){
+    const box = $(boxId);
+    if (box) box.style.opacity =
+      FIELD_PLATFORMS[field].some(n => on.has(n)) ? '' : '.5';
+  }
+}
+
 function renderPrivacy(){
   const box = $('privbtns'); if (!box) return;
   const yt = ((STREAM && STREAM.platforms) || []).find(p => p.name === 'youtube');
