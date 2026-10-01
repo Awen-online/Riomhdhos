@@ -42,6 +42,7 @@ whole operation: the other four steps are worth having on their own.
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -121,10 +122,66 @@ def sh(*args, timeout=25):
         return f"<{type(e).__name__}>"
 
 
+def _addr_rank(serial):
+    """Lower is better: a cable beats host:port beats adb's mDNS service name."""
+    if "._tcp" in serial:
+        return 2
+    if ":" in serial:
+        return 1
+    return 0
+
+
+def _hw_id(serial):
+    """Something stable per HANDSET, so the same phone reached two ways collapses to one.
+
+    The mDNS name carries the hardware serial already - "adb-<SERIAL>-<tag>._adb-..." -
+    so it can be read straight out without asking the phone. A plain serial is itself the
+    id. Only "host:port" needs a round trip, and ro.serialno is the cheapest honest
+    answer; falling back to the address keeps a phone that cannot be asked rather than
+    silently merging it into another.
+    """
+    m = re.match(r"^adb-([^-]+)-", serial)
+    if m:
+        return m.group(1)
+    if ":" not in serial:
+        return serial
+    got = sh("-s", serial, "shell", "getprop", "ro.serialno").strip()
+    return got or serial
+
+
 def devices():
+    """Attached phones, ONE ROW PER HANDSET.
+
+    ⚠️ ONE PHONE CAN APPEAR TWICE IN `adb devices`, AND THE TWO DISAGREE. Once a handset
+    is paired for wireless debugging, adb's own mDNS auto-connect attaches it under its
+    service name at the same time as an explicit `adb connect host:port` holds it - two
+    transport ids, one phone. They do not answer identically: observed tonight with the
+    Pixel 6 asleep, the host:port row reported camera=dormant while the mDNS row reported
+    camera=running.
+
+    The dashboard counts live and dead cameras to decide which power button is lit, so a
+    phantom third row meant neither Sleep nor Normal showed as selected and the badge read
+    "mixed" - after a Sleep that had in fact worked perfectly. A control that cannot tell
+    you the state it just put the rig into is worse than no control.
+
+    Deduped on the handset, preferring the address that is most direct.
+    """
     out = sh("devices")
-    return [l.split()[0] for l in out.splitlines()[1:]
+    seen = [l.split()[0] for l in out.splitlines()[1:]
             if l.strip() and l.split()[-1] == "device"]
+    best = {}
+    for serial in seen:
+        key = _hw_id(serial)
+        if key not in best or _addr_rank(serial) < _addr_rank(best[key]):
+            best[key] = serial
+    # Keep the order adb reported, so the list does not reshuffle between polls.
+    out_list, taken = [], set()
+    for serial in seen:
+        key = _hw_id(serial)
+        if key not in taken and best[key] == serial:
+            taken.add(key)
+            out_list.append(serial)
+    return out_list
 
 
 def model(serial):
