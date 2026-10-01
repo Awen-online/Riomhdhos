@@ -592,11 +592,58 @@
 </section>
 
 <div class="err" id="err"></div>
+<!-- Which dash.html is actually running. Answers "did my refresh take?" without
+     guessing, now that the server sends an ETag and the browser may legitimately
+     reuse what it has. -->
+<div class="sub" id="build" style="text-align:right;opacity:.5;padding:2px 2px 10px">&mdash;</div>
 
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ⚠️ FIRST THING IN THE FILE, BECAUSE EVERY BUG THIS PANEL HAS SHIPPED WAS SILENT.
+   Not one of them announced itself. A ReferenceError in renderCategories ran on every
+   poll for days and surfaced only as a wrong message about the network. A temporal-dead-
+   zone throw left the Chat tab blank behind a bare `catch (e) {}`. A function declared
+   twice quietly replaced the other one and killed the Perform tab's saved looks, and
+   nothing anywhere said so.
+
+   The common factor was never the bug - it was that the panel had no way to tell you it
+   was broken, so a broken panel and a quiet one looked identical. This makes them
+   different. It is deliberately the earliest code in the file so it is armed before
+   anything can throw, and it uses no helper that might itself be missing.
+
+   Shows the newest error and a count, because a loop that throws once a second should
+   read as one fault with a tally rather than scroll a thousand lines past you. */
+(function () {
+  let n = 0, last = '';
+  function show(what, where) {
+    n++;
+    const msg = String(what || 'unknown error');
+    if (msg === last && n > 1) { bump(); return; }
+    last = msg;
+    const box = document.getElementById('err');
+    if (!box) return;
+    box.textContent = msg + (where ? '  (' + where + ')' : '');
+    box.dataset.count = n;
+    bump();
+  }
+  function bump() {
+    const box = document.getElementById('err');
+    if (box && n > 1) box.textContent = box.textContent.replace(/ \u00d7\d+$/, '')
+                                       + ' \u00d7' + n;
+  }
+  window.addEventListener('error', e => {
+    // A failed <script> or image fires this too, with no .error - say which.
+    if (e.error) show(e.error.message, (e.filename || '').split('/').pop() + ':' + e.lineno);
+    else if (e.target && e.target.src) show('failed to load ' + e.target.src);
+  }, true);
+  window.addEventListener('unhandledrejection', e => {
+    const r = e.reason;
+    show('unhandled promise: ' + (r && r.message ? r.message : r), '');
+  });
+})();
 
 
 /* ---- icons -------------------------------------------------------------
@@ -1443,7 +1490,7 @@ let SP = null;
 async function loadPresets(){
   try {
     SP = await (await fetch('/api/scenepresets')).json();
-    renderPresets();
+    renderScenePresets();
   } catch(e){ $('err').textContent = 'scene presets: ' + e.message; }
 }
 
@@ -1452,7 +1499,7 @@ async function spPost(body){
     const j = await post('/api/scenepresets', body);
     if (j.presets) SP.presets = j.presets;
     if (j.steps) $('v_sp').textContent = j.steps.length ? j.steps.join(' \u00b7 ') : 'nothing to apply';
-    renderPresets();
+    renderScenePresets();
   } catch(e){ $('err').textContent = e.message; }
 }
 
@@ -1467,7 +1514,14 @@ function presetSummary(entry){
   }).join('<br>');
 }
 
-function renderPresets(){
+/* ⚠️ renderScenePresets, NOT renderPresets - THERE WERE TWO. This one and the visuals
+   one at the top of the file shared a name, function declarations hoist, and the later
+   declaration silently replaced the earlier. So every call meant for the Perform tab's
+   saved looks - renderPresets(s.presets || []) in the visuals refresh - landed here
+   instead, with an argument this function does not take. #presets was never filled and
+   "No saved looks yet" showed permanently however many looks existed.
+   Nothing failed, which is why it survived: the wrong function ran and returned quietly. */
+function renderScenePresets(){
   if (!SP) return;
   const on = !!(SP.presets && SP.presets.enabled);
   $('v_sp').textContent = on ? 'active' : 'off';
@@ -2314,6 +2368,7 @@ async function loadCamera(){
   $('cam_refresh').classList.add('pending');
   try{
     CAM = await (await fetch('/api/camera')).json();
+    if (CAM && CAM.build && $('build')) $('build').textContent = 'build ' + CAM.build;
     renderCamera();
     renderBridges();
     loadPresets();          // not awaited: it must not delay the camera panel

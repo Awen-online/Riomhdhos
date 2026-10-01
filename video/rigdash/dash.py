@@ -2496,6 +2496,20 @@ def filter_state(source=None):
 PAGE = (HERE / "dash.html")
 
 
+def page_build():
+    """A short stamp identifying the dash.html currently on disk.
+
+    Shown in the panel so "am I looking at the new code?" has an answer that is not
+    "probably". Reading a changelog while running the previous build is a specific and
+    expensive kind of confusion - it sends you to debug a fix you are not running.
+    """
+    try:
+        st = PAGE.stat()
+        return time.strftime("%H:%M:%S", time.localtime(st.st_mtime))
+    except Exception:
+        return "?"
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -2509,12 +2523,39 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b)
 
     def _file(self, path, ctype="text/html; charset=utf-8"):
+        """Serve a file, and tell the browser exactly how stale it may let it get.
+
+        ⚠️ THIS SENT NO CACHE HEADERS AT ALL, which is not the same as sending
+        "do not cache". With no Cache-Control, no ETag and no Last-Modified, a browser
+        falls back to a heuristic of its own choosing and may reuse the copy it has
+        without asking. dash.html is re-read from disk on every request precisely so an
+        edit is live on refresh - the whole point of serving it this way - and that
+        promise was being quietly handed to the browser's guesswork. "Just refresh"
+        was advice with a silent failure mode, and the failure mode is the worst kind:
+        you are looking at old code while reading a changelog that says otherwise.
+
+        no-cache does NOT mean "never store" - it means "store it, but revalidate before
+        reusing it". Paired with an ETag, an unchanged page costs a 304 and no body, so
+        this is nearly free on a LAN and correct when the file has moved.
+        """
         if not path.is_file():
             self.send_error(404); return
+        st = path.stat()
+        # mtime and size: cheap, and together they move whenever an edit lands. A hash
+        # would be stricter and would mean reading the file twice on every poll.
+        tag = '"%x-%x"' % (int(st.st_mtime), st.st_size)
+        if self.headers.get("If-None-Match") == tag:
+            self.send_response(304)
+            self.send_header("ETag", tag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
         b = path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("ETag", tag)
         self._maybe_set_cookie()
         self.end_headers()
         self.wfile.write(b)
@@ -2641,6 +2682,7 @@ class Handler(BaseHTTPRequestHandler):
                     "rigcamUrls": dict(RIGCAMS),
                     "uvc": {"reachable": uvc["ok"], "selected": uvc_selected(uvc["out"]),
                             "zooms": list(UVC_ZOOMS), "detail": uvc["out"]},
+                    "build": page_build(),
                     "devices": devices_snapshot(),
                     "wiredSerial": UVC_SERIAL,
                     "power": power_call("status", timeout=60),
