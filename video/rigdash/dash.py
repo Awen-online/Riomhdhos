@@ -780,6 +780,16 @@ def set_pref(key, value):
 DEFAULT_THUMB = Path.home() / "Pictures" / "stream-assets" / "cullah-live.png"
 
 
+def _mtime(path):
+    """File mtime as an int, or 0. Used to bust the browser's cache on the preview:
+    the thumbnail is regenerated under the SAME filename, so without this the page
+    keeps showing the previous image and you approve artwork you are not sending."""
+    try:
+        return int(os.path.getmtime(path))
+    except Exception:
+        return 0
+
+
 def stream_meta():
     """Title, description and thumbnail path, held server-side.
 
@@ -797,6 +807,7 @@ def stream_meta():
             "desc": pr.get("stream_desc", "") or "",
             "thumb": pr.get("stream_thumb", "") or str(DEFAULT_THUMB),
             "thumb_name": os.path.basename(pr.get("stream_thumb") or str(DEFAULT_THUMB)),
+            "thumb_at": _mtime(pr.get("stream_thumb") or str(DEFAULT_THUMB)),
             "thumb_exists": os.path.isfile(pr.get("stream_thumb") or str(DEFAULT_THUMB))}
 
 
@@ -2666,6 +2677,20 @@ class Handler(BaseHTTPRequestHandler):
                 s["twitch_categories"] = twitch_categories()
                 self._json(s); return
 
+            if p == "/thumb":
+                # ⚠️ SERVES THE CONFIGURED PATH AND NOTHING ELSE. The filename never comes
+                # from the request, so there is no traversal to defend against - the only
+                # reachable file is whatever stream_thumb points at, which only this
+                # dashboard writes. A ?v= cache-buster rides along on the <img> src and is
+                # ignored here.
+                tp = stream_meta()["thumb"]
+                if not os.path.isfile(tp):
+                    self.send_error(404); return
+                ext = os.path.splitext(tp)[1].lower()
+                self._file(Path(tp), {".png": "image/png", ".jpg": "image/jpeg",
+                                      ".jpeg": "image/jpeg", ".webp": "image/webp"}
+                           .get(ext, "application/octet-stream"))
+                return
             if p == "/api/camera":
                 # One read of every phone, shared by the state block and the fps delta, so
                 # the two cannot disagree about what they were looking at.

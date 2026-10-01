@@ -111,6 +111,13 @@
                color:var(--dim);font-variant-numeric:tabular-nums}
   .cmsg .cwho{font-weight:600}
   .cmsg .ctext{min-width:0;overflow-wrap:anywhere}
+  /* The actual artwork, at the shape it will be seen in. A filename told you which
+     file was configured and nothing about whether it was the right picture - and the
+     thumbnail is regenerated under the same name, so "cullahcast.png" was true both
+     before and after a change you could not see. 16:9 because that is YouTube's frame;
+     anything else would be a preview of a crop that will not happen. */
+  #thumbprev{display:block;width:100%;max-width:320px;aspect-ratio:16/9;object-fit:cover;
+             border:1px solid var(--line,#2a3634);border-radius:6px;margin:6px 0 2px}
   .pchips{display:inline-flex;gap:5px;align-items:center;vertical-align:-3px}
   .pchip{width:15px;height:15px;display:block;opacity:.25;filter:grayscale(1)}
   .pchip.on{opacity:1;filter:none}
@@ -341,6 +348,7 @@
      deliberately once a set is running; nobody opens this page mid-song by accident. -->
 <div class="tabs">
   <button id="t_cams" class="sel"></button>
+  <button id="t_scenes"></button>
   <button id="t_stream"></button>
   <button id="t_chat"></button>
   <button id="t_perform"></button>
@@ -382,6 +390,7 @@
     <div class="g3" id="privbtns"></div>
     <div class="row"><span class="k">Thumbnail</span>
       <span class="v sub"><span class="pchips" id="pc_thumb"></span><span id="pw_thumb"></span></span></div>
+    <img id="thumbprev" alt="configured thumbnail" hidden>
     <div class="g2" id="thumbbtns"></div>
     <div class="sub" id="thumbnote">&mdash;</div>
     <div id="preflight"></div>
@@ -431,12 +440,30 @@
   <div class="card" id="chatbox"></div>
 </section>
 
+<section id="scenes">
+  <h2>Scene presets</h2>
+  <div class="card">
+    <div class="row"><span class="k">On scene change</span><span class="v" id="v_sp">&mdash;</span></div>
+    <div class="g2" id="spmaster"></div>
+    <div id="splist"><span class="sub">&mdash;</span></div>
+    <div class="note">&#9888;&#65039; OBS filters belong to the <b>source</b>, not the scene, so
+      a filter toggled in one scene is toggled in all of them &mdash; and zoom is not an OBS
+      property at all, it is a setting on the phone. Neither can be made scene-dependent by
+      OBS alone, so the dashboard watches the program scene and applies these instead.<br><br>
+      Set a look up by hand in OBS and on the phones, then press <b>Capture</b> on that
+      scene. <b>Apply</b> runs it now without changing scene.<br><br>
+      Zoom takes a second or two to reach the phone, so presets suit a deliberate scene
+      change rather than a fast cut. A scene with no preset is never touched, and nothing is
+      applied when the dashboard starts &mdash; only on an actual change.</div>
+  </div>
+</section>
+
 <section id="perform">
   <h2>Mood</h2>
   <div class="card"><div class="g2" id="moods"></div></div>
 
   <h2>Scene</h2>
-  <div class="card"><div class="g2" id="scenes"></div></div>
+  <div class="card"><div class="g2" id="scenebtns"></div></div>
 
   <h2>Looks</h2>
   <div class="card">
@@ -534,21 +561,6 @@
       about ten seconds before the picture comes back.</div>
   </div>
 
-  <h2>Scene presets</h2>
-  <div class="card">
-    <div class="row"><span class="k">On scene change</span><span class="v" id="v_sp">&mdash;</span></div>
-    <div class="g2" id="spmaster"></div>
-    <div id="splist"><span class="sub">&mdash;</span></div>
-    <div class="note">&#9888;&#65039; OBS filters belong to the <b>source</b>, not the scene, so
-      a filter toggled in one scene is toggled in all of them &mdash; and zoom is not an OBS
-      property at all, it is a setting on the phone. Neither can be made scene-dependent by
-      OBS alone, so the dashboard watches the program scene and applies these instead.<br><br>
-      Set a look up by hand in OBS and on the phones, then press <b>Capture</b> on that
-      scene. <b>Apply</b> runs it now without changing scene.<br><br>
-      Zoom takes a second or two to reach the phone, so presets suit a deliberate scene
-      change rather than a fast cut. A scene with no preset is never touched, and nothing is
-      applied when the dashboard starts &mdash; only on an actual change.</div>
-  </div>
 
   <h2>Cameras</h2>
   <div id="rig_cards"></div>
@@ -714,6 +726,10 @@ const TAB_ICON = {
   perform: SVG('<path d="M8 5v14M16 5v14"/><path d="M8 9h8M8 15h8"/>', 1.6),
   look:    SVG('<circle cx="12" cy="12" r="3.2"/><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/>'),
   rig:     SVG('<path d="M4 18V9M9 18V5M14 18v-7M19 18v-4"/>', 1.8),
+  // Stacked frames with one lifted to the front: a scene preset is a saved arrangement
+  // you switch between, not a camera and not a filter.
+  scenes:  SVG('<rect x="3.2" y="7.2" width="12" height="9" rx="1.8"/>'
+             + '<path d="M7.4 4.6h11a2 2 0 0 1 2 2v8.2"/>'),
   // Broadcast: one source throwing arcs outward. Not a cloud - nothing here leaves the
   // building except the pushes themselves, and a cloud would imply a service in the middle.
   // Chat: a speech bubble with the tail on the left, because everything in this tab
@@ -741,8 +757,9 @@ let META_SEEDED = {title: '', desc: ''};
 
 let CHAT_SEQ = 0, CHAT_TIMER = null;
 
-const TABS = [['t_cams','cams'], ['t_stream','stream'], ['t_chat','chat'],
-              ['t_perform','perform'], ['t_look','look'], ['t_rig','rig']];
+const TABS = [['t_cams','cams'], ['t_scenes','scenes'], ['t_stream','stream'],
+              ['t_chat','chat'], ['t_perform','perform'], ['t_look','look'],
+              ['t_rig','rig']];
 function selectTab(sec, scroll){
   for (const [b,s] of TABS){
     $(b).classList.toggle('sel', s === sec);
@@ -757,6 +774,10 @@ function selectTab(sec, scroll){
   // Camera state is expensive to read, so it loads when you actually open Cams rather
   // than on every poll. Once per visit is enough - taps re-query themselves.
   if (sec === 'cams' && !CAM) loadCamera();
+  // Scene presets used to ride along with the Cams fetch, which is why they loaded at all
+  // - they have their own tab now, so they need their own trigger or the panel opens
+  // empty. Cheap and local, so it refreshes on every visit rather than once.
+  if (sec === 'scenes') loadPresets();
   // Unlike the camera read, this one is cheap and entirely local, so it refreshes on
   // every visit rather than once - a stale broadcast panel is worse than no panel.
   if (sec === 'stream') loadStream();
@@ -926,7 +947,11 @@ function renderMoods(){
   }
 }
 function renderScenes(){
-  const box = $('scenes'); box.innerHTML='';
+  // ⚠️ 'scenebtns', not 'scenes'. This div holds the OBS scene-switch buttons; the id
+  // `scenes` now belongs to the Scene presets TAB. Two elements sharing an id means the
+  // second is unreachable by $(), and the collision was caught by check-dash.py the
+  // moment the tab was added rather than by someone noticing a dead panel later.
+  const box = $('scenebtns'); box.innerHTML='';
   // Only scenes worth switching to live. CAM / ECHO n exist purely to carry filters -
   // listing them would invite switching to a scene that is half a picture.
   for (const sc of SCENES.filter(s => !/^(CAM|ECHO \d+)$/.test(s))){
@@ -1928,6 +1953,19 @@ function renderStream(){
       showReport(r.ok ? 'thumbnail set on YouTube' : 'thumbnail FAILED',
                  r.lines || [r.error || ''], !r.ok);
     });
+    const pv = $('thumbprev');
+    if (pv){
+      if (meta.thumb_exists){
+        // ?v=mtime, because the file is replaced under the same name - without it the
+        // browser shows the old artwork and you sign off on something else.
+        const want = '/thumb?v=' + (meta.thumb_at || 0);
+        if (pv.getAttribute('src') !== want) pv.setAttribute('src', want);
+        pv.hidden = false;
+      } else {
+        pv.hidden = true;
+        pv.removeAttribute('src');
+      }
+    }
     $('thumbnote').textContent = meta.thumb_exists
       ? meta.thumb_name + ' — YouTube only; Facebook has no API for a live thumbnail and '
         + 'Twitch does not use one.'
