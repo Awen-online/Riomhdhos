@@ -790,6 +790,55 @@ def _mtime(path):
         return 0
 
 
+MONITOR_TYPES = {
+    "off":  "OBS_MONITORING_TYPE_NONE",
+    "me":   "OBS_MONITORING_TYPE_MONITOR_ONLY",
+    "both": "OBS_MONITORING_TYPE_MONITOR_AND_OUTPUT",
+}
+MONITOR_BACK = {v: k for k, v in MONITOR_TYPES.items()}
+
+
+def mixer_state():
+    """Every audio-bearing input, with whether it belongs to the scene on air.
+
+    ⚠️ MOST INPUTS ARE NOT AUDIO INPUTS, and asking them costs an exception each. OBS
+    answers GetInputVolume with code 604 "does not support audio" for every camera, image
+    and browser source that has no audio track, so the only way to know which inputs carry
+    sound is to ask and catch - there is no "list audio inputs" request. Hence the bare
+    try/except per input rather than a filter on inputKind, which would need a hardcoded
+    list of kinds and would silently miss any plugin source.
+
+    ⚠️ AUDIO IS GLOBAL, SCENES ARE NOT. An OBS input exists once and is heard whenever a
+    scene containing it is on air; Desktop Audio and Mic/Aux belong to no scene at all.
+    So "the mixer for this scene" is really "the sources this scene can make a sound with,
+    plus the global devices" - and the distinction is shown rather than hidden, because
+    muting something that is not in this scene still affects every scene that has it.
+    """
+    cl = client()
+    prog = cl.get_scene_list().current_program_scene_name
+    try:
+        in_scene = {i["sourceName"] for i in cl.get_scene_item_list(prog).scene_items}
+    except Exception:
+        in_scene = set()
+    rows = []
+    for i in cl.get_input_list().inputs:
+        name = i.get("inputName")
+        try:
+            vol = cl.get_input_volume(name)
+            muted = cl.get_input_mute(name).input_muted
+            mon = cl.get_input_audio_monitor_type(name).monitor_type
+        except Exception:
+            continue                      # no audio track; not a mixer row
+        rows.append({
+            "name": name,
+            "db": round(vol.input_volume_db, 1),
+            "muted": bool(muted),
+            "monitor": MONITOR_BACK.get(mon, "off"),
+            "inScene": name in in_scene,
+        })
+    return {"scene": prog, "inputs": rows}
+
+
 def stream_meta():
     """Title, description and thumbnail path, held server-side.
 
@@ -2677,6 +2726,15 @@ class Handler(BaseHTTPRequestHandler):
                 s["twitch_categories"] = twitch_categories()
                 self._json(s); return
 
+            if p == "/api/mixer":
+                cl = self._obs_or_none()
+                if not cl:
+                    self._json({"error": "OBS not reachable"}, 503); return
+                try:
+                    self._json(mixer_state())
+                except Exception as e:
+                    self._json({"error": "%s: %s" % (type(e).__name__, e)}, 500)
+                return
             if p == "/thumb":
                 # ⚠️ SERVES THE CONFIGURED PATH AND NOTHING ELSE. The filename never comes
                 # from the request, so there is no traversal to defend against - the only
@@ -2847,6 +2905,19 @@ class Handler(BaseHTTPRequestHandler):
                 # transition and no second look - which is the one thing studio mode
                 # exists to prevent. So the panel only ever sends "preview" while studio
                 # mode is on, and "take" is the deliberate separate act.
+                if act == "mute":
+                    nm = body.get("name")
+                    if not nm:
+                        self._json({"error": "name required"}, 400); return
+                    client().set_input_mute(nm, bool(body.get("on")))
+                    self._json({"ok": True}); return
+                if act == "monitor":
+                    nm, kind = body.get("name"), body.get("type")
+                    if not nm or kind not in MONITOR_TYPES:
+                        self._json({"error": "name and type (off|me|both) required"}, 400)
+                        return
+                    client().set_input_audio_monitor_type(nm, MONITOR_TYPES[kind])
+                    self._json({"ok": True}); return
                 if act == "studio":
                     client().set_studio_mode_enabled(bool(body.get("on")))
                     self._json({"ok": True, "studio": bool(body.get("on"))}); return

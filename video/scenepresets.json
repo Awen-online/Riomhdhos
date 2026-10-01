@@ -12,7 +12,7 @@
     "",
     "Edit by hand, or set a look up in OBS and press Capture on the Cams tab."
   ],
-  "enabled": true,
+  "enabled": false,
   "scenes": {
     "BROWSER": {
       "Pixel 8": {

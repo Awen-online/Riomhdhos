@@ -122,6 +122,20 @@
      must never be told apart by a word alone - mid-set this is read at a glance and the
      cost of confusing them is cutting to the wrong camera on air. Red is program, and
      red is used for nothing else on this panel. */
+  .mixrow{border-top:1px solid var(--edge,#2a3634);padding:9px 0}
+  .mixrow:first-child{border-top:none}
+  .mixhdr{display:flex;align-items:baseline;gap:8px;justify-content:space-between}
+  .mixnm{font-size:13px;overflow-wrap:anywhere}
+  .mixdb{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--dim);
+         font-variant-numeric:tabular-nums;white-space:nowrap}
+  .mixctl{display:grid;grid-template-columns:auto 1fr;gap:6px;margin-top:6px}
+  .monset{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}
+  .monset button,.mutebtn{padding:9px 4px;font-size:11px;letter-spacing:.04em;
+    border:1px solid var(--edge,#2a3634);border-radius:5px;background:transparent;
+    color:inherit;cursor:pointer;white-space:nowrap}
+  .monset button.sel{background:var(--fg);border-color:var(--fg);color:#0b0d10}
+  .mutebtn.on{background:var(--bad);border-color:var(--bad);color:#fff}
+  .mixrow.global .mixnm{opacity:.75}
   .scenegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));gap:6px}
   .scenebtn{position:relative;padding:14px 8px;text-align:left;font-size:13px;
             border:1px solid var(--edge,#2a3634);border-radius:6px;background:transparent;
@@ -470,6 +484,20 @@
     <div class="sub" id="takenote">&mdash;</div>
   </div>
 
+  <h2>Audio</h2>
+  <div class="card">
+    <div class="row"><span class="k">Mixer for</span><span class="v" id="v_mixscene">&mdash;</span></div>
+    <div id="mixlist"><span class="sub">&mdash;</span></div>
+    <div class="note">&#9888;&#65039; <b>Audio is global; scenes are not.</b> An OBS source
+      is heard whenever a scene containing it is on air, and Desktop Audio and Mic/Aux
+      belong to no scene at all. Muting something here affects <b>every</b> scene that
+      uses it, not just this one &mdash; the rows below are marked so you can tell which
+      is which.<br><br>
+      <b>off</b> you do not hear it &middot; <b>me</b> you hear it and
+      <b>viewers do not</b> &middot; <b>me + air</b> you both hear it. "me" takes a source
+      off the broadcast, so it is for cueing something up, not for listening along.</div>
+  </div>
+
   <h2>Scene presets</h2>
   <div class="card">
     <div class="row"><span class="k">On scene change</span><span class="v" id="v_sp">&mdash;</span></div>
@@ -806,7 +834,7 @@ function selectTab(sec, scroll){
   // Scene presets used to ride along with the Cams fetch, which is why they loaded at all
   // - they have their own tab now, so they need their own trigger or the panel opens
   // empty. Cheap and local, so it refreshes on every visit rather than once.
-  if (sec === 'scenes') loadPresets();
+  if (sec === 'scenes'){ loadPresets(); loadMixer(); }
   // Unlike the camera read, this one is cheap and entirely local, so it refreshes on
   // every visit rather than once - a stale broadcast panel is worse than no panel.
   if (sec === 'stream') loadStream();
@@ -1593,6 +1621,72 @@ function presetSummary(entry){
 /* The switcher. Deliberately separate from the preset list below it: one is "what is on
    air right now", the other is "what should happen when a scene changes", and they were
    confusing to have in one card. */
+/* ---- mixer ---------------------------------------------------------------------- */
+let MIX = null;
+
+async function loadMixer(){
+  try { MIX = await (await fetch('/api/mixer')).json(); }
+  catch(e){ $('mixlist').innerHTML = '<span class="sub" style="color:var(--bad)">'
+            + 'could not read the mixer</span>'; return; }
+  renderMixer();
+}
+
+async function mixPost(body){
+  try {
+    await post('/api/mixer', body);
+    await loadMixer();
+  } catch(e){ $('err').textContent = e.message; }
+}
+
+function renderMixer(){
+  if (!MIX) return;
+  const box = $('mixlist');
+  if (MIX.error){
+    box.innerHTML = '<span class="sub" style="color:var(--bad)">' + esc(MIX.error) + '</span>';
+    $('v_mixscene').textContent = '\u2014';
+    return;
+  }
+  $('v_mixscene').textContent = MIX.scene || '\u2014';
+  box.innerHTML = '';
+  // Scene sources first: those are the ones this scene can actually make a sound with.
+  const rows = (MIX.inputs || []).slice().sort((a, b) =>
+    (b.inScene - a.inScene) || a.name.localeCompare(b.name));
+  for (const r of rows){
+    const d = document.createElement('div');
+    d.className = 'mixrow' + (r.inScene ? '' : ' global');
+    d.innerHTML =
+      '<div class="mixhdr"><span class="mixnm">' + esc(r.name) + '</span>'
+      + '<span class="mixdb">' + (r.inScene ? '' : 'global \u00b7 ') + r.db.toFixed(1)
+      + ' dB</span></div>';
+    const ctl = document.createElement('div');
+    ctl.className = 'mixctl';
+
+    const mb = document.createElement('button');
+    mb.className = 'mutebtn' + (r.muted ? ' on' : '');
+    mb.textContent = r.muted ? 'muted' : 'mute';
+    mb.onclick = () => mixPost({action:'mute', name: r.name, on: !r.muted});
+    ctl.append(mb);
+
+    const ms = document.createElement('div');
+    ms.className = 'monset';
+    for (const [key, label] of [['off','off'], ['me','me'], ['both','me + air']]){
+      const b = document.createElement('button');
+      b.textContent = label;
+      if (r.monitor === key) b.className = 'sel';
+      /* ⚠️ "me" IS MONITOR_ONLY, WHICH TAKES THE SOURCE OFF THE BROADCAST. It is not a
+         louder version of "me + air" - it mutes the output while you listen. Picking it
+         on a live source silences it for everyone watching, so the three are spelled out
+         rather than offered as a single cycling button where you cannot see where you
+         are about to land. */
+      b.onclick = () => mixPost({action:'monitor', name: r.name, type: key});
+      ms.append(b);
+    }
+    ctl.append(ms);
+    d.append(ctl);
+    box.append(d);
+  }
+}
+
 function renderSwitcher(){
   if (!SP) return;
   const studio = !!SP.studio;
