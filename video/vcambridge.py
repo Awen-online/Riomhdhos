@@ -166,11 +166,23 @@ def adb_devices():
     in it anywhere - so the colon test waved it straight through as a cabled phone and the
     bug it was written to stop walked back in through the other door.
 
-    `adb devices -l` prints a `usb:1-4.3` field for a device that is actually on a cable
-    and omits it for everything else, which is the property being asked about rather than
-    a proxy for it. If adb ever stops emitting the field this reports "no USB", and the
-    bridge stays on WiFi - the failure direction that costs nothing, since WiFi is what it
-    would have used anyway.
+    ⚠️ AND THE `usb:` FIELD ALONE IS NOT ENOUGH, BECAUSE THIS adb DOES NOT PRINT IT.
+    The obvious test is adb's own `usb:1-4.3` column, which is the property being asked
+    about rather than a proxy for it. Platform-tools here emits only
+    `product: model: device: transport_id:` for a cabled phone - no usb: anywhere - so
+    that test called a cabled Pixel 8 "not USB" and the whole USB path went quietly dead.
+    It failed safe, which is why nothing broke and nothing said so.
+
+    So: trust the field when it is there, and otherwise fall back to the SHAPE of the
+    serial, which distinguishes all three ways a device can be attached:
+
+        38021FDJH004KS                                    a cable      <- hardware serial
+        192.168.1.50:38533                                adb connect  <- host:port
+        adb-1A061FDF600KVG-gdxOWk._adb-tls-connect._tcp   adb's mDNS   <- service name
+
+    A hardware serial carries neither a colon nor "._tcp"; the other two always carry one
+    or the other. Both exclusions are needed - an earlier version tested only for a colon
+    and the mDNS form, which has none, walked straight through it.
     """
     try:
         r = subprocess.run([ADB, "devices", "-l"], capture_output=True, text=True,
@@ -181,8 +193,10 @@ def adb_devices():
     for line in (r.stdout or "").splitlines()[1:]:
         parts = line.split()
         if len(parts) >= 2 and not parts[0].startswith("emulator-"):
-            on_usb = any(p.startswith("usb:") for p in parts[2:])
-            out.append((parts[0], parts[1], on_usb))
+            serial = parts[0]
+            on_usb = (any(p.startswith("usb:") for p in parts[2:])
+                      or (":" not in serial and "._tcp" not in serial))
+            out.append((serial, parts[1], on_usb))
     return out
 
 
