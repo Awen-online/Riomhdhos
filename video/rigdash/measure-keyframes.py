@@ -22,7 +22,12 @@ cmd = [
     "-select_streams", "v:0",
     "-show_entries", "frame=pts_time,key_frame",
     "-of", "json",
-    "-read_intervals", "%%+{}".format(SECONDS),
+    # ⚠️ ONE PERCENT SIGN, NOT TWO. ffprobe's syntax is "%+12" meaning "from here, plus
+    # 12 seconds". This read "%%+12" and ffprobe rejected every invocation with
+    # "Invalid interval end/duration specification" - so this tool had never once run.
+    # The doubled sign is what you need when a percent passes through a shell or a
+    # format string; subprocess passes argv straight to the process, so it needs neither.
+    "-read_intervals", "%+{}".format(SECONDS),
     URL,
 ]
 

@@ -1149,6 +1149,7 @@ function renderDevices(){
     return '<div class="devrow">'
       + head(mk, d.model || d.serial, 'var(--ok)', role)
       + '<div class="facts">'
+      + fact(DEV_ICON.wifi, shotLine(d.model))
       + fact(DEV_ICON.chip, 'Android ' + esc(d.android || '?') + ' \u00b7 GrapheneOS '
                           + esc(d.build || '?') + ' \u00b7 patch ' + esc(d.patch || '?'))
       + fact(DEV_ICON.shield, vb)
@@ -1156,6 +1157,34 @@ function renderDevices(){
       + fact(DEV_ICON.battery, batt)
       + '</div></div>';
   }).join('');
+}
+
+/* ⚠️ THE MEASURED RATE, NOT THE CONFIGURED ONE, and the distinction is the whole point.
+   /api/state reports fps:30 whether the camera is delivering 30 or 13 - it is the number
+   handed to the encoder at bind time, not an observation - so a panel showing it read a
+   confident "30 fps" through the entire week both phones were running at half that. The
+   figure here is dash.py's nalsOut delta between polls: emitted slices over elapsed time.
+
+   Colour-coded because this is the check most likely to catch a regression: both cameras
+   silently halved once already, and reading it meant tailing a bridge log. Below 20 is
+   the signature of the auto-exposure bug returning - a phone that lost the AE fix sits
+   near 15. */
+function shotLine(label){
+  const rc = (CAM && CAM.rigcams && CAM.rigcams[label]) || null;
+  const res = (rc && rc.resolution) ? rc.resolution : '?';
+  const want = rc ? ((rc.encoder && rc.encoder.fps) || rc.fps) : null;
+  const got = (CAM && CAM.rigcamFps) ? CAM.rigcamFps[label] : null;
+  if (rc && rc.dormant) return esc(res) + ' · camera released — wake it to stream';
+  if (got == null){
+    // Two polls are needed before this can say anything, and saying nothing is correct
+    // until then. A fabricated first number is worse than a blank.
+    return esc(res) + ' · ' + (want ? want + ' fps target · ' : '') + 'measuring…';
+  }
+  const col = got >= 27 ? 'var(--ok)' : (got >= 20 ? 'var(--accent)' : 'var(--bad)');
+  const note = got < 20 ? ' — check aeFpsRange on this phone'
+             : (want && got < want - 3 ? ' — under the ' + want + ' fps target' : '');
+  return esc(res) + ' · <span style="color:' + col + '">' + got.toFixed(1)
+       + ' fps</span>' + note;
 }
 
 function rigCard(label, r, idx){

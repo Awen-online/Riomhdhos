@@ -291,6 +291,74 @@ def pick_transport(serial, url, api, port):
     return url, api, "WiFi (no USB)", None
 
 
+PREFS_FILE = os.path.join(os.path.expanduser("~"), ".riastrad-prefs.json")
+
+
+def pref_ev(host):
+    """Exposure compensation from the rig's prefs file: per-phone first, then global.
+
+    ⚠️ A FILE RATHER THAN A TASK ARGUMENT, AND THAT WAS NOT THE FIRST CHOICE. The obvious
+    home was `--ev` in the scheduled task, beside --url and --backend. Both vcam tasks
+    were registered by an elevated process, so Set-ScheduledTask returns "Access is
+    denied" to this account - the tasks can be started and stopped but not edited. The
+    prefs file the dashboard already writes needs no elevation to change a grade, and lets
+    the panel offer it later without either side learning about scheduled tasks.
+
+    Same file as the record arm, so there is one place to look for what this rig is
+    supposed to be doing rather than one per feature.
+
+    Keyed by phone so the two can differ deliberately; the global covers the normal case,
+    where they should match - they are matched by construction and a cut between
+    mismatched exposures reads as a fault rather than a mood.
+
+      {"camera_ev": -8}                      both phones
+      {"camera_ev_192.168.1.168": -4}        that one only, overriding the global
+    """
+    try:
+        with open(PREFS_FILE, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except Exception:
+        return None                    # no file is a legitimate resting state
+    for key in ("camera_ev_" + (host or ""), "camera_ev"):
+        if key in d:
+            try:
+                return int(d[key])
+            except (TypeError, ValueError):
+                return None            # a corrupt value must not take the picture down
+    return None
+
+
+def apply_look(api, ev):
+    """Push the exposure compensation the rig is supposed to be running.
+
+    ⚠️ REAPPLIED ON EVERY RECONNECT, BECAUSE RIGCAM'S COPY IS RUNTIME STATE. `ev` lives in
+    a field on CameraEngine and nowhere else - it is not persisted - so a phone reboot, an
+    app crash, a camera rebind, or DeviceAsWebcam evicting RigCam all silently return the
+    picture to ev 0. Set once by hand it will be correct until the first thing that goes
+    wrong, which is precisely when nobody is looking at the grade.
+
+    This is the same reasoning as no_webcam_handover() a few lines down: the bridge is the
+    only thing here that notices a phone came back, so it is the only honest place to put
+    anything that has to still be true afterwards. Initialising is not the same as healing.
+
+    A negative ev darkens by making auto-exposure buy brightness with gain rather than
+    time. Deliberate: AE keeps adapting, so the look holds as the room light moves through
+    a set, where a locked manual exposure would be wrong the moment someone hits a lamp.
+    """
+    if ev is None:
+        return "ev not managed"
+    base = re.sub(r"/api/state/?$", "", api)
+    try:
+        with urllib.request.urlopen("%s/api/set?ev=%d" % (base, int(ev)), timeout=8) as r:
+            body = r.read(200).decode("utf-8", "replace")
+        return "ev=%d -> %s" % (ev, body.strip())
+    except Exception as e:
+        # Never fatal. A grade that could not be set is worth saying out loud, but it is
+        # not a reason to refuse to show a picture.
+        return "ev=%d FAILED (%s) - picture continues at whatever the phone had" % (
+            ev, type(e).__name__)
+
+
 def unlocked_functions(dumpsys_text):
     """Parse `screen_unlocked_functions` out of `dumpsys usb`. Pure, so it can be tested
     without a phone attached - which matters, see the warning in no_webcam_handover."""
@@ -379,6 +447,10 @@ def main():
                     help="capture source to keep in step; found by device if omitted")
     ap.add_argument("--adb-serial", default=None,
                     help="phone serial; re-establishes the adb forward each reconnect")
+    ap.add_argument("--ev", type=int, default=None, metavar="N",
+                    help="exposure compensation index to hold on this phone, reapplied on "
+                         "every reconnect because RigCam does not persist it; negative is "
+                         "darker (index units, roughly -8 for a moody grade)")
     ap.add_argument("--usb-port", type=int, default=8190, metavar="PORT",
                     help="local port for the adb forward when the phone is on USB; the "
                          "stream and the state API share one tunnel")
@@ -506,6 +578,11 @@ def main():
             # in - that would take RigCam's HTTP server down with it, and the dashboard's
             # whole Phones panel reads that server.
             print(f"    usb mode:    {no_webcam_handover(usb_serial)}", flush=True)
+        # Explicit flag wins; otherwise the prefs file, re-read every pass so a change
+        # takes effect on the next reconnect without restarting the bridge.
+        ev = args.ev if args.ev is not None else pref_ev(host_of(args.url))
+        if ev is not None:
+            print(f"    look:        {apply_look(api, ev)}", flush=True)
         size = fixed or probe_size(api)
         if not size:
             # Covers both cases honestly: the phone may be unreachable, or reachable and

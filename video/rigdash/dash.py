@@ -319,6 +319,41 @@ def rigcam_call(path, timeout=2.5, base=None):
         return {"offline": True, "error": type(e).__name__}
 
 
+_fps_prev = {}                 # label -> (nalsOut, monotonic) from the previous poll
+
+
+def rigcams_fps(states):
+    """Measured frames per second per phone, from the encoder's own output counter.
+
+    ⚠️ THE `fps` FIELD IN /api/state IS THE TARGET, NOT THE RATE. It reads 30 whether the
+    camera is delivering 30 or 13, because it is the number handed to the H264 encoder at
+    bind time - so a panel showing it would have read a confident "30 fps" through the
+    entire week both cameras were running at half that. `nalsOut` is a monotonic count of
+    emitted slices, so the delta between two polls over the elapsed time is the real rate.
+
+    Needs two polls to say anything, and says nothing rather than guessing from one. Uses
+    a monotonic clock because this subtracts two timestamps, and the wall clock can step.
+    """
+    out = {}
+    now = time.monotonic()
+    for label, st in (states or {}).items():
+        enc = (st or {}).get("encoder") or {}
+        n = enc.get("nalsOut")
+        if not isinstance(n, int) or (st or {}).get("offline"):
+            _fps_prev.pop(label, None)
+            out[label] = None
+            continue
+        prev = _fps_prev.get(label)
+        _fps_prev[label] = (n, now)
+        # A restarted RigCam resets the counter, so a negative delta means "new process",
+        # not "negative frame rate".
+        if not prev or now - prev[1] < 2.0 or n < prev[0]:
+            out[label] = None
+            continue
+        out[label] = round((n - prev[0]) / (now - prev[1]), 1)
+    return out
+
+
 def rigcams_state():
     """Every phone at once. Sequential is fine: each call is a 2.5 s ceiling on localhost or
     the LAN, and this endpoint is already on-demand rather than in the 1 Hz poll."""
@@ -2591,11 +2626,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(s); return
 
             if p == "/api/camera":
+                # One read of every phone, shared by the state block and the fps delta, so
+                # the two cannot disagree about what they were looking at.
+                _rc = rigcams_state()
                 # On demand only. See the note by RIGCAM above.
                 uvc = uvc_call("--state")
                 self._json({
                     "rigcam": rigcam_call("/api/state"),
-                    "rigcams": rigcams_state(),
+                    "rigcams": _rc,
+                    "rigcamFps": rigcams_fps(_rc),
                     # Where each phone actually is. The WiFi phone is not on adb, so this is
                     # the only address the panel can show for it - and 'no address at all'
                     # reads as 'we lost it' rather than 'it is deliberately over HTTP'.
