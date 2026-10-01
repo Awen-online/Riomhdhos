@@ -98,6 +98,19 @@
      These marks are scanned instead, and they carry a second fact the words could not:
      whether that platform is actually switched on right now. A description typed for
      YouTube when YouTube is off is wasted work you find out about afterwards. */
+  /* One chat line: mark, clock, name, text. A grid rather than inline spans so the
+     names and messages line up down the column instead of stepping in and out with the
+     length of whoever spoke last - during a set this is read in glances, and a ragged
+     left edge costs more than it sounds like it should. The text cell wraps; the first
+     three do not. */
+  .cmsg{display:grid;grid-template-columns:15px auto auto 1fr;gap:0 7px;
+        align-items:baseline;padding:2px 0}
+  .cmsg .cmark{width:15px;height:15px;align-self:center}
+  .cmsg .cmark svg{display:block;width:15px;height:15px}
+  .cmsg .ctime{font-family:ui-monospace,Consolas,monospace;font-size:10px;
+               color:var(--dim);font-variant-numeric:tabular-nums}
+  .cmsg .cwho{font-weight:600}
+  .cmsg .ctext{min-width:0;overflow-wrap:anywhere}
   .pchips{display:inline-flex;gap:5px;align-items:center;vertical-align:-3px}
   .pchip{width:15px;height:15px;display:block;opacity:.25;filter:grayscale(1)}
   .pchip.on{opacity:1;filter:none}
@@ -2590,9 +2603,31 @@ function appendChat(msgs){
   const atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   for (const m of msgs){
     const d = document.createElement('div');
-    d.className = 'sub';
-    d.innerHTML = '<b style="color:' + (m.color || 'var(--fg)') + '">' + esc(m.user)
-                + '</b> ' + esc(m.text);
+    d.className = 'sub cmsg';
+    /* ⚠️ THE PLATFORM MARK IS NOT DECORATION. Several channels land in one column, and
+       "who said this" is half the meaning of a message you are reading mid-song - a
+       question in Twitch chat and the same words in YouTube chat are different events
+       with different people waiting. The source used to be nowhere on the line at all.
+       Brand colour, because that is what makes it readable at a glance rather than
+       something you stop and decode. */
+    const mk = PLAT_MARK[m.src];
+    const mark = mk ? '<span class="cmark" title="' + esc(m.src) + '">'
+                      + PLAT_SVG(mk[1], mk[0]) + '</span>'
+                    : '<span class="cmark"></span>';
+    /* Local wall-clock, seconds included. `t` is a unix float from the server, so this is
+       when the message ARRIVED at the rig, not when the platform says it was sent - close
+       enough to be useful and honest about which clock it came from. Seconds matter
+       because the useful question afterwards is "what was I playing when they said that". */
+    let clock = '';
+    if (m.t){
+      const dt = new Date(m.t * 1000);
+      clock = isNaN(dt) ? '' : dt.toTimeString().slice(0, 8);
+    }
+    d.innerHTML = mark
+      + '<span class="ctime">' + clock + '</span>'
+      + '<span class="cwho" style="color:' + (m.color || 'var(--fg)') + '">'
+      + esc(m.user) + '</span>'
+      + '<span class="ctext">' + esc(m.text) + '</span>';
     box.append(d);
   }
   while (box.children.length > 300) box.firstChild.remove();
