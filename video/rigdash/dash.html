@@ -1061,6 +1061,20 @@ function renderDevices(){
         // pair it once and devices_snapshot() stops emitting the absent placeholder for it,
         // so this whole branch simply stops being reached. Until then, show every field
         // RigCam DOES give and name the remedy rather than leaving a gap.
+        //
+        // CONFIRMED 2026-10-01: pairing the Pixel 8 over wireless adb did exactly that -
+        // it now reports as serial 192.168.1.168:43141 with Android version, 91% battery,
+        // 35.4 C and cycle count, and never reaches this branch. The Pixel 6 still does.
+        //
+        // ⚠️ THE REMEDY LINE IS ONE SHORT PHRASE ON PURPOSE. It used to be four lines of
+        // prose explaining the whole mechanism, sitting in a row whose siblings are things
+        // like "91% - 35.4 C". A fact row is scanned, not read, and during a set it is
+        // scanned in a hurry; an essay in that column is noise however true it is. The
+        // explanation belongs here, where whoever needs it is already reading. Keeping the
+        // row at all is deliberate though - deleting it would make a phone with no battery
+        // reading look the same as one reporting a healthy battery, which is the failure
+        // the placeholder exists to prevent. `adbwifi.py` keeps the pairing usable across
+        // IP and port changes, so once a phone is paired this should stay gone.
         const enc = rc.encoder || {}, zm = rc.zoom || {}, mn = rc.manual || {};
         const url = (CAM && CAM.rigcamUrls && CAM.rigcamUrls[d.model]) || '';
         const fps = enc.fps || rc.fps;
@@ -1082,10 +1096,7 @@ function renderDevices(){
           + (url ? fact(DEV_ICON.net, esc(url.replace(/^https?:\/\//, ''))) : '')
           + (lens ? fact(DEV_ICON.chip, esc(lens)) : '')
           + fact(DEV_ICON.shield, esc(look))
-          + fact(DEV_ICON.battery, 'no battery or OS yet \u2014 RigCam serves only /api/state. '
-                                 + 'Turn on Wireless debugging on this phone and pair it '
-                                 + 'once; adb over TCP fills this row in exactly like the '
-                                 + 'wired one, with no change here.')
+          + fact(DEV_ICON.battery, 'pair over Wireless debugging for battery and OS')
           + '</div></div>';
       }
       return '<div class="devrow">'

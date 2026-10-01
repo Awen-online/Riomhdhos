@@ -182,6 +182,7 @@ def adb_devices():
 def device_info(serial):
     """Identity + health for one phone, in one shell round trip."""
     script = (
+        'echo hwserial=$(getprop ro.serialno);'
         'echo model=$(getprop ro.product.model);'
         'echo device=$(getprop ro.product.device);'
         'echo android=$(getprop ro.build.version.release);'
@@ -255,11 +256,47 @@ def device_info(serial):
     return d
 
 
+def _addr_rank(serial):
+    """Lower is better. A plain hardware serial beats host:port beats the mDNS name."""
+    s = serial or ""
+    if "._tcp" in s:
+        return 2                          # adb-<SERIAL>-<tag>._adb-tls-connect._tcp
+    if ":" in s:
+        return 1                          # 192.168.1.50:38533
+    return 0                              # a cable
+
+
+def _dedupe_phones(rows):
+    """One physical handset, one row.
+
+    ⚠️ ONE PHONE CAN APPEAR TWICE IN `adb devices`, which is not obvious until it does.
+    Once a phone is paired for wireless debugging, adb's own mDNS auto-connect attaches it
+    under its service name AT THE SAME TIME as an explicit `adb connect host:port` holds
+    it - two transport ids, two entries, same handset. The Phones card then listed the
+    Pixel 6 twice with identical battery readings, which reads as a second phone rather
+    than a second route to the first one.
+
+    Keyed on ro.serialno, which is the handset itself and is the same down every route.
+    Falls back to the adb address when the prop could not be read, so a phone that fails
+    the getprop still gets its row rather than being silently merged into another.
+    """
+    best = {}
+    order = []
+    for r in rows:
+        key = r.get("hwserial") or ("addr:" + str(r.get("serial")))
+        if key not in best:
+            best[key] = r
+            order.append(key)
+        elif _addr_rank(r.get("serial")) < _addr_rank(best[key].get("serial")):
+            best[key] = r
+    return [best[k] for k in order]
+
+
 def devices_snapshot():
     now = time.time()
     if now - _dev_cache["at"] < _DEV_TTL and _dev_cache["data"]:
         return _dev_cache["data"]
-    data = [device_info(x) for x in adb_devices()]
+    data = _dedupe_phones([device_info(x) for x in adb_devices()])
     # WARNING: A PHONE THAT IS DOWN MUST STILL APPEAR. This list used to be exactly what adb
     # could see, so a configured phone that dropped off USB simply VANISHED from the Phones
     # card - which reads as "never set up" rather than "this one is broken", and sends you

@@ -156,9 +156,24 @@ _SERIAL_TTL = 30.0
 
 
 def adb_devices():
-    """[(serial, state)] from `adb devices`. Never raises; [] when adb is absent."""
+    """[(serial, state, on_usb)] from `adb devices -l`. Never raises; [] without adb.
+
+    ⚠️ `-l`, AND on_usb COMES FROM THE `usb:` FIELD, not from the shape of the serial.
+    The first attempt at this told a cabled phone from a wireless one by looking for a
+    colon, because wireless debugging keys a device as "host:port". That is true but not
+    sufficient: once a phone is paired, adb's own mDNS auto-connect adds it a SECOND time
+    under its service name, `adb-<SERIAL>-<tag>._adb-tls-connect._tcp`, which has no colon
+    in it anywhere - so the colon test waved it straight through as a cabled phone and the
+    bug it was written to stop walked back in through the other door.
+
+    `adb devices -l` prints a `usb:1-4.3` field for a device that is actually on a cable
+    and omits it for everything else, which is the property being asked about rather than
+    a proxy for it. If adb ever stops emitting the field this reports "no USB", and the
+    bridge stays on WiFi - the failure direction that costs nothing, since WiFi is what it
+    would have used anyway.
+    """
     try:
-        r = subprocess.run([ADB, "devices"], capture_output=True, text=True,
+        r = subprocess.run([ADB, "devices", "-l"], capture_output=True, text=True,
                            timeout=10, creationflags=NO_WINDOW)
     except Exception:
         return []
@@ -166,7 +181,8 @@ def adb_devices():
     for line in (r.stdout or "").splitlines()[1:]:
         parts = line.split()
         if len(parts) >= 2 and not parts[0].startswith("emulator-"):
-            out.append((parts[0], parts[1]))
+            on_usb = any(p.startswith("usb:") for p in parts[2:])
+            out.append((parts[0], parts[1], on_usb))
     return out
 
 
@@ -203,19 +219,17 @@ def find_usb_serial(host):
     if hit and now - hit[1] < _SERIAL_TTL:
         return hit[0]
     found = None
-    for serial, state in adb_devices():
+    for serial, state, on_usb in adb_devices():
         if state != "device":
             continue                      # unauthorized/offline: cannot be asked
-        # ⚠️ A WIRELESS-DEBUGGING DEVICE MATCHES THIS TEST PERFECTLY AND MUST NOT WIN.
-        # Android 11+ wireless debugging makes the phone appear in `adb devices` with a
-        # serial of "host:port" - and since the match below is "does this phone's own
-        # wlan0 address equal the one we already stream from", a phone attached over WiFi
-        # answers yes, every time, with no cable in it at all. The bridge would then set
-        # up an adb forward that works, report "USB", and tunnel 16 Mbps of video over
-        # the same WiFi it was already using plus an encryption layer - slower than the
-        # plain HTTP it replaced, while the log insisted the cable was in.
-        # A hardware serial never contains a colon; "host:port" always does.
-        if ":" in serial:
+        # ⚠️ A PHONE ON WIFI MATCHES THE TEST BELOW PERFECTLY AND MUST NOT WIN. The match
+        # is "does this phone's own wlan0 address equal the one we already stream from",
+        # and a phone attached over wireless debugging answers yes every time, with no
+        # cable in it at all. The bridge would then set up an adb forward that genuinely
+        # works, report "USB", and tunnel 16 Mbps over the same WiFi it was already using
+        # plus a TLS layer - slower than the plain HTTP it replaced, while the log insisted
+        # the cable was in. `on_usb` is adb's own `usb:` field; see adb_devices().
+        if not on_usb:
             continue
         if phone_wifi_ip(serial) == host:
             found = serial
@@ -254,7 +268,7 @@ def pick_transport(serial, url, api, port):
         # it switches" true without anyone editing a scheduled task.
         serial = find_usb_serial(host_of(url))
         if not serial:
-            pending = [s for s, st in adb_devices() if st == "unauthorized"]
+            pending = [s for s, st, _ in adb_devices() if st == "unauthorized"]
             if pending:
                 # Deliberately hedged. An unauthorized device cannot be asked for its
                 # IP, so we genuinely do not know whether it is this bridge's phone -
