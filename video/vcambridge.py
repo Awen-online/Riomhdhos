@@ -206,6 +206,17 @@ def find_usb_serial(host):
     for serial, state in adb_devices():
         if state != "device":
             continue                      # unauthorized/offline: cannot be asked
+        # ⚠️ A WIRELESS-DEBUGGING DEVICE MATCHES THIS TEST PERFECTLY AND MUST NOT WIN.
+        # Android 11+ wireless debugging makes the phone appear in `adb devices` with a
+        # serial of "host:port" - and since the match below is "does this phone's own
+        # wlan0 address equal the one we already stream from", a phone attached over WiFi
+        # answers yes, every time, with no cable in it at all. The bridge would then set
+        # up an adb forward that works, report "USB", and tunnel 16 Mbps of video over
+        # the same WiFi it was already using plus an encryption layer - slower than the
+        # plain HTTP it replaced, while the log insisted the cable was in.
+        # A hardware serial never contains a colon; "host:port" always does.
+        if ":" in serial:
+            continue
         if phone_wifi_ip(serial) == host:
             found = serial
             break
