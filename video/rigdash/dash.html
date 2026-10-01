@@ -2087,11 +2087,17 @@ async function goLive(force){
 
 let STREAM_AT = 0;
 async function loadStream(){
+  /* ⚠️ THE FETCH AND THE RENDER GET SEPARATE CATCHES, because one of them lies about
+     the other. Both used to sit in the try below, whose job is to say "the answer never
+     arrived" - so when renderCategories threw a ReferenceError on a response that had
+     arrived perfectly, the panel announced "Could not reach Riastrad itself" and gave an
+     age for data that was in fact one second old. It did that on EVERY poll for as long
+     as the category list was non-empty, and it cost an hour of looking at the network
+     before anyone looked at the stack. A failure to draw is not a failure to fetch, and
+     the two must never produce the same message. */
   try {
     STREAM = await (await fetch('/api/stream')).json();
     STREAM_AT = Date.now();
-    renderStream();
-    renderCategories(STREAM && STREAM.twitch_categories);
   } catch(e){
     /* ⚠️ A FAILED FETCH MUST LOOK LIKE A FAILED FETCH. Leaving the last good numbers on
        screen makes a dead dashboard look like a live one, and that is how a healthy rig
@@ -2104,6 +2110,18 @@ async function loadStream(){
       '<div class="sub brwhy" style="color:var(--bad)">Could not reach Riastrad itself'
       + (age === null ? '.' : ' — everything below is ' + age + 's old.')
       + ' The rig may be fine; this only means the panel did not get an answer.</div>';
+    return;
+  }
+  // Drawing, with its own net. A throw here is a bug in this file, so say that rather
+  // than blaming the connection - and keep going, so one broken panel does not take the
+  // rest of the tab down with it.
+  try { renderStream(); } catch(e){ console.error('renderStream failed:', e); }
+  try { renderCategories(STREAM && STREAM.twitch_categories); }
+  catch(e){
+    console.error('renderCategories failed:', e);
+    const n = $('v_catnote');
+    if (n){ n.textContent = 'category list failed to draw: ' + e.message;
+            n.style.color = 'var(--bad)'; }
   }
 }
 
@@ -2178,7 +2196,7 @@ function renderCategories(info){
   dl.innerHTML = names.map(n => '<option value="' + esc(n) + '"></option>').join('');
   note.style.color = 'var(--dim)';
   if (info && info.why)      note.textContent = info.why;
-  else if (names.length)     note.textContent = catNote(c);
+  else if (names.length)     note.textContent = catNote(info);
   else                       note.textContent = '';
 }
 
