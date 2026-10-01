@@ -102,9 +102,16 @@
   .pchip{width:15px;height:15px;display:block;opacity:.25;filter:grayscale(1)}
   .pchip.on{opacity:1;filter:none}
   .chanwarn{color:var(--accent)}
-  /* Dimmed, never disabled. Locking the input would stop you preparing a title before
-     switching the channel on, which is exactly the order you actually work in. */
-  input.offchan{opacity:.5}
+  /* ⚠️ GENUINELY DISABLED, NOT JUST DIMMED. The first version only faded these, on the
+     reasoning that you might want to write a description before switching YouTube on.
+     Ian's call was the other way, and he is right about his own rig: a field you can type
+     into is a field that promises something, and this one would be promising to carry
+     text to a channel that is off. Dimming says "look out"; disabling says "not tonight",
+     and only one of those survives being glanced at mid-set.
+     It re-enables the moment the channel comes on - renderChannelChips runs on every
+     poll, so switching YouTube on makes the description editable within the second. */
+  input:disabled{opacity:.4;cursor:not-allowed}
+  .g2 button:disabled,.g3 button:disabled{opacity:.4;cursor:not-allowed}
   .k{color:var(--dim);font-size:13px}
   .v{font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;font-size:13px}
   input[type=range]{width:100%;height:36px;accent-color:var(--accent);margin:0}
@@ -1832,7 +1839,6 @@ function renderStream(){
      authoritative.
      Overwrite only a field he has not touched: still equal to what we last seeded, and
      not currently focused. Clobbering half-typed text is help nobody asks for twice. */
-  renderChannelChips(s.platforms);
   const meta = s.meta || {};
   for (const [id, key] of [['s_title','title'], ['s_desc','desc']]){
     const el = $(id);
@@ -1914,6 +1920,8 @@ function renderStream(){
     tn.style.color = signed.length ? 'var(--dim)' : 'var(--accent)';
   }
   renderPrivacy();
+  // Last, deliberately: it disables controls in groups that the lines above rebuild.
+  renderChannelChips(s.platforms);
   const bb = $('bcastbtns'); bb.innerHTML = '';
   if (!obs.active){
     camBtn(bb, 'Re-check destinations', CAM_ICON.tight, false, async () => {
@@ -2006,14 +2014,20 @@ function renderChannelChips(platforms){
     const warn = $('pw_' + field);
     if (warn) warn.innerHTML = none
       ? ' <span class="chanwarn">no channel on</span>' : '';
-    for (const id of ['s_' + field])
-      if ($(id)) $(id).classList.toggle('offchan', none);
+    const input = $('s_' + field);
+    if (input) input.disabled = none;
   }
-  // The two that are controls rather than text inputs dim their whole group instead.
+  /* The two that are button groups rather than text inputs disable every button in the
+     group. ⚠️ THIS HAS TO RUN AFTER THEY ARE BUILT. Both groups are rebuilt from scratch
+     on each poll - thumbbtns clears its innerHTML, renderPrivacy() re-renders - so a
+     disable applied earlier in loadStream is discarded a few lines later, silently, and
+     the buttons come back live. Hence the call site at the end of loadStream rather than
+     beside the other field rendering. */
   for (const [field, boxId] of [['priv','privbtns'], ['thumb','thumbbtns']]){
     const box = $(boxId);
-    if (box) box.style.opacity =
-      FIELD_PLATFORMS[field].some(n => on.has(n)) ? '' : '.5';
+    if (!box) continue;
+    const off = !FIELD_PLATFORMS[field].some(n => on.has(n));
+    for (const b of box.querySelectorAll('button')) b.disabled = off;
   }
 }
 
