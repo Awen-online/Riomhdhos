@@ -346,6 +346,10 @@
     <div class="row"><span class="k">YouTube privacy</span>
       <span class="v sub" id="v_privnote">&mdash;</span></div>
     <div class="g3" id="privbtns"></div>
+    <div class="row"><span class="k">Thumbnail</span>
+      <span class="v sub">YouTube only</span></div>
+    <div class="g2" id="thumbbtns"></div>
+    <div class="sub" id="thumbnote">&mdash;</div>
     <div id="preflight"></div>
     <div class="rec">
       <button id="recbtn" class="recbtn cold"><span class="glyph"></span></button>
@@ -647,6 +651,13 @@ const TAB_ICON = {
    chatPoll(), about eighty thousand characters before the old declaration site - so
    restoring onto the Chat tab threw, the catch swallowed it, and the panel rendered
    empty with no error anywhere. Keep these above their first possible caller. */
+/* ⚠️ UP HERE FOR THE SAME REASON AS CHAT_SEQ, and it is the same bug if you move it.
+   The tab-restore below calls selectTab(), which calls loadStream(), which reads this -
+   so a declaration down beside the other stream state would throw a temporal-dead-zone
+   ReferenceError for anyone whose remembered tab was Stream. Records what the page last
+   put IN the two fields, so a server value can be told apart from something he typed. */
+let META_SEEDED = {title: '', desc: ''};
+
 let CHAT_SEQ = 0, CHAT_TIMER = null;
 
 const TABS = [['t_cams','cams'], ['t_stream','stream'], ['t_chat','chat'],
@@ -1759,6 +1770,42 @@ function renderStream(){
      it says what WILL happen. Whether it IS happening is a separate fact and gets its
      own line, because "armed" and "recording" being the same indicator is how you end up
      with a set that was never saved. */
+  /* ⚠️ TITLE AND DESCRIPTION ARE SERVER-SIDE NOW, NOT localStorage. This panel gets
+     driven from a phone as often as from this desk, and localStorage is per-browser - so
+     a title typed here was simply not there on the phone, each device kept its own stale
+     text, and the only way to know which one you were looking at was to remember. A
+     default that differs by device is worse than no default, because it still looks
+     authoritative.
+     Overwrite only a field he has not touched: still equal to what we last seeded, and
+     not currently focused. Clobbering half-typed text is help nobody asks for twice. */
+  const meta = s.meta || {};
+  for (const [id, key] of [['s_title','title'], ['s_desc','desc']]){
+    const el = $(id);
+    if (!el || document.activeElement === el) continue;
+    if (el.value !== META_SEEDED[key]) continue;
+    if (!meta[key] || meta[key] === el.value) continue;
+    el.value = meta[key];
+    META_SEEDED[key] = meta[key];
+    if (id === 's_title') titleLen();
+  }
+  /* ⚠️ YOUTUBE ONLY, AND THE ROW HAS TO SAY SO. Facebook exposes no API for a live
+     video's thumbnail at all and Twitch does not use one, so a bare "Set thumbnail"
+     button would imply it reached three platforms when it reaches one. */
+  const tbx = $('thumbbtns');
+  if (tbx){
+    tbx.innerHTML = '';
+    camBtn(tbx, 'Set YouTube thumbnail', CAM_ICON.one, false, async () => {
+      showReport('uploading thumbnail…', []);
+      const r = await post('/api/stream', {action:'thumbnail'});
+      showReport(r.ok ? 'thumbnail set on YouTube' : 'thumbnail FAILED',
+                 r.lines || [r.error || ''], !r.ok);
+    });
+    $('thumbnote').textContent = meta.thumb_exists
+      ? meta.thumb_name + ' — YouTube only; Facebook has no API for a live thumbnail and '
+        + 'Twitch does not use one.'
+      : 'no image found at ' + (meta.thumb || '(unset)');
+  }
+
   const rec = s.record || {};
   const rb2 = $('recbtns'); rb2.innerHTML = '';
   camBtn(rb2, 'Record with stream', CAM_ICON.one, !!rec.armed, async () => {
@@ -1877,6 +1924,10 @@ async function goLive(force){
   // No title is a legitimate choice, not an error - it is the whole no-OAuth path. Skip
   // the platform calls entirely rather than failing on them.
   if (!title) force = true;
+  // The server is the real home now, so it learns the value on the way past. localStorage
+  // stays as a same-browser fallback for filling the field instantly on the next load,
+  // before the first poll has come back.
+  post('/api/stream', {action:'set_meta', title: title, desc: $('s_desc').value.trim()});
   try { localStorage.setItem('riastrad.title', title);
         localStorage.setItem('riastrad.desc', $('s_desc').value.trim());
         localStorage.setItem('riastrad.cat',  $('s_cat').value.trim());
@@ -1925,14 +1976,16 @@ async function loadStream(){
 
 // Restore what was typed last time - a dash.py restart mid-setup should not cost the
 // title - and keep the character count honest against Twitch's 140 limit.
-const DEFAULT_TITLE = 'Test title';
-const DEFAULT_DESC  = 'Test description';
+// Fill instantly from this browser's last value so the fields are not blank for the
+// second before the first poll lands - then the server's copy takes over in loadStream().
+// ⚠️ THE OLD 'Test title' DEFAULT IS DELIBERATELY GONE. It outlived every real stream and
+// sat in the field looking like a decision somebody had made; an empty field at least
+// tells the truth about what the platforms are going to receive.
 try {
-  // Remembered value wins; the default is only ever a starting point on a fresh browser.
-  const t = localStorage.getItem('riastrad.title');
-  $('s_title').value = (t === null ? DEFAULT_TITLE : t);
-  const dsc = localStorage.getItem('riastrad.desc');
-  $('s_desc').value = (dsc === null ? DEFAULT_DESC : dsc);
+  META_SEEDED.title = localStorage.getItem('riastrad.title') || '';
+  META_SEEDED.desc  = localStorage.getItem('riastrad.desc')  || '';
+  $('s_title').value = META_SEEDED.title;
+  $('s_desc').value  = META_SEEDED.desc;
   const pv = localStorage.getItem('riastrad.privacy');
   if (pv) PRIVACY = pv;
 } catch(e){}

@@ -705,6 +705,44 @@ def set_pref(key, value):
     return d
 
 
+DEFAULT_THUMB = Path.home() / "Pictures" / "stream-assets" / "cullah-live.png"
+
+
+def stream_meta():
+    """Title, description and thumbnail path, held server-side.
+
+    ⚠️ THESE USED TO LIVE IN localStorage, WHICH IS PER-BROWSER. The panel is driven from
+    a phone as often as from this desk, and a title typed at the desk simply was not there
+    on the phone - so the fields showed stale test text on one device and nothing on the
+    other, and the only way to know which you were looking at was to remember. A default
+    that differs by device is worse than no default, because it looks authoritative.
+
+    The thumbnail is YouTube-only and the UI has to say so: Facebook has no API for a live
+    video's thumbnail at all, and Twitch does not use one.
+    """
+    pr = prefs()
+    return {"title": pr.get("stream_title", "") or "",
+            "desc": pr.get("stream_desc", "") or "",
+            "thumb": pr.get("stream_thumb", "") or str(DEFAULT_THUMB),
+            "thumb_name": os.path.basename(pr.get("stream_thumb") or str(DEFAULT_THUMB)),
+            "thumb_exists": os.path.isfile(pr.get("stream_thumb") or str(DEFAULT_THUMB))}
+
+
+def set_thumbnail_now():
+    """Push the configured image to YouTube through connect.py.
+
+    Riastrad never talks to a platform itself, so this shells out like everything else -
+    which also means the OAuth token stays in connect.py's keeping and never comes near
+    the dashboard.
+    """
+    meta = stream_meta()
+    path = meta["thumb"]
+    if not os.path.isfile(path):
+        return {"ok": False, "lines": ["no image at " + path]}
+    r = connect_run(["thumbnail", path], timeout=180)
+    return r
+
+
 def obs_record_state():
     """Is OBS recording to disk? Shaped like obs_stream_state - OBS closed is an answer,
     not a fault, and shares the same negative cache so a shut OBS stays instant.
@@ -2511,6 +2549,7 @@ class Handler(BaseHTTPRequestHandler):
                 s = relay_status()
                 s["obs"] = obs_stream_state()
                 s["record"] = obs_record_state()
+                s["meta"] = stream_meta()
                 s["twitch_categories"] = twitch_categories()
                 self._json(s); return
 
@@ -2729,6 +2768,19 @@ class Handler(BaseHTTPRequestHandler):
                         res["lines"] = res["lines"] + [f"OBS: FAILED, {type(e).__name__}"]
                         res["ok"] = False
                     self._json(res); return
+                if act == "set_meta":
+                    # Pure preference write; touches no platform.
+                    try:
+                        for k, pref in (("title", "stream_title"), ("desc", "stream_desc"),
+                                        ("thumb", "stream_thumb")):
+                            if k in body:
+                                set_pref(pref, str(body.get(k) or "")[:400])
+                    except Exception as e:
+                        self._json({"error": "could not save: %s" % type(e).__name__}, 500)
+                        return
+                    self._json({"ok": True, "meta": stream_meta()}); return
+                if act == "thumbnail":
+                    self._json(set_thumbnail_now()); return
                 if act == "rec_arm":
                     # Pure preference write - touches no OBS, so it works with OBS shut.
                     on = bool(body.get("on"))
