@@ -466,7 +466,7 @@
       <span class="v" id="v_studio">&mdash;</span></div>
     <div class="g2" id="studiobtns"></div>
     <div class="scenegrid" id="scenelist"></div>
-    <button id="takebtn" disabled>Take</button>
+    <button id="takebtn" disabled>Cut to air</button>
     <div class="sub" id="takenote">&mdash;</div>
   </div>
 
@@ -1636,7 +1636,15 @@ function renderSwitcher(){
 
   const take = $('takebtn');
   take.disabled = !studio || !prev || prev === prog;
-  take.textContent = studio && prev && prev !== prog ? 'Take \u2192 ' + prev : 'Take';
+  /* ⚠️ "CUT TO", NOT "TAKE". Take is what a vision mixer calls this and what the
+     hardware button is labelled, so it was the word that came to hand - but it is jargon
+     from television directing and nobody who has not stood in a gallery knows it means
+     "put the previewed scene on air". The button says what happens, and names the scene,
+     because an irreversible action read at a glance mid-set should not need translating.
+     Deliberately NOT "go live with", which would collide with the Go Live that starts the
+     whole broadcast on the Stream tab. OBS calls it "Transition", which is no clearer. */
+  take.textContent = studio && prev && prev !== prog
+    ? 'Cut to ' + prev : 'Cut to air';
   take.onclick = async () => {
     take.disabled = true;
     await spPost({action:'take'});
@@ -1644,8 +1652,8 @@ function renderSwitcher(){
   };
   $('takenote').textContent = studio
     ? (prev && prev !== prog
-        ? 'Cuts ' + prev + ' to air, replacing ' + prog + '.'
-        : 'Pick a different scene to arm the take.')
+        ? 'Puts ' + prev + ' on air, replacing ' + prog + '. Viewers see the change.'
+        : 'Tap a different scene above to line it up, then cut to it.')
     : 'Studio mode is off, so tapping a scene cuts it straight to air.';
 }
 
