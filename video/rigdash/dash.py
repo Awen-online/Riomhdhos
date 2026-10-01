@@ -2718,17 +2718,27 @@ class Handler(BaseHTTPRequestHandler):
                 cl = self._obs_or_none()
                 scenes = []
                 cur = None
+                prev = None
+                studio = False
                 if cl:
                     try:
                         sl = cl.get_scene_list()
                         scenes = [x["sceneName"] for x in sl.scenes]
                         cur = sl.current_program_scene_name
+                        # ⚠️ PREVIEW ONLY EXISTS IN STUDIO MODE, and OBS omits the field
+                        # entirely when it is off - so this is None rather than equal to
+                        # program, and the panel must not draw a preview marker that would
+                        # be a lie about a mode you are not in.
+                        studio = cl.get_studio_mode_enabled().studio_mode_enabled
+                        prev = getattr(sl, "current_preview_scene_name", None) if studio else None
                     except Exception:
                         pass
                 self._json({
                     "presets": load_presets(),
                     "obsScenes": scenes,
                     "currentScene": cur,
+                    "previewScene": prev,
+                    "studio": studio,
                     "phones": list(RIGCAMS.keys()),
                 }); return
 
@@ -2832,6 +2842,29 @@ class Handler(BaseHTTPRequestHandler):
                 # capture and apply both need OBS.
                 if not self._obs_or_none():
                     self._json({"error": "OBS is not running", "obs": False}, 503); return
+                # ⚠️ "preview" AND "program" ARE NOT THE SAME BUTTON WITH A FLAG.
+                # In studio mode, setting program cuts to air instantly with no
+                # transition and no second look - which is the one thing studio mode
+                # exists to prevent. So the panel only ever sends "preview" while studio
+                # mode is on, and "take" is the deliberate separate act.
+                if act == "studio":
+                    client().set_studio_mode_enabled(bool(body.get("on")))
+                    self._json({"ok": True, "studio": bool(body.get("on"))}); return
+                if act == "preview":
+                    scene = body.get("scene")
+                    if not scene:
+                        self._json({"error": "scene required"}, 400); return
+                    client().set_current_preview_scene(scene)
+                    self._json({"ok": True, "preview": scene}); return
+                if act == "program":
+                    scene = body.get("scene")
+                    if not scene:
+                        self._json({"error": "scene required"}, 400); return
+                    client().set_current_program_scene(scene)
+                    self._json({"ok": True, "program": scene}); return
+                if act == "take":
+                    client().trigger_studio_mode_transition()
+                    self._json({"ok": True}); return
                 if act == "capture":
                     scene = body.get("scene") or client().get_current_program_scene().scene_name
                     self._json({"scene": scene, "entry": capture_preset(scene),
@@ -2839,7 +2872,8 @@ class Handler(BaseHTTPRequestHandler):
                 if act == "apply":
                     scene = body.get("scene") or client().get_current_program_scene().scene_name
                     self._json({"scene": scene, "steps": apply_preset(scene)}); return
-                self._json({"error": "action must be save, capture, apply or enable"}, 400)
+                self._json({"error": "action must be save, capture, apply, enable, "
+                                     "studio, preview, program or take"}, 400)
                 return
 
             if p == "/api/stream":

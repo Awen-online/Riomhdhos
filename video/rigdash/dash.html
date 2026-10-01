@@ -118,6 +118,25 @@
      anything else would be a preview of a crop that will not happen. */
   #thumbprev{display:block;width:100%;max-width:320px;aspect-ratio:16/9;object-fit:cover;
              border:1px solid var(--line,#2a3634);border-radius:6px;margin:6px 0 2px}
+  /* Program is what the audience is seeing; preview is what you are lining up. The two
+     must never be told apart by a word alone - mid-set this is read at a glance and the
+     cost of confusing them is cutting to the wrong camera on air. Red is program, and
+     red is used for nothing else on this panel. */
+  .scenegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));gap:6px}
+  .scenebtn{position:relative;padding:14px 8px;text-align:left;font-size:13px;
+            border:1px solid var(--edge,#2a3634);border-radius:6px;background:transparent;
+            color:inherit;cursor:pointer;min-height:52px}
+  .scenebtn .tagrow{display:block;font:600 .6rem/1.6 var(--body,inherit);
+                    letter-spacing:.11em;text-transform:uppercase;opacity:.85}
+  .scenebtn.prog{border-color:var(--bad);box-shadow:inset 0 0 0 1px var(--bad)}
+  .scenebtn.prog .tagrow{color:var(--bad)}
+  .scenebtn.prev{border-color:var(--ok)}
+  .scenebtn.prev .tagrow{color:var(--ok)}
+  .scenebtn:disabled{opacity:.5;cursor:not-allowed}
+  #takebtn{width:100%;padding:16px;margin-top:8px;font:700 14px/1 var(--body,inherit);
+           letter-spacing:.14em;text-transform:uppercase;border-radius:6px;cursor:pointer;
+           background:var(--bad);border:1px solid var(--bad);color:#fff}
+  #takebtn:disabled{opacity:.35;cursor:not-allowed}
   .pchips{display:inline-flex;gap:5px;align-items:center;vertical-align:-3px}
   .pchip{width:15px;height:15px;display:block;opacity:.25;filter:grayscale(1)}
   .pchip.on{opacity:1;filter:none}
@@ -441,6 +460,16 @@
 </section>
 
 <section id="scenes">
+  <h2>Switcher</h2>
+  <div class="card">
+    <div class="row"><span class="k">Studio mode</span>
+      <span class="v" id="v_studio">&mdash;</span></div>
+    <div class="g2" id="studiobtns"></div>
+    <div class="scenegrid" id="scenelist"></div>
+    <button id="takebtn" disabled>Take</button>
+    <div class="sub" id="takenote">&mdash;</div>
+  </div>
+
   <h2>Scene presets</h2>
   <div class="card">
     <div class="row"><span class="k">On scene change</span><span class="v" id="v_sp">&mdash;</span></div>
@@ -1528,6 +1557,7 @@ let SP = null;
 async function loadPresets(){
   try {
     SP = await (await fetch('/api/scenepresets')).json();
+    renderSwitcher();
     renderScenePresets();
   } catch(e){ $('err').textContent = 'scene presets: ' + e.message; }
 }
@@ -1537,6 +1567,7 @@ async function spPost(body){
     const j = await post('/api/scenepresets', body);
     if (j.presets) SP.presets = j.presets;
     if (j.steps) $('v_sp').textContent = j.steps.length ? j.steps.join(' \u00b7 ') : 'nothing to apply';
+    renderSwitcher();
     renderScenePresets();
   } catch(e){ $('err').textContent = e.message; }
 }
@@ -1559,6 +1590,65 @@ function presetSummary(entry){
    instead, with an argument this function does not take. #presets was never filled and
    "No saved looks yet" showed permanently however many looks existed.
    Nothing failed, which is why it survived: the wrong function ran and returned quietly. */
+/* The switcher. Deliberately separate from the preset list below it: one is "what is on
+   air right now", the other is "what should happen when a scene changes", and they were
+   confusing to have in one card. */
+function renderSwitcher(){
+  if (!SP) return;
+  const studio = !!SP.studio;
+  const prog = SP.currentScene, prev = SP.previewScene;
+  const scenes = SP.obsScenes || [];
+
+  $('v_studio').textContent = studio ? 'on \u2014 preview then take' : 'off \u2014 taps cut straight to air';
+  $('v_studio').style.color = studio ? 'var(--ok)' : 'var(--accent)';
+
+  const sb = $('studiobtns'); sb.innerHTML = '';
+  camBtn(sb, studio ? 'Studio mode on' : 'Studio mode off', CAM_ICON.one, studio,
+         () => spPost({action:'studio', on: !studio}));
+
+  const box = $('scenelist'); box.innerHTML = '';
+  if (!scenes.length){
+    box.innerHTML = '<span class="sub">OBS is not running</span>';
+    $('takebtn').disabled = true;
+    $('takenote').textContent = '';
+    return;
+  }
+  for (const name of scenes){
+    const b = document.createElement('button');
+    b.className = 'scenebtn'
+      + (name === prog ? ' prog' : '')
+      + (studio && name === prev && name !== prog ? ' prev' : '');
+    const tag = name === prog ? 'on air'
+              : (studio && name === prev ? 'preview' : '&nbsp;');
+    b.innerHTML = '<span class="tagrow">' + tag + '</span>' + esc(name);
+    b.onclick = async () => {
+      /* ⚠️ IN STUDIO MODE THIS SETS PREVIEW, NEVER PROGRAM. Sending "program" here would
+         cut to air the instant you touched a scene, with no transition and no second
+         look - exactly what studio mode exists to prevent, and the mistake would be
+         made in front of everyone watching. With studio mode off there is no preview to
+         set, so a tap IS a cut, and the row above says so in those words. */
+      for (const x of box.querySelectorAll('button')) x.disabled = true;
+      await spPost({action: studio ? 'preview' : 'program', scene: name});
+      await loadPresets();
+    };
+    box.append(b);
+  }
+
+  const take = $('takebtn');
+  take.disabled = !studio || !prev || prev === prog;
+  take.textContent = studio && prev && prev !== prog ? 'Take \u2192 ' + prev : 'Take';
+  take.onclick = async () => {
+    take.disabled = true;
+    await spPost({action:'take'});
+    await loadPresets();
+  };
+  $('takenote').textContent = studio
+    ? (prev && prev !== prog
+        ? 'Cuts ' + prev + ' to air, replacing ' + prog + '.'
+        : 'Pick a different scene to arm the take.')
+    : 'Studio mode is off, so tapping a scene cuts it straight to air.';
+}
+
 function renderScenePresets(){
   if (!SP) return;
   const on = !!(SP.presets && SP.presets.enabled);
