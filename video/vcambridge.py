@@ -155,6 +155,31 @@ _serial_cache = {}          # host -> (serial_or_None, looked_at)
 _SERIAL_TTL = 30.0
 
 
+def parse_adb_devices(stdout):
+    """`adb devices -l` output -> [(serial, state, on_usb)]. Pure, so it can be tested.
+
+    ⚠️ SPLIT OUT FOR A REASON: THIS EXACT CLASSIFICATION HAS BEEN WRONG TWICE IN ONE DAY,
+    both times silently. First it tested only for a colon, and adb's mDNS form - which has
+    none - was taken for a cabled phone, so the bridge tunnelled video over the WiFi it
+    was trying to avoid. Then it tested only for adb's `usb:` column, which the
+    platform-tools on this machine does not emit, so a genuinely cabled phone was taken
+    for wireless and the USB path went dead. Neither failure raised anything; one logged
+    the opposite of the truth and the other logged "no USB" with the cable in hand.
+
+    A function that is only exercised by plugging in a cable gets tested once, by hand, on
+    the day it is written. test_adb_parse.py pins all three shapes as fixtures instead.
+    """
+    out = []
+    for line in stdout.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and not parts[0].startswith("emulator-"):
+            serial = parts[0]
+            on_usb = (any(p.startswith("usb:") for p in parts[2:])
+                      or (":" not in serial and "._tcp" not in serial))
+            out.append((serial, parts[1], on_usb))
+    return out
+
+
 def adb_devices():
     """[(serial, state, on_usb)] from `adb devices -l`. Never raises; [] without adb.
 
@@ -189,15 +214,7 @@ def adb_devices():
                            timeout=10, creationflags=NO_WINDOW)
     except Exception:
         return []
-    out = []
-    for line in (r.stdout or "").splitlines()[1:]:
-        parts = line.split()
-        if len(parts) >= 2 and not parts[0].startswith("emulator-"):
-            serial = parts[0]
-            on_usb = (any(p.startswith("usb:") for p in parts[2:])
-                      or (":" not in serial and "._tcp" not in serial))
-            out.append((serial, parts[1], on_usb))
-    return out
+    return parse_adb_devices(r.stdout or "")
 
 
 def phone_wifi_ip(serial):
@@ -365,6 +382,13 @@ def apply_look(api, ev):
     try:
         with urllib.request.urlopen("%s/api/set?ev=%d" % (base, int(ev)), timeout=8) as r:
             body = r.read(200).decode("utf-8", "replace")
+        # ⚠️ A SLEEPING PHONE IS NOT A FAILURE, AND MUST NOT LOG LIKE ONE. The reconnect
+        # loop runs every five seconds, so a dormant phone overnight wrote
+        # `{"error":"dormant - /api/wake first"}` thousands of times - noise that buries
+        # the one line that would matter. Returning None tells the caller to say nothing;
+        # the grade gets applied on the reconnect that actually finds a camera.
+        if "dormant" in body:
+            return None
         return "ev=%d -> %s" % (ev, body.strip())
     except Exception as e:
         # Never fatal. A grade that could not be set is worth saying out loud, but it is
@@ -596,7 +620,9 @@ def main():
         # takes effect on the next reconnect without restarting the bridge.
         ev = args.ev if args.ev is not None else pref_ev(host_of(args.url))
         if ev is not None:
-            print(f"    look:        {apply_look(api, ev)}", flush=True)
+            look = apply_look(api, ev)
+            if look:                      # None = phone asleep, nothing worth saying
+                print(f"    look:        {look}", flush=True)
         size = fixed or probe_size(api)
         if not size:
             # Covers both cases honestly: the phone may be unreachable, or reachable and
