@@ -1896,7 +1896,6 @@ const BR_COL = {
   'failing':   'var(--bad)',
   'stalled':   'var(--bad)',
   'stopped':   'var(--dim)',
-  'unknown':   'var(--accent)',
 };
 // Said the way you would say it at the desk - the raw last line is usually ffmpeg's.
 const BR_WHY = {
@@ -1907,7 +1906,6 @@ const BR_WHY = {
   'failing':   'the sink would not open; a reset releases it',
   'stalled':   'alive, but nothing written in 90 s — the counter is frozen',
   'stopped':   'the scheduled task is not running',
-  'unknown':   'could not read the task - this is not the same as stopped',
 };
 
 // Labels here are 'Pixel 6 (WiFi)' while the icon keys are 'Pixel 6'. Match on the key
@@ -2586,7 +2584,8 @@ function catNote(c){
   let s = total + ' categories — ' + bits.join(', ');
   if (c.top_at){
     const d = new Date(c.top_at);
-    const days = isNaN(d) ? null : Math.floor((Date.now() - d.getTime()) / 86400000);
+    const days = isNaN(d.getTime()) ? null
+               : Math.floor((Date.now() - d.getTime()) / 86400000);
     s += days === null ? '' :
          days <= 0 ? ', fetched today'
        : days === 1 ? ', fetched yesterday'
@@ -2925,7 +2924,7 @@ function appendChat(msgs){
     let clock = '';
     if (m.t){
       const dt = new Date(m.t * 1000);
-      clock = isNaN(dt) ? '' : dt.toTimeString().slice(0, 8);
+      clock = isNaN(dt.getTime()) ? '' : dt.toTimeString().slice(0, 8);
     }
     d.innerHTML = mark
       + '<span class="ctime">' + clock + '</span>'

@@ -95,12 +95,87 @@ def check_error_surface(html, js):
                         "other code can throw")
 
 
+def _find_tsc():
+    """The TypeScript compiler, wherever it happens to live on this machine.
+
+    ⚠️ BORROWED, NOT A DEPENDENCY OF THIS PROJECT. There is no node_modules here and
+    adding one would mean a package manager in the loop of a rig that deliberately has no
+    build step. tsc is used purely as an external linter - nothing it produces is shipped,
+    nothing imports it - so the check SKIPS rather than fails when it is absent. A missing
+    linter must never look like a failing check, or the suite stops being believed.
+    """
+    import glob
+    for pat in (r"C:\Users\mccul\Airgid\node_modules\.pnpm\typescript@*"
+                r"\node_modules\typescript\bin\tsc",
+                r"C:\Users\mccul\**\node_modules\typescript\bin\tsc"):
+        hits = glob.glob(pat, recursive="**" in pat)
+        if hits:
+            return hits[0]
+    return None
+
+
+def check_types(html, js):
+    """tsc --checkJs, tuned to the few error classes that are real bugs here.
+
+    ⚠️ FULL STRICTNESS IS NOISE ON UNTYPED JS AND WOULD GET THIS SWITCHED OFF. Run plain,
+    it reports 534 errors against this file, almost all of them "implicitly has an 'any'
+    type" and "object is possibly null" from $() - true statements about untyped
+    JavaScript, and not one of them a defect. Suppressing those three leaves 77, and in
+    that 77 were two REAL bugs nothing else had found: BR_WHY declared 'unknown' twice
+    with different text, so one message could never display, and two isNaN(dateObject)
+    calls that only worked by implicit coercion.
+
+    A checker whose output nobody reads is worth less than no checker, so this reports
+    only the high-signal codes:
+        TS1117  duplicate key in an object literal - one value silently wins
+        TS2304  cannot find name  <- this is the catNote(c) bug
+        TS2552  cannot find name, did you mean...
+        TS2554  wrong number of arguments
+        TS2345  argument of the wrong type
+    The rest are counted, not listed, so a drift upward is still visible.
+    """
+    import os
+    import re
+    import subprocess
+    tsc = _find_tsc()
+    if not tsc:
+        return None, "tsc not found - type check skipped (it is a borrowed linter)"
+    tmp = HERE / "_dashcheck.js"
+    # Pad to the <script> offset so tsc's line numbers ARE dash.html's line numbers.
+    m = re.search(r"<script[^>]*>", html)
+    pad = html[:m.end()].count("\n") if m else 0
+    tmp.write_text("\n" * pad + js, encoding="utf-8")
+    try:
+        r = subprocess.run(
+            ["node", str(tsc), "--allowJs", "--checkJs", "--noEmit",
+             "--target", "es2022", "--lib", "es2022,dom", "--skipLibCheck",
+             "--noImplicitAny", "false", "--strictNullChecks", "false",
+             "--noImplicitThis", "false", str(tmp)],
+            capture_output=True, text=True, timeout=300, creationflags=NO_WINDOW)
+    except Exception as e:
+        return None, "could not run tsc: %s" % type(e).__name__
+    finally:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+    loud = [l for l in (r.stdout or "").splitlines()
+            if re.search(r"error TS(1117|2304|2552|2554|2345)\b", l)]
+    total = len(re.findall(r"error TS", r.stdout or ""))
+    if loud:
+        detail = "%d real, %d total\n       " % (len(loud), total)
+        detail += "\n       ".join(x.replace("_dashcheck.js", "dash.html") for x in loud[:8])
+        return False, detail
+    return True, "no high-signal type errors (%d low-signal, not shown)" % total
+
+
 CHECKS = [
     ("syntax (node --check)", check_syntax),
     ("no duplicate functions", check_duplicate_functions),
     ("referenced ids exist", check_ids_exist),
     ("ids are unique", check_unique_ids),
     ("global error surface", check_error_surface),
+    ("types (tsc --checkJs)", check_types),
 ]
 
 
