@@ -88,18 +88,25 @@ if ($PSCmdlet.ShouldProcess('WinSxS', 'analyse then clean the component store'))
 }
 
 # ---------------------------------------------------------------- 4. hibernation
-# ⚠️ NOT DONE AUTOMATICALLY, AND THAT IS DELIBERATE. hiberfil.sys is 12.77 GB - the single
-# biggest remaining win - but turning it off also disables Fast Startup, which changes how
-# this machine boots every day thereafter. That is a behaviour change, not housekeeping,
-# and it is Ian's call rather than a script's.
+# ⚠️ NOT DONE AUTOMATICALLY, AND THAT IS DELIBERATE. Turning hibernation off reclaims
+# hiberfil.sys outright, but it also disables Fast Startup, which changes how this machine
+# boots every day thereafter. That is a behaviour change, not housekeeping, and it is
+# Ian's call rather than a script's.
+#
+# ⚠️ AND SAY SO WHEN IT IS ALREADY OFF. This used to fall through silently when the file
+# was absent, which reads identically to the step not existing - so a run would end with
+# no mention of the largest item on the list and no way to tell whether it had been
+# handled or skipped. Every other step here reports "already done"; so does this one.
 $hib = 'C:\hiberfil.sys'
 $hibSz = if (Test-Path $hib) { (Get-Item $hib -Force).Length } else { 0 }
+Write-Host ""
 if ($hibSz -gt 0) {
-    Write-Host ""
     Write-Host ("  hiberfil.sys is {0:N2} GB and was NOT removed." -f ($hibSz / $GB))
     Write-Host "  It is the largest remaining win, but 'powercfg /h off' also kills Fast"
     Write-Host "  Startup. Run it yourself if you want that trade:"
     Write-Host "      powercfg /h off" -ForegroundColor Cyan
+} else {
+    Write-Host "  hibernation already off, nothing to reclaim (no hiberfil.sys)"
 }
 
 Write-Host ""
