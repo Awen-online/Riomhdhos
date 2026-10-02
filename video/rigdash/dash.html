@@ -401,41 +401,10 @@
   <h2>Broadcast</h2>
   <div class="card">
     <div id="bcastapp"></div>
-    <div class="row"><span class="k">Title</span>
-      <span class="v sub"><span class="pchips" id="pc_title"></span><span id="pw_title"></span>
-      <span class="v" id="v_titlelen">0</span></span></div>
-    <div class="sub" id="v_titlenote"></div>
-    <input type="text" id="s_title" maxlength="200" autocomplete="off"
-           placeholder="what this set is">
-    <div class="row"><span class="k">Description</span>
-      <span class="v sub"><span class="pchips" id="pc_desc"></span><span id="pw_desc"></span></span></div>
-    <input type="text" id="s_desc" maxlength="400" autocomplete="off" placeholder="optional">
-    <div class="row"><span class="k">Category</span>
-      <span class="v sub"><span class="pchips" id="pc_cat"></span><span id="pw_cat"></span></span></div>
-    <input type="text" id="s_cat" maxlength="60" autocomplete="off" list="catlist"
-           placeholder="e.g. Music — must match a Twitch category exactly">
-    <datalist id="catlist"></datalist>
-    <div class="sub" id="v_catnote"></div>
-    <div class="row"><span class="k">Tags</span>
-      <span class="v sub"><span class="pchips" id="pc_tags"></span><span id="pw_tags"></span><span id="v_taglen"></span></span></div>
-    <input type="text" id="s_tags" maxlength="300" autocomplete="off" list="taglist"
-           placeholder="comma separated, no spaces inside a tag">
-    <datalist id="taglist"></datalist>
-    <div class="row"><span class="k">Privacy</span>
-      <span class="v sub"><span class="pchips" id="pc_priv"></span><span id="v_privnote">&mdash;</span></span></div>
-    <div class="g3" id="privbtns"></div>
-    <div class="row"><span class="k">Thumbnail</span>
-      <span class="v sub"><span class="pchips" id="pc_thumb"></span><span id="pw_thumb"></span></span></div>
-    <img id="thumbprev" alt="configured thumbnail" hidden>
-    <div class="g2" id="thumbbtns"></div>
-    <div class="sub" id="thumbnote">&mdash;</div>
+    <div id="metaapp"></div>
     <h2>Schedule</h2>
     <div class="card">
-      <div class="row"><span class="k">Starts</span>
-        <span class="v sub"><span class="pchips" id="pc_sched"></span><span id="pw_sched"></span></span></div>
-      <input type="datetime-local" id="s_when" autocomplete="off">
-      <div class="g2" id="schedbtns"></div>
-      <div class="sub" id="schednote">&mdash;</div>
+      <div id="schedapp"></div>
       <div class="note">&#9888;&#65039; <b>Scheduling publishes immediately.</b> The
         YouTube broadcast appears on your channel and the Facebook video posts to the
         Page as soon as it is created &mdash; that is the point, it is what lets people
@@ -795,6 +764,12 @@ const TAB_ICON = {
    ReferenceError for anyone whose remembered tab was Stream. Records what the page last
    put IN the two fields, so a server value can be told apart from something he typed. */
 let META_SEEDED = {title: '', desc: ''};
+/* ⚠️ SEEDING READS localStorage BUT MUST NOT TOUCH THE DOM. These fields are drawn
+   by a module that has not run when this line executes, so a $('s_title') here throws -
+   and because the restore is one try/catch around the lot, that throw would silently skip
+   the privacy restore two lines below it and leave the wrong button lit. Read the values
+   here; let the panel apply them. */
+let SEED_CAT = '', SEED_TAGS = '';
 
 let CHAT_SEQ = 0, CHAT_TIMER = null;
 
@@ -1619,52 +1594,6 @@ async function loadMixer(){
    19:00 is CDT in October and CST in November. Sending an ISO instant instead would
    throw that away and land an hour out across the boundary, publicly, with people
    already reminded. So the value goes through untouched: "2026-11-05T19:00". */
-function renderSchedule(){
-  const on = new Set(((STREAM && STREAM.platforms) || [])
-    .filter(p => p.enabled).map(p => p.name));
-  const box = $('pc_sched');
-  if (box){
-    box.innerHTML = ['youtube', 'facebook'].map(n => {
-      const m = PLAT_MARK[n], live = on.has(n);
-      return '<span class="pchip' + (live ? ' on' : '') + '" title="' + n + '">'
-           + PLAT_SVG(m[1], live ? m[0] : 'currentColor') + '</span>';
-    }).join('');
-  }
-  const none = !on.has('youtube') && !on.has('facebook');
-  const warn = $('pw_sched');
-  if (warn) warn.innerHTML = none ? ' <span class="chanwarn">no channel on</span>' : '';
-  const when = $('s_when');
-  if (when) when.disabled = none;
-
-  const bb = $('schedbtns');
-  if (!bb) return;
-  bb.innerHTML = '';
-  const body = () => ({
-    at: ($('s_when').value || '').replace('T', ' ').slice(0, 16),
-    title: $('s_title').value.trim(),
-    desc: $('s_desc').value.trim(),
-    privacy: PRIVACY,
-  });
-  camBtn(bb, 'Check', CAM_ICON.tight, false, async () => {
-    showReport('checking…', []);
-    const r = await post('/api/stream', Object.assign({action: 'schedule'}, body()));
-    showReport(r.ok ? 'dry run — nothing was created' : 'could not schedule',
-               r.lines || [r.error || ''], !r.ok);
-  });
-  camBtn(bb, 'Schedule it', CAM_ICON.one, false, async () => {
-    showReport('scheduling…', []);
-    const r = await post('/api/stream',
-      Object.assign({action: 'schedule', commit: true}, body()));
-    showReport(r.ok ? 'scheduled — it is live on the channel now'
-                    : 'scheduling FAILED', r.lines || [r.error || ''], !r.ok);
-  });
-  const n = $('schednote');
-  if (n) n.textContent = none
-    ? 'Enable YouTube or Facebook above to schedule.'
-    : (PRIVACY === 'public'
-        ? 'Will be scheduled as public, so subscribers are notified.'
-        : 'Privacy is ' + PRIVACY + ' — no notification will be sent. Set it to public above.');
-}
 
 
 
@@ -1722,79 +1651,6 @@ function mb(n){
    same panel disagreeing about the same number. */
 window.fmt = { hhmmss, mb };
 
-function renderStream(){
-  const s = STREAM; if (!s) return;
-  /* ⚠️ TITLE AND DESCRIPTION ARE SERVER-SIDE NOW, NOT localStorage. This panel gets
-     driven from a phone as often as from this desk, and localStorage is per-browser - so
-     a title typed here was simply not there on the phone, each device kept its own stale
-     text, and the only way to know which one you were looking at was to remember. A
-     default that differs by device is worse than no default, because it still looks
-     authoritative.
-     Overwrite only a field he has not touched: still equal to what we last seeded, and
-     not currently focused. Clobbering half-typed text is help nobody asks for twice. */
-  const meta = s.meta || {};
-  for (const [id, key] of [['s_title','title'], ['s_desc','desc']]){
-    const el = $(id);
-    if (!el || document.activeElement === el) continue;
-    if (el.value !== META_SEEDED[key]) continue;
-    if (!meta[key] || meta[key] === el.value) continue;
-    el.value = meta[key];
-    META_SEEDED[key] = meta[key];
-    if (id === 's_title') titleLen();
-  }
-  /* ⚠️ YOUTUBE ONLY, AND THE ROW HAS TO SAY SO. Facebook exposes no API for a live
-     video's thumbnail at all and Twitch does not use one, so a bare "Set thumbnail"
-     button would imply it reached three platforms when it reaches one. */
-  const tbx = $('thumbbtns');
-  if (tbx){
-    tbx.innerHTML = '';
-    camBtn(tbx, 'Set YouTube thumbnail', CAM_ICON.one, false, async () => {
-      showReport('uploading thumbnail…', []);
-      const r = await post('/api/stream', {action:'thumbnail'});
-      showReport(r.ok ? 'thumbnail set on YouTube' : 'thumbnail FAILED',
-                 r.lines || [r.error || ''], !r.ok);
-    });
-    const pv = $('thumbprev');
-    if (pv){
-      if (meta.thumb_exists){
-        // ?v=mtime, because the file is replaced under the same name - without it the
-        // browser shows the old artwork and you sign off on something else.
-        const want = '/thumb?v=' + (meta.thumb_at || 0);
-        if (pv.getAttribute('src') !== want) pv.setAttribute('src', want);
-        pv.hidden = false;
-      } else {
-        pv.hidden = true;
-        pv.removeAttribute('src');
-      }
-    }
-    $('thumbnote').textContent = meta.thumb_exists
-      ? meta.thumb_name + ' — YouTube only; Facebook has no API for a live thumbnail and '
-        + 'Twitch does not use one.'
-      : 'no image found at ' + (meta.thumb || '(unset)');
-  }
-
-  /* ⚠️ THE TITLE BOX IS INERT UNTIL SOMETHING IS SIGNED IN, and a text field you can type
-     into is an even stronger promise than a button you can press. Setting a title needs
-     connect.py to reach the platform: YouTube names the broadcast from YouTube Studio when
-     it auto-creates one from a persistent key, Twitch keeps whatever the channel already
-     says, and Facebook titles the live video at creation. Typing here and watching the
-     stream go out under the old name is the kind of quiet wrong that only shows up after
-     the set. */
-  const signed = (s.platforms || []).filter(p => p.signed_in).map(p => p.label || p.name);
-  const tn = $('v_titlenote');
-  if (tn){
-    tn.textContent = signed.length
-      ? 'applied to ' + signed.join(' and ') + ' when you go live'
-      : 'not applied to anything yet — no platform is signed in, so titles stay as each '
-        + 'platform already has them';
-    tn.style.color = signed.length ? 'var(--dim)' : 'var(--accent)';
-  }
-  renderPrivacy();
-  // Last, deliberately: it disables controls in groups that the lines above rebuild.
-  renderChannelChips(s.platforms);
-  renderSchedule();
-
-}
 
 /* The per-platform report. connect.py prints one line per platform, "<name>: ok, ..." or
    "<name>: FAILED, ...", so colour each line on its own rather than colouring the block:
@@ -1857,62 +1713,7 @@ const FIELD_PLATFORMS = {
   thumb: ['youtube'],
 };
 
-function renderChannelChips(platforms){
-  const on = new Set((platforms || []).filter(p => p.enabled).map(p => p.name));
-  for (const [field, names] of Object.entries(FIELD_PLATFORMS)){
-    const box = $('pc_' + field);
-    if (!box) continue;
-    box.innerHTML = names.map(n => {
-      const m = PLAT_MARK[n];
-      if (!m) return '';
-      const live = on.has(n);
-      return '<span class="pchip' + (live ? ' on' : '') + '" title="' + n
-           + (live ? ' - enabled' : ' - not enabled') + '">'
-           + PLAT_SVG(m[1], live ? m[0] : 'currentColor') + '</span>';
-    }).join('');
-    // Say something only when it matters: every mark grey means typing here changes
-    // nothing tonight.
-    const none = !names.some(n => on.has(n));
-    const warn = $('pw_' + field);
-    if (warn) warn.innerHTML = none
-      ? ' <span class="chanwarn">no channel on</span>' : '';
-    const input = $('s_' + field);
-    if (input) input.disabled = none;
-  }
-  /* The two that are button groups rather than text inputs disable every button in the
-     group. ⚠️ THIS HAS TO RUN AFTER THEY ARE BUILT. Both groups are rebuilt from scratch
-     on each poll - thumbbtns clears its innerHTML, renderPrivacy() re-renders - so a
-     disable applied earlier in loadStream is discarded a few lines later, silently, and
-     the buttons come back live. Hence the call site at the end of loadStream rather than
-     beside the other field rendering. */
-  for (const [field, boxId] of [['priv','privbtns'], ['thumb','thumbbtns']]){
-    const box = $(boxId);
-    if (!box) continue;
-    const off = !FIELD_PLATFORMS[field].some(n => on.has(n));
-    for (const b of box.querySelectorAll('button')) b.disabled = off;
-  }
-}
 
-function renderPrivacy(){
-  const box = $('privbtns'); if (!box) return;
-  const yt = ((STREAM && STREAM.platforms) || []).find(p => p.name === 'youtube');
-  const live = !!(yt && yt.signed_in);
-  const note = $('v_privnote');
-  if (note){
-    note.textContent = live ? 'applied when the broadcast is created'
-                            : 'not applied — YouTube is not signed in';
-    note.style.color = live ? 'var(--dim)' : 'var(--accent)';
-  }
-  box.innerHTML = '';
-  for (const p of ['public','unlisted','private']){
-    camBtn(box, p, CAM_ICON.lock, PRIVACY === p, async () => {
-      PRIVACY = p;
-      try { localStorage.setItem('riastrad.privacy', p); } catch(e){}
-      renderPrivacy();
-    });
-  }
-  if (!live) for (const b of box.querySelectorAll('button')) b.style.opacity = '.45';
-}
 
 async function goLive(force){
   STREAM_FORCE = false;   // a fresh attempt retracts the previous one's override offer
@@ -1987,17 +1788,10 @@ async function loadStream(){
       + ' The rig may be fine; this only means the panel did not get an answer.</div>';
     return;
   }
-  // Drawing, with its own net. A throw here is a bug in this file, so say that rather
-  // than blaming the connection - and keep going, so one broken panel does not take the
-  // rest of the tab down with it.
-  try { renderStream(); } catch(e){ console.error('renderStream failed:', e); }
-  try { renderCategories(STREAM && STREAM.twitch_categories); }
-  catch(e){
-    console.error('renderCategories failed:', e);
-    const n = $('v_catnote');
-    if (n){ n.textContent = 'category list failed to draw: ' + e.message;
-            n.style.color = 'var(--bad)'; }
-  }
+  /* Nothing is drawn from here any more - publishing the snapshot above is the whole
+     job, and the panels redraw themselves from it. The separate catches that used to sit
+     here existed because a throw while drawing got reported as a failure to fetch; that
+     cannot happen now that fetching and drawing are not in the same function. */
 }
 
 // Restore what was typed last time - a dash.py restart mid-setup should not cost the
@@ -2010,8 +1804,8 @@ async function loadStream(){
 try {
   META_SEEDED.title = localStorage.getItem('riastrad.title') || '';
   META_SEEDED.desc  = localStorage.getItem('riastrad.desc')  || '';
-  $('s_title').value = META_SEEDED.title;
-  $('s_desc').value  = META_SEEDED.desc;
+  SEED_CAT  = localStorage.getItem('riastrad.cat')  || '';
+  SEED_TAGS = localStorage.getItem('riastrad.tags') || '';
   const pv = localStorage.getItem('riastrad.privacy');
   if (pv) PRIVACY = pv;
 } catch(e){}
@@ -2021,36 +1815,11 @@ try {
    string passed straight through. A 120-character title would therefore set Twitch and
    fail YouTube, which is the sort of split outcome you would only notice afterwards. */
 const TITLE_LIMITS = [[100, 'YouTube'], [140, 'Twitch']];
-function titleLen(){
-  const n = $('s_title').value.length;
-  const over = TITLE_LIMITS.filter(([lim]) => n > lim).map(([lim, who]) => who + ' ' + lim);
-  $('v_titlelen').textContent = over.length ? n + ' — over ' + over.join(', ') : String(n);
-  $('v_titlelen').style.color = over.length ? 'var(--bad)' : (n ? 'inherit' : 'var(--dim)');
-}
-$('s_title').addEventListener('input', titleLen);
-titleLen();
 
 /* ⚠️ VALIDATE TAGS HERE, NOT AT THE PLATFORM. Twitch's documented shape is up to 10 tags,
    25 characters each, alphanumeric with no spaces. A rejected tag fails the whole PATCH,
    which during pre-flight means the title does not get set either - so a typo here would
    cost the broadcast its name. Say it locally while there is time to fix it. */
-function tagsInfo(){
-  const raw = $('s_tags').value.split(',').map(t => t.trim()).filter(Boolean);
-  // ⚠️ MATCH connect.py'S RULE, NOT A STRICTER ONE. It validates with Python's
-  // str.isalnum, which is Unicode-aware - "Café" and "Ceol" both pass there. An ASCII-only
-  // regex here would paint a perfectly valid tag red and send him hunting for a problem
-  // that does not exist. \p{L}\p{N} is the closest JS equivalent.
-  const bad = raw.filter(t => t.length > 25 || !/^[\p{L}\p{N}]+$/u.test(t));
-  const el = $('v_taglen');
-  if (!raw.length){ el.textContent = 'Twitch only'; el.style.color = 'var(--dim)'; return; }
-  const probs = [];
-  if (raw.length > 10) probs.push('max 10, you have ' + raw.length);
-  if (bad.length)      probs.push('not allowed: ' + bad.slice(0, 3).join(', '));
-  el.textContent = probs.length ? probs.join(' · ') : raw.length + ' tag'
-                   + (raw.length === 1 ? '' : 's');
-  el.style.color = probs.length ? 'var(--bad)' : 'var(--dim)';
-}
-$('s_tags').addEventListener('input', tagsInfo);
 
 /* ⚠️ THESE ARE SUGGESTIONS, AND THE FIELD STAYS FREE TEXT ON PURPOSE. Twitch rejects any
    category name that is not an exact match, and it fails the whole PATCH when it does -
@@ -2064,16 +1833,6 @@ $('s_tags').addEventListener('input', tagsInfo);
    That is what earns them a place. But a cache can go stale, which is exactly why this is
    a <datalist> and not a <select>: it offers without constraining, anything typed still
    goes through untouched, and an empty or unreadable list costs nothing but the note. */
-function renderCategories(info){
-  const dl = $('catlist'), note = $('v_catnote');
-  if (!dl || !note) return;
-  const names = (info && info.names) || [];
-  dl.innerHTML = names.map(n => '<option value="' + esc(n) + '"></option>').join('');
-  note.style.color = 'var(--dim)';
-  if (info && info.why)      note.textContent = info.why;
-  else if (names.length)     note.textContent = catNote(info);
-  else                       note.textContent = '';
-}
 
 /* ⚠️ SAY WHEN THE LIST WAS TAKEN. These names come from Twitch's most-watched list via
    `connect.py categories`, which is a SNAPSHOT, not a live query - the dashboard never
@@ -2108,11 +1867,6 @@ function loadTagsets(){
   try { return JSON.parse(localStorage.getItem(TAGSETS_KEY) || '[]') || []; }
   catch(e){ return []; }
 }
-function renderTagsets(){
-  const dl = $('taglist'); if (!dl) return;
-  dl.innerHTML = loadTagsets()
-    .map(t => '<option value="' + esc(t) + '"></option>').join('');
-}
 function rememberTagset(s){
   s = (s || '').trim(); if (!s) return;
   try {
@@ -2120,16 +1874,24 @@ function rememberTagset(s){
     list.unshift(s);
     localStorage.setItem(TAGSETS_KEY, JSON.stringify(list.slice(0, 8)));
   } catch(e){}
-  renderTagsets();
+  // No redraw call: the panel reads this list on each render, so the next poll shows it.
 }
 
-try {
-  $('s_cat').value  = localStorage.getItem('riastrad.cat')  || '';
-  $('s_tags').value = localStorage.getItem('riastrad.tags') || '';
-} catch(e){}
-tagsInfo();
-renderTagsets();
-renderPrivacy();
+/* The metadata panel owns the markup for these fields, but not the facts about them.
+   goLive() and the schedule buttons still read the inputs by id: they are uncontrolled
+   nodes with the same stable ids they always had, so the read path did not change. */
+window.rigMeta = {
+  PLAT_MARK, PLAT_SVG, FIELD_PLATFORMS, TITLE_LIMITS, catNote,
+  loadTagsets, rememberTagset,
+  seeded:   META_SEEDED,
+  seedCat:  () => SEED_CAT,
+  seedTags: () => SEED_TAGS,
+  privacy:    () => PRIVACY,
+  setPrivacy: (v) => {
+    PRIVACY = v;
+    try { localStorage.setItem('riastrad.privacy', v); } catch(e){}
+  },
+};
 
 function renderBridges(){
   const box = $('brlist'); if (!box) return;
@@ -2598,7 +2360,7 @@ setInterval(async () => {
    back to saying so rather than leaving an empty card. A panel that silently loses a
    feature is the failure mode this whole page has been fighting all night. */
 import { h, render } from 'preact';
-import { useState, useEffect, useCallback } from 'preact/hooks';
+import { useState, useEffect, useCallback, useRef } from 'preact/hooks';
 import htm from 'htm';
 const html = htm.bind(h);
 
@@ -3070,10 +2832,10 @@ function useStream() {
 /* camBtn's group lock, as a component. The lock matters: a second press during an action
    queues another round trip behind the first and the panel drifts out of step with the
    rig. `busy` locks the group, `pend` marks the one that was pressed. */
-function Btn({ label, icon, on, busy, onPress }) {
+function Btn({ label, icon, on, busy, style, onPress }) {
   const [pend, setPend] = useState(false);
   return html`
-    <button class=${(on ? 'sel' : '') + (pend ? ' pending' : '')}
+    <button class=${(on ? 'sel' : '') + (pend ? ' pending' : '')} style=${style || ''}
             disabled=${busy || pend}
             onClick=${async () => {
               setPend(true);
@@ -3148,20 +2910,33 @@ function GoLive() {
   const { s, err, force } = useStream();
   const [busy, setBusy] = useState(false);
   if (!s) return html`<div class="sub">${err || 'reading\u2026'}</div>`;
+  /* ⚠️ DO NOT GIVE CONFIDENT INSTRUCTIONS UNDER A FAILURE NOTICE. The header says
+     the dashboard is unreachable and this panel went on telling him to press a button
+     that starts a broadcast, describing what it would do as settled fact. Everything
+     below is drawn from the last answer that arrived, which may be minutes old and may
+     name channels that are no longer armed. Say so, and put the controls out of reach
+     until a real answer lands: not being able to see the rig is exactly when a hopeful
+     press costs the most. */
+  const stale = !!err;
 
   const { obs, armed, names } = liveFacts(s);
   const rec = s.record || {};
   const reload = (ms) => (ms ? setTimeout(() => window.rigLoadStream(), ms)
                              : window.rigLoadStream());
 
-  const label = obs.active ? 'stop' : (armed ? 'go live' : 'nothing armed');
+  const label = stale ? 'out of touch'
+                      : (obs.active ? 'stop' : (armed ? 'go live' : 'nothing armed'));
 
   /* ⚠️ SAY WHAT THE BUTTON ACTUALLY DOES. Nothing on this panel pushes video -
      OBS does. This starts OBS streaming to the local relay, and the relay fans that one
      stream out to whatever is switched on below. Without that sentence the obvious
      reading is that Riastrad is the encoder, and the first time a channel is dark you go
      looking in the wrong place. */
-  const howto = obs.active
+  const howto = stale
+    ? 'Riastrad is not getting an answer from itself, so what you see here is the last '
+      + 'thing it heard and may no longer be true. Nothing can be started until it is '
+      + 'back \u2014 the controls return on their own when an answer lands.'
+    : obs.active
     ? 'OBS is sending to the relay, which is forwarding to '
       + (names.join(' and ') || 'nothing \u2014 no channel is armed') + '. Press to stop.'
     : (armed
@@ -3202,27 +2977,29 @@ function GoLive() {
   const I = window.CAM_ICON;
   return html`
     <div class="rec">
-      <button class=${'recbtn ' + (obs.active ? 'live' : (armed ? 'armed' : 'cold'))}
-              aria-label=${label} disabled=${busy}
+      <button class=${'recbtn ' + (stale ? 'cold'
+                                     : (obs.active ? 'live' : (armed ? 'armed' : 'cold')))}
+              aria-label=${label} disabled=${busy || stale}
               onClick=${async () => {
                 setBusy(true);
                 try { await press(); }
                 catch (e) { document.getElementById('err').textContent = e.message; }
                 finally { setBusy(false); }
               }}><span class="glyph"></span></button>
-      <div class="reclabel" style=${obs.active || armed ? 'color:var(--bad)' : ''}>
+      <div class="reclabel"
+           style=${!stale && (obs.active || armed) ? 'color:var(--bad)' : ''}>
         ${label}</div>
       <div class="sub howto">${howto}</div>
     </div>
     <div class="g2">
-      <${Btn} label="Record with stream" icon=${I.one} on=${!!rec.armed} busy=${busy}
+      <${Btn} label="Record with stream" icon=${I.one} on=${!!rec.armed} busy=${busy || stale}
               onPress=${async () => {
                 await window.rigPost('/api/stream',
                                      { action: 'rec_arm', on: !rec.armed });
                 reload();
               }} />
       <${Btn} label=${rec.active ? 'Stop recording' : 'Record now'} icon=${I.one}
-              on=${!!rec.active} busy=${busy}
+              on=${!!rec.active} busy=${busy || stale}
               onPress=${async () => {
                 await window.rigPost('/api/stream',
                                      { action: rec.active ? 'rec_stop' : 'rec_start' });
@@ -3232,7 +3009,7 @@ function GoLive() {
     <div class="sub">${recText}</div>
     <div class="g2">
       ${!obs.active ? html`
-        <${Btn} label="Re-check destinations" icon=${I.tight} busy=${busy}
+        <${Btn} label="Re-check destinations" icon=${I.tight} busy=${busy || stale}
                 onPress=${async () => {
                   window.showReport('checking\u2026', []);
                   const r = await window.rigPost('/api/stream', { action: 'preflight' });
@@ -3240,9 +3017,285 @@ function GoLive() {
                                     r.lines || [], !r.ok);
                 }} />` : null}
       ${force ? html`
-        <${Btn} label="Start OBS anyway" icon=${I.flip} busy=${busy}
+        <${Btn} label="Start OBS anyway" icon=${I.flip} busy=${busy || stale}
                 onPress=${() => window.rigGoLive(true)} />` : null}
     </div>`;
+}
+
+/* ---- the broadcast metadata fields --------------------------------------------------
+   ⚠️ THE INPUTS ARE UNCONTROLLED ON PURPOSE, and that is the whole safety story of this
+   panel. A controlled input re-rendered from a poll every two seconds is how you eat
+   somebody's keystrokes mid-sentence. These carry no `value` prop, so Preact creates each
+   node once and never writes to it again; the server's copy is applied by hand, in an
+   effect, and only to a field he has not touched and is not typing in. They also keep
+   their original ids, because goLive() and the schedule buttons still read them with
+   $('s_title').value - the markup moved, the read path did not. */
+const M = () => window.rigMeta;
+
+function Marks({ names, on }) {
+  const { PLAT_MARK, PLAT_SVG } = M();
+  return html`<span class="pchips">${names.map(nm => {
+    const m = PLAT_MARK[nm];
+    if (!m) return null;
+    const live = on.has(nm);
+    return html`<span key=${nm} class=${'pchip' + (live ? ' on' : '')}
+      title=${nm + (live ? ' - enabled' : ' - not enabled')}
+      dangerouslySetInnerHTML=${{ __html: PLAT_SVG(m[1], live ? m[0] : 'currentColor') }} />`;
+  })}</span>`;
+}
+
+/* Say something only when it matters: every mark grey means typing here changes nothing
+   tonight, and that is worth a word. Anything more is noise beside the marks. */
+function FieldRow({ label, names, on, children }) {
+  const none = names && !names.some(n => on.has(n));
+  return html`<div class="row"><span class="k">${label}</span>
+    <span class="v sub">
+      ${names ? html`<${Marks} names=${names} on=${on} />` : null}
+      ${none ? html`<span class="chanwarn"> no channel on</span>` : null}
+      ${children}
+    </span></div>`;
+}
+
+/* ⚠️ VALIDATE TAGS HERE, NOT AT THE PLATFORM. Twitch's documented shape is up to 10 tags,
+   25 characters each, alphanumeric with no spaces. A rejected tag fails the whole PATCH,
+   which during pre-flight means the title does not get set either - so a typo here would
+   cost the broadcast its name. Say it locally while there is time to fix it.
+   ⚠️ MATCH connect.py'S RULE, NOT A STRICTER ONE. It validates with Python's str.isalnum,
+   which is Unicode-aware - "Café" and "Ceol" both pass there. An ASCII-only regex would
+   paint a valid tag red and send him hunting for a problem that does not exist. */
+function tagsInfo(v) {
+  const raw = (v || '').split(',').map(t => t.trim()).filter(Boolean);
+  if (!raw.length) return { text: 'Twitch only', bad: false };
+  const bad = raw.filter(t => t.length > 25 || !/^[\p{L}\p{N}]+$/u.test(t));
+  const probs = [];
+  if (raw.length > 10) probs.push('max 10, you have ' + raw.length);
+  if (bad.length)      probs.push('not allowed: ' + bad.slice(0, 3).join(', '));
+  return probs.length
+    ? { text: probs.join(' \u00b7 '), bad: true }
+    : { text: raw.length + ' tag' + (raw.length === 1 ? '' : 's'), bad: false };
+}
+
+/* Privacy lives in the classic half because goLive() sends it, but two panels show it, so
+   a change has to reach both at once rather than whenever the next poll happens to land. */
+const PRIV_SUBS = new Set();
+function usePrivacy() {
+  const [v, setV] = useState(() => M().privacy());
+  useEffect(() => {
+    const f = () => setV(M().privacy());
+    PRIV_SUBS.add(f);
+    return () => { PRIV_SUBS.delete(f); };
+  }, []);
+  return [v, (np) => { M().setPrivacy(np); for (const f of PRIV_SUBS) f(); }];
+}
+
+function MetaFields() {
+  const { s } = useStream();
+  const meta  = (s && s.meta) || {};
+  const plats = (s && s.platforms) || [];
+  const on    = new Set(plats.filter(p => p.enabled).map(p => p.name));
+  const F     = M().FIELD_PLATFORMS;
+
+  const title = useRef(null), desc = useRef(null);
+  const cat   = useRef(null), tags = useRef(null);
+  const [tLen, setTLen]     = useState(0);
+  const [tagMsg, setTagMsg] = useState({ text: 'Twitch only', bad: false });
+  const [priv, setPriv]     = usePrivacy();
+
+  const recount = useCallback(() => {
+    setTLen(title.current ? title.current.value.length : 0);
+    setTagMsg(tagsInfo(tags.current ? tags.current.value : ''));
+  }, []);
+
+  /* First paint: this browser's last values, so the fields are not blank for the second
+     before the first poll lands. The old 'Test title' default is deliberately gone - it
+     outlived every real stream and sat there looking like a decision someone had made. */
+  useEffect(() => {
+    const m = M();
+    if (title.current) title.current.value = m.seeded.title || '';
+    if (desc.current)  desc.current.value  = m.seeded.desc  || '';
+    if (cat.current)   cat.current.value   = m.seedCat();
+    if (tags.current)  tags.current.value  = m.seedTags();
+    recount();
+  }, []);
+
+  /* ⚠️ TITLE AND DESCRIPTION ARE SERVER-SIDE, NOT localStorage. This panel gets driven
+     from a phone as often as from the desk, and localStorage is per-browser - a title
+     typed here was simply not there on the phone, each device kept its own stale text,
+     and the only way to know which one you were looking at was to remember. A default
+     that differs by device is worse than no default, because it still looks
+     authoritative. Overwrite only a field he has not touched - still equal to what we
+     last seeded, and not currently focused. Clobbering half-typed text is help nobody
+     asks for twice. */
+  useEffect(() => {
+    const m = M();
+    for (const [ref, key] of [[title, 'title'], [desc, 'desc']]) {
+      const el = ref.current;
+      if (!el || document.activeElement === el) continue;
+      if (el.value !== m.seeded[key]) continue;
+      if (!meta[key] || meta[key] === el.value) continue;
+      el.value = meta[key];
+      m.seeded[key] = meta[key];
+    }
+    recount();
+  }, [meta.title, meta.desc]);
+
+  const over   = M().TITLE_LIMITS.filter(([lim]) => tLen > lim)
+                                 .map(([lim, who]) => who + ' ' + lim);
+  const signed = plats.filter(p => p.signed_in).map(p => p.label || p.name);
+  const ytOn   = on.has('youtube');
+  const ytIn   = !!plats.find(p => p.name === 'youtube' && p.signed_in);
+  const off    = (f) => !F[f].some(n => on.has(n));
+
+  const cats   = (s && s.twitch_categories) || null;
+  const cnames = (cats && cats.names) || [];
+  const catMsg = cats ? (cats.why || (cnames.length ? M().catNote(cats) : '')) : '';
+
+  return html`
+    <${FieldRow} label="Title" names=${F.title} on=${on}>
+      <span class="v" style=${'color:' + (over.length ? 'var(--bad)'
+                                                      : (tLen ? 'inherit' : 'var(--dim)'))}>
+        ${over.length ? tLen + ' \u2014 over ' + over.join(', ') : String(tLen)}</span>
+    <//>
+    ${/* ⚠️ THE TITLE BOX IS INERT UNTIL SOMETHING IS SIGNED IN, and a text field you can
+          type into is a stronger promise than a button you can press. Setting a title
+          needs connect.py to reach the platform: YouTube names the broadcast from Studio
+          when it auto-creates one from a persistent key, Twitch keeps whatever the channel
+          already says, and Facebook titles the live video at creation. Typing here and
+          watching the stream go out under the old name is the kind of quiet wrong that
+          only shows up after the set. */ null}
+    <div class="sub" style=${'color:' + (signed.length ? 'var(--dim)' : 'var(--accent)')}>
+      ${signed.length
+        ? 'applied to ' + signed.join(' and ') + ' when you go live'
+        : 'not applied to anything yet \u2014 no platform is signed in, so titles stay as '
+          + 'each platform already has them'}
+    </div>
+    <input type="text" id="s_title" maxlength="200" autocomplete="off"
+           placeholder="what this set is" ref=${title}
+           disabled=${off('title')} onInput=${recount} />
+
+    <${FieldRow} label="Description" names=${F.desc} on=${on} />
+    <input type="text" id="s_desc" maxlength="400" autocomplete="off"
+           placeholder="optional" ref=${desc} disabled=${off('desc')} />
+
+    <${FieldRow} label="Category" names=${F.cat} on=${on} />
+    <input type="text" id="s_cat" maxlength="60" autocomplete="off" list="catlist"
+           placeholder="e.g. Music \u2014 must match a Twitch category exactly"
+           ref=${cat} disabled=${off('cat')} />
+    ${/* ⚠️ A DATALIST, NOT A SELECT, AND THAT IS THE POINT. Twitch rejects any category
+          name that is not an exact match and fails the whole PATCH when it does, taking
+          the title down with it. These names come from connect.py's own cache, where an
+          entry is written only after /helix/games returned an id for that exact string,
+          so each was confirmed by Twitch at the moment it was used. A cache can still go
+          stale, so this offers without constraining: anything typed goes through. */ null}
+    <datalist id="catlist">
+      ${cnames.map(nm => html`<option key=${nm} value=${nm} />`)}
+    </datalist>
+    <div class="sub">${catMsg}</div>
+
+    <${FieldRow} label="Tags" names=${F.tags} on=${on}>
+      <span style=${'color:' + (tagMsg.bad ? 'var(--bad)' : 'var(--dim)')}>
+        ${tagMsg.text}</span>
+    <//>
+    <input type="text" id="s_tags" maxlength="300" autocomplete="off" list="taglist"
+           placeholder="comma separated, no spaces inside a tag"
+           ref=${tags} disabled=${off('tags')} onInput=${recount} />
+    ${/* His own previous entries, and no claim that any of them is still valid at Twitch
+          - that is what the validator above is for. */ null}
+    <datalist id="taglist">
+      ${M().loadTagsets().map(t => html`<option key=${t} value=${t} />`)}
+    </datalist>
+
+    <${FieldRow} label="Privacy" names=${F.priv} on=${on}>
+      <span style=${'color:' + (ytIn ? 'var(--dim)' : 'var(--accent)')}>
+        ${ytIn ? 'applied when the broadcast is created'
+               : 'not applied \u2014 YouTube is not signed in'}</span>
+    <//>
+    <div class="g3">
+      ${['public', 'unlisted', 'private'].map(o => html`
+        <${Btn} key=${o} label=${o} icon=${window.CAM_ICON.lock} on=${priv === o}
+                busy=${!ytOn} style=${ytIn ? '' : 'opacity:.45'}
+                onPress=${() => setPriv(o)} />`)}
+    </div>
+
+    <${FieldRow} label="Thumbnail" names=${F.thumb} on=${on} />
+    ${meta.thumb_exists
+      ? html`<img id="thumbprev" alt="configured thumbnail"
+                  src=${'/thumb?v=' + (meta.thumb_at || 0)} />` : null}
+    <div class="g2">
+      ${/* ⚠️ YOUTUBE ONLY, AND THE ROW HAS TO SAY SO. Facebook exposes no API for a live
+            video's thumbnail and Twitch does not use one, so a bare "Set thumbnail" would
+            imply it reached three platforms when it reaches one. */ null}
+      <${Btn} label="Set YouTube thumbnail" icon=${window.CAM_ICON.one} busy=${!ytOn}
+              onPress=${async () => {
+                window.showReport('uploading thumbnail\u2026', []);
+                const r = await window.rigPost('/api/stream', { action: 'thumbnail' });
+                window.showReport(r.ok ? 'thumbnail set on YouTube' : 'thumbnail FAILED',
+                                  r.lines || [r.error || ''], !r.ok);
+              }} />
+    </div>
+    <div class="sub">
+      ${meta.thumb_exists
+        ? meta.thumb_name + ' \u2014 YouTube only; Facebook has no API for a live thumbnail '
+          + 'and Twitch does not use one.'
+        : 'no image found at ' + (meta.thumb || '(unset)')}
+    </div>`;
+}
+
+function Schedule() {
+  const { s } = useStream();
+  const on = new Set(((s && s.platforms) || []).filter(p => p.enabled).map(p => p.name));
+  const none = !on.has('youtube') && !on.has('facebook');
+  const [priv] = usePrivacy();
+  const when = useRef(null);
+
+  /* Reads the title and description out of the panel above by id, exactly as the classic
+     version did. They are one form split across two components, and a second copy of the
+     text kept in a store here could disagree with the box he is looking at. */
+  const body = () => ({
+    at:      ((when.current && when.current.value) || '').replace('T', ' ').slice(0, 16),
+    title:   (document.getElementById('s_title') || {}).value.trim(),
+    desc:    (document.getElementById('s_desc') || {}).value.trim(),
+    privacy: priv,
+  });
+
+  return html`
+    <${FieldRow} label="Starts" names=${['youtube', 'facebook']} on=${on} />
+    <input type="datetime-local" id="s_when" autocomplete="off"
+           ref=${when} disabled=${none} />
+    <div class="g2">
+      <${Btn} label="Check" icon=${window.CAM_ICON.tight} busy=${none}
+              onPress=${async () => {
+                window.showReport('checking\u2026', []);
+                const r = await window.rigPost('/api/stream',
+                                  Object.assign({ action: 'schedule' }, body()));
+                window.showReport(r.ok ? 'dry run \u2014 nothing was created'
+                                       : 'could not schedule',
+                                  r.lines || [r.error || ''], !r.ok);
+              }} />
+      <${Btn} label="Schedule it" icon=${window.CAM_ICON.one} busy=${none}
+              onPress=${async () => {
+                window.showReport('scheduling\u2026', []);
+                const r = await window.rigPost('/api/stream',
+                            Object.assign({ action: 'schedule', commit: true }, body()));
+                window.showReport(r.ok ? 'scheduled \u2014 it is live on the channel now'
+                                       : 'scheduling FAILED',
+                                  r.lines || [r.error || ''], !r.ok);
+              }} />
+    </div>
+    <div class="sub">
+      ${none ? 'Enable YouTube or Facebook above to schedule.'
+             : (priv === 'public'
+                 ? 'Will be scheduled as public, so subscribers are notified.'
+                 : 'Privacy is ' + priv + ' \u2014 no notification will be sent. Set it to '
+                   + 'public above.')}
+    </div>`;
+}
+
+{
+  const a = document.getElementById('metaapp');
+  if (a) render(html`<${MetaFields} />`, a);
+  const b = document.getElementById('schedapp');
+  if (b) render(html`<${Schedule} />`, b);
 }
 
 {

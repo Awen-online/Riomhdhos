@@ -273,8 +273,26 @@ def check_dup_ids(rep, page):
     return rep.add("no duplicate id attributes", True, f"{len(first_seen)} unique ids")
 
 
+# Ids are no longer all declared in static markup: the Preact panels write their own
+# id="..." inside html`` templates, and those are as real at runtime as any other. Count
+# them too, or every converted field reads as a dangling reference. The check still earns
+# its keep - it catches a typo'd id in either half - it just no longer assumes one half.
+SCRIPT_ID = re.compile('(?:^|[^A-Za-z-])id="([A-Za-z0-9_-]+)"')
+
+
+def _ids_in_script(page):
+    # Both kinds: js_of() is classic-only, and the converted panels live in the module.
+    # Only ever added to the "known" set for reference resolution - never to the
+    # duplicate-id check, which must keep counting real markup and nothing else.
+    found = set()
+    for text, _, kind in page.scripts:
+        if kind in ("classic", "module"):
+            found.update(SCRIPT_ID.findall(text))
+    return found
+
+
 def _check_refs(rep, page, label, pattern):
-    known = {i for i, _ in page.ids}
+    known = {i for i, _ in page.ids} | _ids_in_script(page)
     bad, n_refs = [], 0
     for js, first in js_of(page):
         for m in pattern.finditer(js):
@@ -284,7 +302,7 @@ def _check_refs(rep, page, label, pattern):
                 bad.append((ident, line_of(js, m.start(), first)))
     if bad:
         return rep.add(label, False,
-                       *[f"line {line}: '{i}' has no id=\"{i}\" in the markup"
+                       *[f"line {line}: '{i}' has no id=\"{i}\" in markup or templates"
                          for i, line in sorted(set(bad), key=lambda t: t[1])])
     return rep.add(label, True, f"{n_refs} literal references, all resolve")
 
