@@ -3000,9 +3000,20 @@ loadCamera();
 // A tap clears it; otherwise the next successful call does.
 $('err').onclick = () => { $('err').textContent = ''; };
 
+/* ⚠️ THE FETCH AND THE RENDER GET SEPARATE CATCHES. One try around both means a
+   throw inside renderHealth or renderScenes is indistinguishable from the server being
+   down - and this runs every four seconds, so a render bug would repeat silently forever
+   while looking like a network blip. That is exactly how renderCategories' ReferenceError
+   spent days reporting itself as "could not reach Riastrad". A failure to draw is not a
+   failure to fetch. */
 setInterval(async () => {
-  try{
-    const s = await (await fetch('/api/state')).json();
+  let s;
+  try {
+    s = await (await fetch('/api/state')).json();
+  } catch (e) {
+    return;                       // the panel's own health row reports an absent server
+  }
+  try {
     renderHealth(s.health);
     // ⚠️ WHICH SCENE IS LIVE MUST NOT GO STALE. This poll already had the answer and threw
     // it away, so a cut made from OBS itself (or a hotkey, or the second operator) left the
@@ -3011,7 +3022,11 @@ setInterval(async () => {
     if (s.currentScene && s.currentScene !== curScene){
       curScene = s.currentScene; $('b_scene').textContent = curScene; renderScenes();
     }
-  }catch(e){}
+  } catch (e) {
+    // A bug in this file, not a network problem. Say which, and keep polling.
+    console.error('state render failed:', e);
+    $('err').textContent = 'panel render error: ' + e.message;
+  }
 }, 4000);
 </script>
 <script type="importmap">
