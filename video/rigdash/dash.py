@@ -815,11 +815,23 @@ def mixer_state():
     muting something that is not in this scene still affects every scene that has it.
     """
     cl = client()
-    prog = cl.get_scene_list().current_program_scene_name
+    sl = cl.get_scene_list()
+    prog = sl.current_program_scene_name
     try:
         in_scene = {i["sourceName"] for i in cl.get_scene_item_list(prog).scene_items}
     except Exception:
         in_scene = set()
+    # ⚠️ "NOT IN THIS SCENE" AND "IN NO SCENE" ARE DIFFERENT FACTS, and collapsing them
+    # would hide the microphone. OBS's global audio devices - Desktop Audio, Mic/Aux -
+    # belong to no scene and are audible under every one of them. A source that exists
+    # only in OTHER scenes genuinely cannot make a sound right now. The first must always
+    # be shown; only the second is safe to fold away.
+    anywhere = set()
+    for sc in (x["sceneName"] for x in sl.scenes):
+        try:
+            anywhere |= {i["sourceName"] for i in cl.get_scene_item_list(sc).scene_items}
+        except Exception:
+            pass
     rows = []
     for i in cl.get_input_list().inputs:
         name = i.get("inputName")
@@ -835,6 +847,8 @@ def mixer_state():
             "muted": bool(muted),
             "monitor": MONITOR_BACK.get(mon, "off"),
             "inScene": name in in_scene,
+            # No scene anywhere -> an OBS global audio device, always audible.
+            "always": name not in anywhere,
         })
     return {"scene": prog, "inputs": rows}
 

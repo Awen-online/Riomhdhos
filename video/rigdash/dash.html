@@ -122,6 +122,10 @@
      must never be told apart by a word alone - mid-set this is read at a glance and the
      cost of confusing them is cutting to the wrong camera on air. Red is program, and
      red is used for nothing else on this panel. */
+  .mixmore{display:block;width:100%;margin-top:8px;padding:9px;font-size:11px;
+    letter-spacing:.05em;color:var(--dim);background:transparent;cursor:pointer;
+    border:1px dashed var(--edge,#2a3634);border-radius:5px}
+  .mixmore:hover{color:var(--fg);border-color:var(--dim)}
   .mixrow{border-top:1px solid var(--edge,#2a3634);padding:9px 0}
   .mixrow:first-child{border-top:none}
   .mixhdr{display:flex;align-items:baseline;gap:8px;justify-content:space-between}
@@ -3063,7 +3067,7 @@ function Row({ r, onMute, onMonitor, busy }) {
     <div class=${'mixrow' + (r.inScene ? '' : ' global')}>
       <div class="mixhdr">
         <span class="mixnm">${r.name}</span>
-        <span class="mixdb">${r.inScene ? '' : 'global \\u00b7 '}${r.db.toFixed(1)} dB</span>
+        <span class="mixdb">${r.inScene ? '' : 'global · '}${r.db.toFixed(1)} dB</span>
       </div>
       <div class="mixctl">
         <button class=${'mutebtn' + (r.muted ? ' on' : '')} disabled=${busy}
@@ -3080,6 +3084,7 @@ function Row({ r, onMute, onMonitor, busy }) {
 function Mixer() {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const [err, setErr] = useState(null);
 
   const load = useCallback(async () => {
@@ -3114,13 +3119,30 @@ function Mixer() {
   const onMonitor = (r, type) => send({ action: 'monitor', name: r.name, type });
 
   if (err) return html`<span class="sub" style="color:var(--bad)">${err}</span>`;
-  if (!data) return html`<span class="sub">reading the mixer\\u2026</span>`;
+  if (!data) return html`<span class="sub">reading the mixer…</span>`;
 
-  const rows = data.inputs.slice().sort((a, b) =>
+  /* ⚠️ AUDIBLE NOW, NOT EVERYTHING OBS KNOWS ABOUT. Ten rows for a scene with
+     three live sources is a list you stop reading, and a control you stop reading is a
+     control you stop trusting. A source that appears only in OTHER scenes cannot make a
+     sound under this one, so it folds away behind a count.
+
+     ⚠️ BUT "IN NO SCENE" IS NOT "NOT IN THIS SCENE". Desktop Audio and Mic/Aux
+     belong to no scene and are audible under all of them - that is what `always` means.
+     Filtering naively on inScene would have hidden the microphone, which is a tidier
+     panel and a worse instrument. */
+  const audible = data.inputs.filter(r => r.inScene || r.always);
+  const elsewhere = data.inputs.filter(r => !r.inScene && !r.always);
+  const sorted = xs => xs.slice().sort((a, b) =>
     (b.inScene - a.inScene) || a.name.localeCompare(b.name));
+  const row = r => html`<${Row} key=${r.name} r=${r} busy=${busy}
+                                onMute=${onMute} onMonitor=${onMonitor} />`;
   return html`<div>
-    ${rows.map(r => html`<${Row} key=${r.name} r=${r} busy=${busy}
-                                 onMute=${onMute} onMonitor=${onMonitor} />`)}
+    ${sorted(audible).map(row)}
+    ${elsewhere.length ? html`
+      <button class="mixmore" onClick=${() => setShowAll(!showAll)}>
+        ${showAll ? 'hide' : 'show'} ${elsewhere.length} from other scenes
+      </button>` : null}
+    ${showAll ? sorted(elsewhere).map(row) : null}
   </div>`;
 }
 
