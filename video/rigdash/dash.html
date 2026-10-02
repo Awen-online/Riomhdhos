@@ -1642,7 +1642,8 @@ function presetSummary(entry){
    air right now", the other is "what should happen when a scene changes", and they were
    confusing to have in one card. */
 /* ---- mixer ---------------------------------------------------------------------- */
-let MIX = null;
+/* The mixer's state lives in the Preact component now; the classic half
+   only refreshes the scene label and triggers a reload. */
 
 /* ⚠️ THE MIXER ROWS ARE A PREACT COMPONENT NOW - see the module at the end of
    this file. This only refreshes the scene label and hands off; it deliberately does NOT
@@ -1654,7 +1655,6 @@ let MIX = null;
 async function loadMixer(){
   try {
     const j = await (await fetch('/api/mixer')).json();
-    MIX = j;
     $('v_mixscene').textContent = (j && j.scene) || '—';
   } catch(e){ /* the component reports its own fetch failures */ }
   if (window.__mixerMounted){
@@ -1665,61 +1665,7 @@ async function loadMixer(){
   }
 }
 
-async function mixPost(body){
-  try {
-    await post('/api/mixer', body);
-    await loadMixer();
-  } catch(e){ $('err').textContent = e.message; }
-}
 
-function renderMixer(){
-  if (!MIX) return;
-  const box = $('mixlist');
-  if (MIX.error){
-    box.innerHTML = '<span class="sub" style="color:var(--bad)">' + esc(MIX.error) + '</span>';
-    $('v_mixscene').textContent = '\u2014';
-    return;
-  }
-  $('v_mixscene').textContent = MIX.scene || '\u2014';
-  box.innerHTML = '';
-  // Scene sources first: those are the ones this scene can actually make a sound with.
-  const rows = (MIX.inputs || []).slice().sort((a, b) =>
-    (b.inScene - a.inScene) || a.name.localeCompare(b.name));
-  for (const r of rows){
-    const d = document.createElement('div');
-    d.className = 'mixrow' + (r.inScene ? '' : ' global');
-    d.innerHTML =
-      '<div class="mixhdr"><span class="mixnm">' + esc(r.name) + '</span>'
-      + '<span class="mixdb">' + (r.inScene ? '' : 'global \u00b7 ') + r.db.toFixed(1)
-      + ' dB</span></div>';
-    const ctl = document.createElement('div');
-    ctl.className = 'mixctl';
-
-    const mb = document.createElement('button');
-    mb.className = 'mutebtn' + (r.muted ? ' on' : '');
-    mb.textContent = r.muted ? 'muted' : 'mute';
-    mb.onclick = () => mixPost({action:'mute', name: r.name, on: !r.muted});
-    ctl.append(mb);
-
-    const ms = document.createElement('div');
-    ms.className = 'monset';
-    for (const [key, label] of [['off','off'], ['me','me'], ['both','me + air']]){
-      const b = document.createElement('button');
-      b.textContent = label;
-      if (r.monitor === key) b.className = 'sel';
-      /* ⚠️ "me" IS MONITOR_ONLY, WHICH TAKES THE SOURCE OFF THE BROADCAST. It is not a
-         louder version of "me + air" - it mutes the output while you listen. Picking it
-         on a live source silences it for everyone watching, so the three are spelled out
-         rather than offered as a single cycling button where you cannot see where you
-         are about to land. */
-      b.onclick = () => mixPost({action:'monitor', name: r.name, type: key});
-      ms.append(b);
-    }
-    ctl.append(ms);
-    d.append(ctl);
-    box.append(d);
-  }
-}
 
 /* ---- scheduling ----------------------------------------------------------------- */
 /* ⚠️ THE BROWSER'S datetime-local IS LOCAL WALL-CLOCK WITH NO ZONE, and that is exactly
