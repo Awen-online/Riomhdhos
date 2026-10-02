@@ -1644,11 +1644,25 @@ function presetSummary(entry){
 /* ---- mixer ---------------------------------------------------------------------- */
 let MIX = null;
 
+/* ⚠️ THE MIXER ROWS ARE A PREACT COMPONENT NOW - see the module at the end of
+   this file. This only refreshes the scene label and hands off; it deliberately does NOT
+   fall through to the old renderer, because two things writing one container is how you
+   get a panel flickering between two truths.
+   If the module failed to load - bad vendor path, syntax error, wrong MIME type -
+   __mixerMounted is never set and this says so loudly rather than leaving an empty card.
+   A panel that silently loses a feature is the failure this page has fought all night. */
 async function loadMixer(){
-  try { MIX = await (await fetch('/api/mixer')).json(); }
-  catch(e){ $('mixlist').innerHTML = '<span class="sub" style="color:var(--bad)">'
-            + 'could not read the mixer</span>'; return; }
-  renderMixer();
+  try {
+    const j = await (await fetch('/api/mixer')).json();
+    MIX = j;
+    $('v_mixscene').textContent = (j && j.scene) || '—';
+  } catch(e){ /* the component reports its own fetch failures */ }
+  if (window.__mixerMounted){
+    if (window.mixerRefresh) window.mixerRefresh();
+  } else {
+    $('mixlist').innerHTML = '<span class="sub" style="color:var(--bad)">'
+      + 'the mixer component did not load — check /vendor/preact.mjs</span>';
+  }
 }
 
 async function mixPost(body){
@@ -3053,4 +3067,107 @@ setInterval(async () => {
     }
   }catch(e){}
 }, 4000);
+</script>
+<script type="importmap">
+{"imports": {
+  "preact": "/vendor/preact.mjs",
+  "preact/hooks": "/vendor/hooks.mjs",
+  "htm": "/vendor/htm.mjs"
+}}
+</script>
+<script type="module">
+/* The mixer, as a Preact component.
+   ⚠️ THIS IS THE ONE PANEL CONVERTED SO FAR, DELIBERATELY. Everything else on this page
+   is still hand-written innerHTML, and this exists to find out whether the trade is
+   worth making before paying for it seven more times. The mixer was chosen because it is
+   the worst case: eleven rows of live bidirectional state, polled, where the old approach
+   rebuilt every row on every poll and would fight anything you were touching.
+
+   No build step. htm is tagged template literals, so there is no JSX to compile; the
+   import map resolves the bare specifiers to the vendored files. Edit, refresh, done -
+   the property that makes this rig survivable at a venue is intact.
+
+   If the module fails to load for any reason, loadMixer() in the classic script falls
+   back to saying so rather than leaving an empty card. A panel that silently loses a
+   feature is the failure mode this whole page has been fighting all night. */
+import { h, render } from 'preact';
+import { useState, useEffect, useCallback } from 'preact/hooks';
+import htm from 'htm';
+const html = htm.bind(h);
+
+const MON = [['off', 'off'], ['me', 'me'], ['both', 'me + air']];
+
+function Row({ r, onMute, onMonitor, busy }) {
+  return html`
+    <div class=${'mixrow' + (r.inScene ? '' : ' global')}>
+      <div class="mixhdr">
+        <span class="mixnm">${r.name}</span>
+        <span class="mixdb">${r.inScene ? '' : 'global \\u00b7 '}${r.db.toFixed(1)} dB</span>
+      </div>
+      <div class="mixctl">
+        <button class=${'mutebtn' + (r.muted ? ' on' : '')} disabled=${busy}
+                onClick=${() => onMute(r)}>${r.muted ? 'muted' : 'mute'}</button>
+        <div class="monset">
+          ${MON.map(([key, label]) => html`
+            <button class=${r.monitor === key ? 'sel' : ''} disabled=${busy}
+                    onClick=${() => onMonitor(r, key)}>${label}</button>`)}
+        </div>
+      </div>
+    </div>`;
+}
+
+function Mixer() {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch('/api/mixer');
+      const j = await r.json();
+      if (j.error) { setErr(j.error); } else { setData(j); setErr(null); }
+    } catch (e) { setErr('could not read the mixer'); }
+  }, []);
+
+  useEffect(() => {
+    load();
+    // Exposed so the classic script can refresh this when the tab opens, without the
+    // two halves needing to share a module scope.
+    window.mixerRefresh = load;
+    return () => { delete window.mixerRefresh; };
+  }, [load]);
+
+  const send = useCallback(async (body) => {
+    setBusy(true);
+    try {
+      await fetch('/api/mixer', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      await load();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  }, [load]);
+
+  const onMute = r => send({ action: 'mute', name: r.name, on: !r.muted });
+  const onMonitor = (r, type) => send({ action: 'monitor', name: r.name, type });
+
+  if (err) return html`<span class="sub" style="color:var(--bad)">${err}</span>`;
+  if (!data) return html`<span class="sub">reading the mixer\\u2026</span>`;
+
+  const rows = data.inputs.slice().sort((a, b) =>
+    (b.inScene - a.inScene) || a.name.localeCompare(b.name));
+  return html`<div>
+    ${rows.map(r => html`<${Row} key=${r.name} r=${r} busy=${busy}
+                                 onMute=${onMute} onMonitor=${onMonitor} />`)}
+  </div>`;
+}
+
+const mount = document.getElementById('mixlist');
+if (mount) {
+  mount.innerHTML = '';
+  render(html`<${Mixer} />`, mount);
+  // Tell the classic half the component took, so its fallback stays quiet.
+  window.__mixerMounted = true;
+}
 </script>

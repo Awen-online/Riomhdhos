@@ -2735,6 +2735,30 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     self._json({"error": "%s: %s" % (type(e).__name__, e)}, 500)
                 return
+            if p.startswith("/vendor/"):
+                # ⚠️ VENDORED, NOT FETCHED. preact, its hooks and htm are served from
+                # this folder because the rig goes to venues: a CDN import is a hard
+                # dependency on a network that may be hostile or absent, in the one tool
+                # you need working when everything else is going wrong. 16.7 KB on disk
+                # buys independence from that.
+                #
+                # ⚠️ AND THE MIME TYPE IS LOAD-BEARING. A browser refuses a module served
+                # as anything but a JavaScript type, silently - the import simply does not
+                # happen and the panel renders without it. Serving these as
+                # application/octet-stream would look exactly like the code being wrong.
+                name = p[len("/vendor/"):]
+                if "/" in name or "\\" in name or not name.endswith(".mjs"):
+                    self.send_error(404); return
+                f = HERE / "vendor" / name
+                if not f.is_file():
+                    self.send_error(404); return
+                self._file(f, "text/javascript; charset=utf-8")
+                return
+                f = HERE / "vendor" / name
+                if not f.is_file():
+                    self.send_error(404); return
+                self._file(f, "text/javascript; charset=utf-8")
+                return
             if p == "/thumb":
                 # ⚠️ SERVES THE CONFIGURED PATH AND NOTHING ELSE. The filename never comes
                 # from the request, so there is no traversal to defend against - the only

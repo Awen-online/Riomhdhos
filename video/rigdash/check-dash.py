@@ -22,19 +22,71 @@ NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 
 def scripts(html):
-    return "\n".join(re.findall(r"<script[^>]*>(.*?)</script>", html, re.S))
+    """Classic script text only.
+
+    ⚠️ CLASSIC AND MODULE SCRIPTS CANNOT BE CHECKED AS ONE FILE. This used to join every
+    <script> together, which was fine while there was one. The moment a
+    <script type="module"> appeared, its `import` statements made the concatenation
+    invalid as a classic script and node --check failed on a page that was perfectly
+    correct - the tool reporting its own assumption as the page's bug.
+
+    An <script type="importmap"> is JSON, not JavaScript, and would fail even harder.
+    """
+    return "\n".join(m.group(2) for m in _script_blocks(html) if m.group(1) == "classic")
+
+
+def module_scripts(html):
+    return "\n".join(m.group(2) for m in _script_blocks(html) if m.group(1) == "module")
+
+
+def _script_blocks(html):
+    """[(kind, text)] for every <script>, where kind is classic, module or importmap."""
+    import re as _re
+
+    class _M:
+        def __init__(self, k, t):
+            self._k, self._t = k, t
+
+        def group(self, n):
+            return self._k if n == 1 else self._t
+
+    out = []
+    for m in _re.finditer(r"<script([^>]*)>(.*?)</script>", html, _re.S):
+        attrs, text = m.group(1), m.group(2)
+        if 'type="importmap"' in attrs:
+            kind = "importmap"
+        elif 'type="module"' in attrs:
+            kind = "module"
+        else:
+            kind = "classic"
+        out.append(_M(kind, text))
+    return out
 
 
 def check_syntax(html, js):
-    """node --check. Catches the ordinary slips, and costs nothing."""
-    tmp = pathlib.Path(os.environ.get("TEMP", "/tmp")) / "_dashcheck.js"
-    tmp.write_text(js, encoding="utf-8")
-    try:
-        r = subprocess.run(["node", "--check", str(tmp)], capture_output=True,
-                           text=True, timeout=60, creationflags=NO_WINDOW)
-    except FileNotFoundError:
-        return None, "node not on PATH - syntax unchecked"
-    return (r.returncode == 0), ((r.stdout or "") + (r.stderr or "")).strip()[:400]
+    """node --check, once per script kind.
+
+    The extension decides how node parses it: .js is a classic script and rejects
+    `import`, .mjs is a module and accepts it. Checking both separately is the only way
+    to tell a real syntax error from a script simply being the other kind.
+    """
+    tmpdir = pathlib.Path(os.environ.get("TEMP", "/tmp"))
+    jobs = [("classic", tmpdir / "_dashcheck.js", js)]
+    mod = module_scripts(html)
+    if mod.strip():
+        jobs.append(("module", tmpdir / "_dashcheck.mjs", mod))
+    notes = []
+    for kind, tmp, text in jobs:
+        tmp.write_text(text, encoding="utf-8")
+        try:
+            r = subprocess.run(["node", "--check", str(tmp)], capture_output=True,
+                               text=True, timeout=60, creationflags=NO_WINDOW)
+        except FileNotFoundError:
+            return None, "node not on PATH - syntax unchecked"
+        if r.returncode != 0:
+            return False, "%s: %s" % (kind, ((r.stdout or "") + (r.stderr or "")).strip()[:300])
+        notes.append("%s ok" % kind)
+    return True, ", ".join(notes)
 
 
 def check_duplicate_functions(html, js):

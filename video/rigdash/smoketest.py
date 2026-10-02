@@ -71,8 +71,9 @@ class Page(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.ids = []            # [(id, line)] in document order, duplicates kept
-        self.scripts = []        # [(text, first line)]
+        self.scripts = []        # [(text, first line, kind)]
         self._in_script = False
+        self._kind = "classic"
 
     def handle_starttag(self, tag, attrs):
         for name, value in attrs:
@@ -80,6 +81,13 @@ class Page(HTMLParser):
                 self.ids.append((value, self.getpos()[0]))
         if tag == "script":
             self._in_script = True
+            # ⚠️ THE TYPE DECIDES HOW IT MUST BE PARSED. A module's `import` is a syntax
+            # error in a classic script, and an importmap is JSON that is not JavaScript
+            # at all - checking either as a plain script reports the checker's assumption
+            # as the page's bug. The page was correct; this stage was not.
+            t = dict((k, v or "") for k, v in attrs).get("type", "")
+            self._kind = ("importmap" if t == "importmap"
+                          else "module" if t == "module" else "classic")
 
     def handle_endtag(self, tag):
         if tag == "script":
@@ -87,7 +95,7 @@ class Page(HTMLParser):
 
     def handle_data(self, data):
         if self._in_script and data.strip():
-            self.scripts.append((data, self.getpos()[0]))
+            self.scripts.append((data, self.getpos()[0], self._kind))
 
 
 class Report:
@@ -151,7 +159,7 @@ def stage_page(rep, url):
     if not page.scripts:
         rep.add("page carries a <script>", False, "no inline script in the served page")
         return None
-    total = sum(len(s) for s, _ in page.scripts)
+    total = sum(len(s) for s, _, k in page.scripts if k != "importmap")
     rep.add("page carries a <script>", True,
             f"{len(page.scripts)} block(s), {total} bytes of JavaScript")
     return page
@@ -166,13 +174,16 @@ def stage_syntax(rep, page):
                 "node not found - cannot parse", skipped=True)
         return
 
-    for js, first_line in page.scripts:
+    for js, first_line, kind in page.scripts:
+        if kind == "importmap":
+            continue                      # JSON, validated by the browser, not by node
         # ⚠️ Pad the temp file so its line numbers ARE dash.html's line numbers. node
         # reports a line in the file it was handed, and "error on line 458" of something
         # that only ever existed in %TEMP% is not a place you can stand and look.
         padded = "\n" * (first_line - 1) + js
-        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
-                                         encoding="utf-8") as fh:
+        # .mjs makes node parse it as a module, which is the only way `import` is legal.
+        with tempfile.NamedTemporaryFile("w", suffix=(".mjs" if kind == "module" else ".js"),
+                                         delete=False, encoding="utf-8") as fh:
             fh.write(padded)
             tmp = Path(fh.name)
         try:
@@ -213,7 +224,7 @@ DOLLAR_ANY = re.compile(r"\$\(")
 def js_of(page):
     """Each script block as (text, line-number offset) so matches can be reported in
     dash.html coordinates."""
-    return page.scripts
+    return [(t, l) for t, l, k in page.scripts if k == "classic"]
 
 
 def line_of(text, pos, first_line):
