@@ -426,6 +426,26 @@
     <img id="thumbprev" alt="configured thumbnail" hidden>
     <div class="g2" id="thumbbtns"></div>
     <div class="sub" id="thumbnote">&mdash;</div>
+    <h2>Schedule</h2>
+    <div class="card">
+      <div class="row"><span class="k">Starts</span>
+        <span class="v sub"><span class="pchips" id="pc_sched"></span><span id="pw_sched"></span></span></div>
+      <input type="datetime-local" id="s_when" autocomplete="off">
+      <div class="g2" id="schedbtns"></div>
+      <div class="sub" id="schednote">&mdash;</div>
+      <div class="note">&#9888;&#65039; <b>Scheduling publishes immediately.</b> The
+        YouTube broadcast appears on your channel and the Facebook video posts to the
+        Page as soon as it is created &mdash; that is the point, it is what lets people
+        set a reminder, but it also means an accidental one is visible to everyone.
+        <b>Check</b> runs a dry run and creates nothing; only <b>Schedule it</b>
+        publishes.<br><br>
+        Uses the title, description and privacy above. <b>Privacy must be public</b> or
+        YouTube sends no notification and the stream never appears under Upcoming.<br><br>
+        Twitch has no scheduled-broadcast API &mdash; set its schedule in the Creator
+        Dashboard by hand. Going live later <b>adopts</b> what you scheduled rather than
+        creating a second one.</div>
+    </div>
+
     <div id="preflight"></div>
     <div class="rec">
       <button id="recbtn" class="recbtn cold"><span class="glyph"></span></button>
@@ -1687,6 +1707,59 @@ function renderMixer(){
   }
 }
 
+/* ---- scheduling ----------------------------------------------------------------- */
+/* ⚠️ THE BROWSER'S datetime-local IS LOCAL WALL-CLOCK WITH NO ZONE, and that is exactly
+   what connect.py wants - it resolves the zone for that DATE, which matters because
+   19:00 is CDT in October and CST in November. Sending an ISO instant instead would
+   throw that away and land an hour out across the boundary, publicly, with people
+   already reminded. So the value goes through untouched: "2026-11-05T19:00". */
+function renderSchedule(){
+  const on = new Set(((STREAM && STREAM.platforms) || [])
+    .filter(p => p.enabled).map(p => p.name));
+  const box = $('pc_sched');
+  if (box){
+    box.innerHTML = ['youtube', 'facebook'].map(n => {
+      const m = PLAT_MARK[n], live = on.has(n);
+      return '<span class="pchip' + (live ? ' on' : '') + '" title="' + n + '">'
+           + PLAT_SVG(m[1], live ? m[0] : 'currentColor') + '</span>';
+    }).join('');
+  }
+  const none = !on.has('youtube') && !on.has('facebook');
+  const warn = $('pw_sched');
+  if (warn) warn.innerHTML = none ? ' <span class="chanwarn">no channel on</span>' : '';
+  const when = $('s_when');
+  if (when) when.disabled = none;
+
+  const bb = $('schedbtns');
+  if (!bb) return;
+  bb.innerHTML = '';
+  const body = () => ({
+    at: ($('s_when').value || '').replace('T', ' ').slice(0, 16),
+    title: $('s_title').value.trim(),
+    desc: $('s_desc').value.trim(),
+    privacy: PRIVACY,
+  });
+  camBtn(bb, 'Check', CAM_ICON.tight, false, async () => {
+    showReport('checking…', []);
+    const r = await post('/api/stream', Object.assign({action: 'schedule'}, body()));
+    showReport(r.ok ? 'dry run — nothing was created' : 'could not schedule',
+               r.lines || [r.error || ''], !r.ok);
+  });
+  camBtn(bb, 'Schedule it', CAM_ICON.one, false, async () => {
+    showReport('scheduling…', []);
+    const r = await post('/api/stream',
+      Object.assign({action: 'schedule', commit: true}, body()));
+    showReport(r.ok ? 'scheduled — it is live on the channel now'
+                    : 'scheduling FAILED', r.lines || [r.error || ''], !r.ok);
+  });
+  const n = $('schednote');
+  if (n) n.textContent = none
+    ? 'Enable YouTube or Facebook above to schedule.'
+    : (PRIVACY === 'public'
+        ? 'Will be scheduled as public, so subscribers are notified.'
+        : 'Privacy is ' + PRIVACY + ' — no notification will be sent. Set it to public above.');
+}
+
 function renderSwitcher(){
   if (!SP) return;
   const studio = !!SP.studio;
@@ -2219,6 +2292,7 @@ function renderStream(){
   renderPrivacy();
   // Last, deliberately: it disables controls in groups that the lines above rebuild.
   renderChannelChips(s.platforms);
+  renderSchedule();
   const bb = $('bcastbtns'); bb.innerHTML = '';
   if (!obs.active){
     camBtn(bb, 'Re-check destinations', CAM_ICON.tight, false, async () => {

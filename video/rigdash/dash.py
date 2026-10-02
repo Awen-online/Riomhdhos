@@ -2958,6 +2958,29 @@ class Handler(BaseHTTPRequestHandler):
                     payload, code = set_enabled(body.get("platform"), bool(body.get("on")))
                     self._json(payload, code); return
 
+                if act == "schedule":
+                    # ⚠️ TWO STEPS, NOT ONE, AND THE CHECK IS NOT OPTIONAL. Scheduling
+                    # publishes: a YouTube broadcast appears on the channel the moment it
+                    # is created and a Facebook live video posts to the Page, both
+                    # notifying followers. So the panel always runs --dry-run first and
+                    # shows exactly what would be created; `commit` is a second,
+                    # deliberate press. The same reasoning as golive, for the same reason
+                    # - an accidental one is visible to everyone and awkward to retract.
+                    at = (body.get("at") or "").strip()
+                    title = (body.get("title") or "").strip()
+                    if not at or not title:
+                        self._json({"ok": False,
+                                    "lines": ["a date, a time and a title are all required"]})
+                        return
+                    a = ["schedule", "--at", at, "--title", title]
+                    if (body.get("desc") or "").strip():
+                        a += ["--desc", body["desc"].strip()]
+                    if body.get("privacy") in ("public", "unlisted", "private"):
+                        a += ["--privacy", body["privacy"]]
+                    if not body.get("commit"):
+                        a.append("--dry-run")
+                    self._json(connect_run(a, timeout=120)); return
+
                 if act == "preflight":
                     # Creates nothing. Refreshes tokens and does one cheap read per
                     # platform, so "armed" can be checked without littering the channel
