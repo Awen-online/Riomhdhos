@@ -515,6 +515,26 @@ def stage_browser(rep, url, settle):
             proc.kill()
         shutil.rmtree(profile, ignore_errors=True)
 
+    # ⚠️ A 503 FROM AN OBS-BACKED ENDPOINT IS AN ANSWER WHEN OBS IS SHUT, and
+    # treating it as a fault made this stage impossible to pass with OBS closed - which
+    # is most of the time. A suite with a permanent red is a suite nobody reads, and this
+    # one then hides the real console errors it exists to catch.
+    #
+    # It is excused on evidence, not by name: ask the dashboard whether OBS is actually
+    # connected, and only forgive the 503 when it says no. With OBS up, a 503 from the
+    # mixer is a genuine fault and still fails.
+    obs_up, note = None, None
+    if any("/api/mixer" in e and "503" in e for e in errors):
+        try:
+            _, raw = fetch(url.split("#")[0].rstrip("/") + "/api/stream", 10)
+            obs_up = bool((json.loads(raw).get("obs") or {}).get("connected"))
+        except Exception:
+            obs_up = None          # could not tell - keep the failure rather than guess
+        if obs_up is False:
+            errors = [e for e in errors
+                      if not ("/api/mixer" in e and "503" in e)]
+            note = "/api/mixer 503 ignored: OBS is closed, which is what it reports"
+
     # Dedupe but keep order: a 1 Hz poll against a dead endpoint produces the same line
     # six times, and six copies of one fault reads as six faults.
     seen, uniq = set(), []
@@ -528,7 +548,8 @@ def stage_browser(rep, url, settle):
                        *([f"... and {len(uniq) - 20} more"] if len(uniq) > 20 else []))
     return rep.add("browser console clean", True,
                    f"{settle:g}s after load, no console errors"
-                   + (f", {len(warnings)} warnings" if warnings else ""))
+                   + (f", {len(warnings)} warnings" if warnings else ""),
+                   *([note] if note else []))
 
 
 # ------------------------------------------------------------------

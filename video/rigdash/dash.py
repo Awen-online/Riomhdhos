@@ -2997,13 +2997,17 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(payload, code); return
 
                 if act == "schedule":
-                    # ⚠️ TWO STEPS, NOT ONE, AND THE CHECK IS NOT OPTIONAL. Scheduling
-                    # publishes: a YouTube broadcast appears on the channel the moment it
-                    # is created and a Facebook live video posts to the Page, both
-                    # notifying followers. So the panel always runs --dry-run first and
-                    # shows exactly what would be created; `commit` is a second,
-                    # deliberate press. The same reasoning as golive, for the same reason
-                    # - an accidental one is visible to everyone and awkward to retract.
+                    # ⚠️ SCHEDULING PUBLISHES. A YouTube broadcast appears on the
+                    # channel the moment it is created and a Facebook live video posts to
+                    # the Page, both notifying followers. Nothing is created without
+                    # `commit`, so the default really is a dry run.
+                    #
+                    # ⚠️ BUT THE DRY RUN IS NOT AN INTERLOCK, whatever this comment
+                    # used to claim. "Check" and "Schedule it" are two independent buttons
+                    # and nothing makes you press the first: "Schedule it" on its own
+                    # publishes immediately. That was worth writing down rather than
+                    # trusting, because the old wording here read as a guarantee the code
+                    # never made. The panel asks for confirmation instead.
                     at = (body.get("at") or "").strip()
                     title = (body.get("title") or "").strip()
                     if not at or not title:
@@ -3111,6 +3115,15 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     self._json({"ok": True, "action": act}); return
                 if act in ("obs_start", "obs_stop"):
+                    # ⚠️ THE RECORDING FAILURE GOES IN THE REPORT. Both of these
+                    # used to wrap the record call in `except Exception: pass`, which is
+                    # the one thing the golive branch above explicitly refuses to do - and
+                    # on stop it silently permitted the exact hazard the comment below
+                    # names. A recording that would not stop keeps filling the disk, and
+                    # the panel said "ok". It still does not fail the request: the stream
+                    # starting or stopping is the thing being asked for, and that part
+                    # worked. It just has to be said out loud.
+                    lines = []
                     try:
                         cl = obsctl.connect(timeout=4)
                         if act == "obs_start":
@@ -3118,8 +3131,11 @@ class Handler(BaseHTTPRequestHandler):
                             if prefs().get("record_with_golive"):
                                 try:
                                     cl.start_record()
-                                except Exception:
-                                    pass
+                                    lines.append("recording: started")
+                                except Exception as e:
+                                    lines.append(
+                                        f"recording: FAILED, {type(e).__name__} - the "
+                                        f"stream is live but nothing is being saved")
                         else:
                             cl.stop_stream()
                             # Symmetry: if arming it started the recording, stopping the
@@ -3128,12 +3144,16 @@ class Handler(BaseHTTPRequestHandler):
                             if prefs().get("record_with_golive"):
                                 try:
                                     cl.stop_record()
-                                except Exception:
-                                    pass
+                                    lines.append("recording: stopped and saved")
+                                except Exception as e:
+                                    lines.append(
+                                        f"recording: FAILED to stop, {type(e).__name__} - "
+                                        f"it may still be running and filling the disk")
                     except (Exception, SystemExit) as e:
                         self._json({"error": f"OBS not reachable: {type(e).__name__}"}, 503)
                         return
-                    self._json({"ok": True, "action": act}); return
+                    bad = any("FAILED" in l for l in lines)
+                    self._json({"ok": not bad, "action": act, "lines": lines}); return
                 self._json({"error": f"unknown action {act!r}"}, 400); return
 
             if p == "/api/bridges":

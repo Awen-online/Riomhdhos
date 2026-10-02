@@ -1170,7 +1170,7 @@ function renderDevices(){
       if (live){
         const dormant = !!rc.dormant;
         const col = dormant ? 'var(--accent)' : 'var(--ok)';
-        // \u26a0\ufe0f THE THIN ROW WAS NOT 'NO INFORMATION', IT WAS THE WRONG SOURCE.
+        // ⚠️ THE THIN ROW WAS NOT 'NO INFORMATION', IT WAS THE WRONG SOURCE.
         // Android version, patch level, serial and battery all come from `adb devices`,
         // and this phone is deliberately never on adb - so those four were simply blank
         // next to a Pixel 8 that listed all of them, which reads as a phone half falling
@@ -1260,7 +1260,7 @@ function renderDevices(){
                + (d.healthPct ? '  \u00b7  health ' + d.healthPct + '%' : '')
                + (d.cycles ? '  \u00b7  ' + d.cycles + ' cyc' : '');
     const where = d.ip ? d.ip : (d.usb ? 'usb: ' + d.usb : '\u2014');
-    // \u26a0\ufe0f THE AVB COLOUR IS A ROOT OF TRUST, NOT A GRADE, and 'verified yellow'
+    // ⚠️ THE AVB COLOUR IS A ROOT OF TRUST, NOT A GRADE, and 'verified yellow'
     // on its own reads like a warning to anyone who does not already know that. YELLOW is
     // the CORRECT state here: the bootloader is relocked and the boot image is verified
     // against GrapheneOS's own key instead of Google's. GREEN would mean the stock OS.
@@ -2471,7 +2471,7 @@ function Switcher({ sp, busy, send }) {
   const prog = sp.currentScene, prev = sp.previewScene;
   const scenes = sp.obsScenes || [];
 
-  /* \u26a0\ufe0f IN STUDIO MODE A TAP SETS PREVIEW, NEVER PROGRAM. Sending program here would
+  /* ⚠️ IN STUDIO MODE A TAP SETS PREVIEW, NEVER PROGRAM. Sending program here would
      cut to air the instant you touched a scene - no transition, no second look, which is
      exactly what studio mode exists to prevent, and the mistake is made in front of
      everyone watching. With studio mode off there is no preview to set, so a tap IS a
@@ -2547,7 +2547,7 @@ function Presets({ sp, busy, send }) {
   const on = !!(sp.presets && sp.presets.enabled);
   const known = Object.keys((sp.presets || {}).scenes || {});
   const scenes = (sp.obsScenes && sp.obsScenes.length) ? sp.obsScenes : known;
-  /* \u26a0\ufe0f A PRESET WHOSE SCENE NO LONGER EXISTS MUST STILL BE VISIBLE. Presets are keyed
+  /* ⚠️ A PRESET WHOSE SCENE NO LONGER EXISTS MUST STILL BE VISIBLE. Presets are keyed
      by scene NAME, so renaming a scene in OBS orphans its preset - and since this list is
      built from the scenes OBS reports, an orphan would simply not appear. It would stop
      firing with nothing anywhere saying so. Shown first, with the only useful action. */
@@ -2582,7 +2582,7 @@ function Presets({ sp, busy, send }) {
     </div>`;
 }
 
-/* \u26a0\ufe0f ONE STORE, SHARED, NOT ONE FETCH PER COMPONENT. The Audio card sits between
+/* ⚠️ ONE STORE, SHARED, NOT ONE FETCH PER COMPONENT. The Audio card sits between
    the switcher and the preset list in the markup, so the two cannot be one subtree
    without moving the mixer - which means two mounts. Giving each its own useState and
    its own fetch would double the OBS round trips on the slowest endpoint here, and let
@@ -2641,7 +2641,7 @@ for (const [id, which] of [['switcherapp', 'switcher'], ['presetsapp', 'presets'
 window.__scenesMounted = true;
 
 /* ---- Destinations --------------------------------------------------------------------
-   \u26a0\ufe0f THIS REPLACES A HAND-WRITTEN DIFF, which is the whole reason it is worth
+   ⚠️ THIS REPLACES A HAND-WRITTEN DIFF, which is the whole reason it is worth
    converting. The classic version rebuilt every row with innerHTML, and that destroyed
    the arm switch underneath whatever finger was on it: press, rebuild, release onto a
    node that no longer exists, click never fires. The switch looked broken while the API
@@ -2656,7 +2656,7 @@ const DEST_WHY = {
   stopped: 'not running',
   idle:    'nothing is being sent yet - start the stream in OBS',
 };
-/* \u26a0\ufe0f EVERY CHANNEL IS ALWAYS LISTED, set up or not. Showing only what is pushing meant
+/* ⚠️ EVERY CHANNEL IS ALWAYS LISTED, set up or not. Showing only what is pushing meant
    an unconfigured rig rendered an empty box - technically true and useless, because the
    question behind "what is going out" is usually "why isn't it". Setup state and live
    state are the same row at different moments. */
@@ -2665,7 +2665,7 @@ const SETUP = {
   not_connected: { col: 'var(--accent)', chip: 'not signed in', step: 'sign in once at the desk: python connect.py ' },
   no_key:        { col: 'var(--accent)', chip: 'no key',        step: 'signed in, no stream key yet: python connect.py ' },
   off:           { col: 'var(--dim)',    chip: 'off',           step: 'key is set \u2014 flick the switch to arm it' },
-  /* \u26a0\ufe0f needs_key HAD NO ENTRY, so X fell through to the default and rendered its raw
+  /* ⚠️ needs_key HAD NO ENTRY, so X fell through to the default and rendered its raw
      state string - "needs_key" - with no guidance at all. connect.py has always reported
      this state; the table simply never covered it. A row naming an internal constant is
      worse than no row: it reads as a fault in the panel rather than a step you have not
@@ -2745,15 +2745,18 @@ function OrphanRow({ d }) {
 function Destinations() {
   const { s, err } = useStream();
   const [busy, setBusy] = useState(false);
+  const latch = useRef(false);   // see Btn: state is a render away, a ref is immediate
 
   const onArm = useCallback(async (p) => {
+    if (latch.current) return;
+    latch.current = true;
     setBusy(true);
     try {
       await window.rigPost('/api/stream',
                            { action: 'enable', platform: p.name, on: !p.enabled });
     } catch (e) {
       if (window.showReport) window.showReport(e.message, [], true);
-    } finally { setBusy(false); window.rigLoadStream(); }
+    } finally { latch.current = false; setBusy(false); window.rigLoadStream(); }
   }, []);
 
   if (!s) return html`<h2>Destinations</h2><div class="card">
@@ -2832,16 +2835,26 @@ function useStream() {
 /* camBtn's group lock, as a component. The lock matters: a second press during an action
    queues another round trip behind the first and the panel drifts out of step with the
    rig. `busy` locks the group, `pend` marks the one that was pressed. */
+/* ⚠️ THE LATCH IS A REF, NOT THE STATE. Setting `pend` schedules a render, and
+   the button is only really disabled once that render lands - which is a microtask away,
+   so it does stop an ordinary double-click. It does NOT stop two clicks delivered in the
+   same task, and camBtn (which this replaced) was immune because it wrote `disabled`
+   straight onto the DOM nodes. Measured: three .click() calls in one task ran the handler
+   three times. On "Schedule it" that is two public broadcasts, so the latch has to be
+   something that changes the instant the first click is handled. */
 function Btn({ label, icon, on, busy, style, onPress }) {
   const [pend, setPend] = useState(false);
+  const latch = useRef(false);
   return html`
     <button class=${(on ? 'sel' : '') + (pend ? ' pending' : '')} style=${style || ''}
             disabled=${busy || pend}
             onClick=${async () => {
+              if (latch.current) return;
+              latch.current = true;
               setPend(true);
               try { await onPress(); }
               catch (e) { document.getElementById('err').textContent = e.message; }
-              finally { setPend(false); }
+              finally { latch.current = false; setPend(false); }
             }}>
       ${icon ? html`<span class="ic"
                           dangerouslySetInnerHTML=${{ __html: icon }}></span>` : null}${label}
@@ -2909,6 +2922,7 @@ function BcastHead() {
 function GoLive() {
   const { s, err, force } = useStream();
   const [busy, setBusy] = useState(false);
+  const latch = useRef(false);   // see Btn: state is a render away, a ref is immediate
   if (!s) return html`<div class="sub">${err || 'reading\u2026'}</div>`;
   /* ⚠️ DO NOT GIVE CONFIDENT INSTRUCTIONS UNDER A FAILURE NOTICE. The header says
      the dashboard is unreachable and this panel went on telling him to press a button
@@ -2951,7 +2965,14 @@ function GoLive() {
       /* The one confirm() on the panel, and it earns its place: an accidental stop
          mid-set costs the set. */
       if (!confirm('Stop the broadcast?')) return;
-      await window.rigPost('/api/stream', { action: 'obs_stop' });
+      /* The server now says whether the recording stopped cleanly. It reports ok:false
+         with the stream already stopped when it did not, because the broadcast ending is
+         what was asked for - but a recording still running and filling the disk is the
+         thing you would otherwise find out about tomorrow. */
+      const r = await window.rigPost('/api/stream', { action: 'obs_stop' });
+      if (r && r.lines && r.lines.length)
+        window.showReport(r.ok ? 'stopped' : 'stopped \u2014 but read this',
+                          r.lines, !r.ok);
       reload(1200); return;
     }
     if (armed) { await window.rigGoLive(false); return; }
@@ -2965,12 +2986,19 @@ function GoLive() {
      it says what WILL happen. Whether it IS happening is a separate fact on its own
      line, because "armed" and "recording" sharing one indicator is how you end up with a
      set that was never saved. */
+  /* ⚠️ PAUSED IS NOT RECORDING, and OBS reports it separately. The server has
+     always sent `paused` and this line ignored it, so a recording paused by a stray
+     hotkey read as "recording \u2014 12m 30s" with a clock that had quietly stopped. That
+     is the frozen-number trap the feed panel already warns about, in the one place where
+     believing it means finding out afterwards that the set was not saved. */
+  const mmss = Math.floor((rec.seconds || 0) / 60) + 'm ' + ((rec.seconds || 0) % 60) + 's';
+  const gb = rec.bytes ? ', ' + (rec.bytes / 1073741824).toFixed(2) + ' GB' : '';
   const recText = !rec.connected
     ? 'OBS not reachable \u2014 cannot tell whether anything is recording'
     : rec.active
-      ? ('recording \u2014 ' + Math.floor((rec.seconds || 0) / 60) + 'm '
-         + ((rec.seconds || 0) % 60) + 's'
-         + (rec.bytes ? ', ' + (rec.bytes / 1073741824).toFixed(2) + ' GB' : ''))
+      ? (rec.paused
+          ? 'recording is PAUSED \u2014 nothing is being written. Stopped at ' + mmss + gb
+          : 'recording \u2014 ' + mmss + gb)
       : (rec.armed ? 'not recording \u2014 will start when you go live'
                    : 'not recording, and not armed \u2014 nothing will be saved');
 
@@ -2981,10 +3009,12 @@ function GoLive() {
                                      : (obs.active ? 'live' : (armed ? 'armed' : 'cold')))}
               aria-label=${label} disabled=${busy || stale}
               onClick=${async () => {
+                if (latch.current) return;
+                latch.current = true;
                 setBusy(true);
                 try { await press(); }
                 catch (e) { document.getElementById('err').textContent = e.message; }
-                finally { setBusy(false); }
+                finally { latch.current = false; setBusy(false); }
               }}><span class="glyph"></span></button>
       <div class="reclabel"
            style=${!stale && (obs.active || armed) ? 'color:var(--bad)' : ''}>
@@ -3006,7 +3036,9 @@ function GoLive() {
                 reload(900);
               }} />
     </div>
-    <div class="sub">${recText}</div>
+    <div class="sub"
+         style=${rec.connected && rec.active && rec.paused ? 'color:var(--bad)' : ''}>
+      ${recText}</div>
     <div class="g2">
       ${!obs.active ? html`
         <${Btn} label="Re-check destinations" icon=${I.tight} busy=${busy || stale}
@@ -3253,8 +3285,11 @@ function Schedule() {
      text kept in a store here could disagree with the box he is looking at. */
   const body = () => ({
     at:      ((when.current && when.current.value) || '').replace('T', ' ').slice(0, 16),
-    title:   (document.getElementById('s_title') || {}).value.trim(),
-    desc:    (document.getElementById('s_desc') || {}).value.trim(),
+    /* ⚠️ `(el || {}).value.trim()` IS NOT A GUARD. With the element missing it
+       reads undefined and then calls .trim() on it, so the "safe" version throws exactly
+       where the unguarded one would. Default the value, not the element. */
+    title:   ((document.getElementById('s_title') || {}).value || '').trim(),
+    desc:    ((document.getElementById('s_desc') || {}).value || '').trim(),
     privacy: priv,
   });
 
@@ -3272,8 +3307,14 @@ function Schedule() {
                                        : 'could not schedule',
                                   r.lines || [r.error || ''], !r.ok);
               }} />
+      ${/* ⚠️ THIS ONE PUBLISHES, so it asks - the same rule as Stop. "Check"
+            and "Schedule it" are independent buttons and nothing makes you press Check
+            first, so this is the only thing standing between a mis-tap and a broadcast
+            appearing on the channel with everyone's notifications going out. */ null}
       <${Btn} label="Schedule it" icon=${window.CAM_ICON.one} busy=${none}
               onPress=${async () => {
+                if (!confirm('Schedule it now? This publishes to the channel immediately '
+                             + 'and notifies followers.')) return;
                 window.showReport('scheduling\u2026', []);
                 const r = await window.rigPost('/api/stream',
                             Object.assign({ action: 'schedule', commit: true }, body()));
