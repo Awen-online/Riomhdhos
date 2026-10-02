@@ -468,17 +468,7 @@
       <b>Stop</b> asks first. An accidental stop mid-set costs the set.</div>
   </div>
 
-  <h2>Destinations</h2>
-  <div class="card">
-    <div class="row"><span class="k">Ingest from OBS</span><span class="v" id="v_ingest">&mdash;</span></div>
-    <div id="destlist"><span class="sub">&mdash;</span></div>
-    <div class="g2" id="relaybtns"></div>
-    <div class="note">Each destination is its own ffmpeg reading the same local RTMP path,
-      so one platform dropping cannot take the others down, and a dead one retries on its
-      own with backoff. <b>Restart relay</b> bounces the whole scheduled task &mdash; it
-      does not touch OBS, and OBS keeps sending while it comes back.<br><br>
-      Keys live in the relay's own <code>keys.env</code>, never here and never in a log.</div>
-  </div>
+  <div id="destapp"></div>
 </section>
 
 <!-- ⚠️ READ-ONLY, AND THAT IS STRUCTURAL. Nothing in this tab can post, reply or
@@ -1723,26 +1713,6 @@ function phoneMark(label){
    from the progress file being fresh AND its byte counter advancing; this only paints it.
    'stalled' is the state that matters - a pusher alive and sending nothing - and it is the
    one a single green/red pair would hide. */
-const DEST_COL = { feeding:'var(--ok)', stalled:'var(--bad)', stopped:'var(--dim)',
-                   /* Idle is the resting state between shows, not a fault. */
-                   idle:'var(--dim)' };
-const DEST_WHY = {
-  stalled: 'alive but nothing is reaching the platform',
-  stopped: 'not running',
-  idle:    'nothing is being sent yet - start the stream in OBS',
-};
-/* ⚠️ EVERY CHANNEL IS ALWAYS LISTED, set up or not. Showing only what is currently pushing
-   meant an unconfigured rig rendered an empty box - technically true and useless, because
-   the question behind "what's going out" is usually "why isn't it". Setup state and live
-   state are the same row at different moments, so they share one. Ordered by how far
-   through setup the channel is, so the next thing to do is the top red row. */
-const SETUP = {
-  needs_app:     { col:'var(--dim)',    chip:'no app',       step:'app not registered — add its credentials to oauth.env' },
-  not_connected: { col:'var(--accent)', chip:'not signed in',step:'sign in once at the desk: python connect.py ' },
-  no_key:        { col:'var(--accent)', chip:'no key',       step:'signed in, no stream key yet: python connect.py ' },
-  off:           { col:'var(--dim)',    chip:'off',          step:'key is set — flick the switch to arm it' },
-  ready:         { col:'var(--ok)',     chip:'ready',        step:'will receive the stream' },
-};
 let STREAM = null;
 
 function hhmmss(s){
@@ -1755,6 +1725,10 @@ function mb(n){
   if (!n) return '0 MB';
   return n >= 1073741824 ? (n/1073741824).toFixed(2) + ' GB' : Math.round(n/1048576) + ' MB';
 }
+/* Shared with the Preact modules at the end of this file. Exposed rather than copied:
+   two implementations of one formatter drift, and the drift reads as two parts of the
+   same panel disagreeing about the same number. */
+window.fmt = { hhmmss, mb };
 
 function renderStream(){
   const s = STREAM; if (!s) return;
@@ -1788,183 +1762,6 @@ function renderStream(){
     $('v_bcast').textContent = obs.connected ? 'OBS idle' : 'OBS not reachable';
   }
 
-  const ing = s.ingest || {};
-  $('v_ingest').textContent = ing.error ? 'relay not answering'
-      : (ing.ready ? 'ready · ' + ing.readers + ' reader' + (ing.readers === 1 ? '' : 's')
-                     + ' · ' + mb(ing.bytes)
-                   : 'no source publishing');
-  $('v_ingest').style.color = ing.error ? 'var(--bad)'
-      : (ing.ready ? 'var(--ok)' : 'var(--dim)');
-
-  const plats = s.platforms || [];
-  const byName = Object.fromEntries(ds.map(d => [d.name, d]));
-  const box = $('destlist');
-
-  /* ⚠️ DO NOT REBUILD THIS LIST ON EVERY POLL. It used to, twice a second's worth of
-     innerHTML, which meant the arm switch was destroyed and recreated underneath whatever
-     finger was on it - press, rebuild, release onto a node that no longer exists, click
-     never fires. The switch looked broken and the API was fine the whole time. Rebuild
-     only when the STRUCTURE changes (a platform appears, its setup state or armed flag
-     changes, a pusher starts or stops); everything volatile - bytes, uptime, the health
-     chip - is written into the existing nodes. */
-  // ingest readiness is part of the structure: a ready channel with no pusher renders as
-  // "not getting it" only while OBS is actually sending, and that row has no destination
-  // object, so the in-place path below would never reach it.
-  const sig = JSON.stringify([
-    plats.map(p => [p.name, p.state, p.enabled, p.key_present]),
-    ds.map(d => d.name).sort(),
-    !!ing.ready,
-  ]);
-  // ⚠️ THIS SKIPS THE LIST REBUILD, NOT THE REST OF THE FUNCTION. It used to `return`,
-  // which also skipped the record button, the instruction under it and the privacy row -
-  // all of which live below. In steady state they simply stopped updating, and the
-  // button kept an onclick closure capturing the state it was built with, so once OBS was
-  // sending, the Stop button would still have tried to GO LIVE. Everything after the
-  // destination list has to run on every poll.
-  const structural = !(sig === DEST_SIG && box.children.length === plats.length + ds.filter(
-        d => !plats.some(p => p.name === d.name)).length);
-  if (!structural){
-    for (const row of box.children){
-      const d = byName[row.dataset.name];
-      const st = row.querySelector('.brstate'), last = row.querySelector('.brlast');
-      if (!d || !st) continue;
-      const c = DEST_COL[d.health] || 'var(--accent)';
-      const solid = d.health === 'feeding';
-      st.style.color = c;
-      st.lastChild.nodeValue = (d.retrying ? 'retrying' : d.health);
-      const dot = st.querySelector('.pdot');
-      if (dot){
-        dot.className = 'pdot' + (solid ? '' : (d.health === 'stalled' ? ' warn' : ' hollow'));
-        dot.style.background = solid ? c : '';
-      }
-      if (last){
-        const bits = [];
-        if (d.kbps)            bits.push(d.kbps + ' kbps');
-        if (d.bytes)           bits.push(mb(d.bytes));
-        if (d.uptimeS != null) bits.push(hhmmss(d.uptimeS));
-        if (d.restarts)        bits.push(d.restarts + ' restart' + (d.restarts === 1 ? '' : 's'));
-        if (bits.length) last.textContent = bits.join(' · ');
-      }
-    }
-  }
-  DEST_SIG = sig;
-  if (!structural){
-    /* list is current; fall through to the controls below */
-  } else if (!plats.length){
-    box.innerHTML = '<span class="sub">could not read the relay’s platform list '
-                  + '(connect.py status)</span>';
-  } else {
-    box.innerHTML = '';
-    for (const p of plats){
-      const setup = SETUP[p.state] || { col:'var(--accent)', chip:p.state, step:'' };
-      const d = byName[p.name];
-      // A configured channel that is pushing shows its LIVE state; one that is not yet
-      // set up shows how far along it is. Same row, different moment.
-      let col = setup.col, chip = setup.chip, why = setup.step;
-      if (setup.step.endsWith('connect.py ')) why = setup.step + p.name;
-      if (d){
-        col  = DEST_COL[d.health] || 'var(--accent)';
-        chip = d.retrying ? 'retrying' : d.health;
-        why  = DEST_WHY[d.health] || '';
-      } else if (p.state === 'ready' && ing.ready){
-        // ⚠️ Ready, ingest live, and no pusher of its own: the stream is arriving and this
-        // channel is not getting it. That is the case a green "ready" would hide.
-        col = 'var(--bad)'; chip = 'not getting it';
-        why = 'armed, but no push is running while OBS is sending';
-      }
-      const solid = !!(d && d.health === 'feeding');
-      const bits = [];
-      if (d){
-        if (d.kbps)            bits.push(d.kbps + ' kbps');
-        if (d.bytes)           bits.push(mb(d.bytes));
-        if (d.uptimeS != null) bits.push(hhmmss(d.uptimeS));
-        if (d.restarts)        bits.push(d.restarts + ' restart' + (d.restarts === 1 ? '' : 's'));
-      }
-      if (p.account) bits.push(p.account);
-      const row = document.createElement('div');
-      row.className = 'brrow';
-      row.dataset.name = p.name;
-      row.innerHTML =
-          '<div class="hdr"><span class="nm">' + esc(p.label || p.name) + '</span>'
-        + '<span class="sub brstate" style="color:' + col + '">'
-        + '<span class="pdot' + (solid ? '' : (chip === 'stalled' ? ' warn' : ' hollow'))
-        + '" style="' + (solid ? 'background:' + col : '') + '"></span>'
-        + esc(chip) + '</span></div>'
-        + (why ? '<div class="sub brwhy">' + esc(why) + '</div>' : '')
-        + '<div class="sub brlast">' + esc(bits.join(' · ')) + '</div>'
-        + (d && d.last ? '<div class="sub brlast">' + esc(d.last) + '</div>' : '');
-      // ⚠️ THE TOGGLE ONLY EXISTS ONCE THERE IS A KEY TO ARM. Offering it at needs_app or
-      // no_key would be a switch that silently does nothing, which is worse than no
-      // switch - the row already says what the actual next step is.
-      if (p.key_present){
-        const sw = document.createElement('button');
-        sw.className = 'sw' + (p.enabled ? ' on' : '');
-        sw.setAttribute('role', 'switch');
-        sw.setAttribute('aria-checked', p.enabled ? 'true' : 'false');
-        sw.setAttribute('aria-label', (p.label || p.name) + ' armed');
-        sw.onclick = async () => {
-          // Move immediately, then let the poll confirm. A switch that waits on a round
-          // trip before it moves reads as broken and gets pressed twice.
-          sw.classList.toggle('on');
-          sw.disabled = true;
-          // ⚠️ RE-ENABLE IN finally. A successful toggle changes the armed flag, which
-          // changes the structural signature and rebuilds the row, so a fresh switch
-          // appears and the stuck flag goes unnoticed. A FAILED toggle changes nothing,
-          // no rebuild happens, and the switch would stay disabled forever - dead exactly
-          // when something is already wrong.
-          try { await post('/api/stream', {action:'enable', platform:p.name, on:!p.enabled}); }
-          finally { sw.disabled = false; loadStream(); }
-        };
-        row.querySelector('.hdr').append(sw);
-      }
-      box.append(row);
-    }
-
-    // ⚠️ ANYTHING PUSHING THAT IS NOT A KNOWN PLATFORM STILL GETS A ROW. The list above is
-    // keyed off connect.py's platforms, so a pusher the relay invented - a YouTube backup
-    // ingest, a test destination, anything added to keys.env that connect.py does not know
-    // about - would be running and completely invisible here. A process sending bytes off
-    // this machine that the panel does not show is the same failure as a dead camera
-    // reading "feeding", just pointed the other way.
-    // ⚠️ NEVER `innerHTML +=` ON A CONTAINER WITH LIVE HANDLERS. It reads the whole
-    // subtree back out as text, concatenates, and reparses - so every child is replaced by
-    // a fresh node and every listener attached in JS is silently dropped. This line broke
-    // all three arm switches the moment it was added, including when `orphans` was empty,
-    // because `+= ''` still round-trips the markup. Build nodes and append them.
-    const known = new Set(plats.map(p => p.name));
-    const orphans = ds.filter(d => !known.has(d.name));
-    for (const frag of orphans.map(d => {
-      const c = DEST_COL[d.health] || 'var(--accent)';
-      const solid = d.health === 'feeding';
-      const bits = [];
-      if (d.kbps)            bits.push(d.kbps + ' kbps');
-      if (d.bytes)           bits.push(mb(d.bytes));
-      if (d.uptimeS != null) bits.push(hhmmss(d.uptimeS));
-      return '<div class="brrow">'
-        + '<div class="hdr"><span class="nm">' + esc(d.name) + '</span>'
-        + '<span class="sub brstate" style="color:' + c + '">'
-        + '<span class="pdot' + (solid ? '' : ' hollow') + '" style="'
-        + (solid ? 'background:' + c : '') + '"></span>'
-        + esc(d.retrying ? 'retrying' : d.health) + '</span></div>'
-        + '<div class="sub brwhy">extra destination, not one of the known platforms</div>'
-        + (bits.length ? '<div class="sub brlast">' + esc(bits.join(' · ')) + '</div>' : '')
-        + '</div>';
-    })){
-      const t = document.createElement('template');
-      t.innerHTML = frag;
-      box.append(t.content.firstElementChild);
-    }
-  }
-
-  // ⚠️ THREE BUTTON STATES, AND NONE OF THEM IS A DEAD CONTROL. Go Live stays cold until
-  // a pre-flight has actually passed - but a cold button that does nothing when pressed
-  // would be its own trap, especially after a reload clears the check mid-setup. So cold
-  // RUNS the check. One tap either arms it or tells you what is missing.
-  // ⚠️ ARMED MEANS THE RELAY CAN STREAM, NOT THAT TITLING WORKS. This first gated the
-  // button on `golive --dry-run` passing, which needs OAuth - so with a hand-pasted key
-  // and no app registered the button could never arm, even though the relay would have
-  // streamed perfectly. Titles are a nice-to-have layered on top; a missing one must
-  // never be what keeps you off air. A channel with a key and ENABLED=1 is enough.
   const btn = $('recbtn'), lab = $('reclabel');
   btn.className = 'recbtn ' + (obs.active ? 'live' : (armed ? 'armed' : 'cold'));
   lab.textContent = obs.active ? 'stop' : (armed ? 'go live' : 'nothing armed');
@@ -2104,14 +1901,6 @@ function renderStream(){
       renderStream();
     });
   }
-  const rb = $('relaybtns'); rb.innerHTML = '';
-  camBtn(rb, 'Restart relay', CAM_ICON.flip, false, async () => {
-    showReport('restarting relay…', []);
-    const r = await post('/api/stream', {action:'relay_restart'});
-    showReport(r.ok ? 'relay restarted' : (r.error || 'restart failed'),
-               r.steps || [], !r.ok);
-    setTimeout(loadStream, 4000);
-  });
 }
 
 /* The per-platform report. connect.py prints one line per platform, "<name>: ok, ..." or
@@ -2125,8 +1914,10 @@ function showReport(head, lines, bad){
         + (/FAILED|error|^⚠/i.test(l) ? 'var(--bad)' : 'var(--ok)') + '">' + esc(l) + '</div>')
       .join('');
 }
+/* The Destinations module writes its relay-restart report here. */
+window.showReport = showReport;
 
-let PREFLIGHT_OK = false, LIVE_SINCE = 0, DEST_SIG = '';
+let PREFLIGHT_OK = false, LIVE_SINCE = 0;
 let PRIVACY = 'unlisted';
 /* ⚠️ THESE ONLY DO ANYTHING FOR YOUTUBE, AND ONLY THROUGH OAUTH. Privacy is a property of
    a YouTube broadcast, which only exists when connect.py creates one. Twitch has no such
@@ -3174,6 +2965,202 @@ for (const [id, which] of [['switcherapp', 'switcher'], ['presetsapp', 'presets'
   if (el) { render(html`<${ScenesApp} which=${which} />`, el); }
 }
 window.__scenesMounted = true;
+
+/* ---- Destinations --------------------------------------------------------------------
+   \u26a0\ufe0f THIS REPLACES A HAND-WRITTEN DIFF, which is the whole reason it is worth
+   converting. The classic version rebuilt every row with innerHTML, and that destroyed
+   the arm switch underneath whatever finger was on it: press, rebuild, release onto a
+   node that no longer exists, click never fires. The switch looked broken while the API
+   was fine. The fix was ~60 lines comparing a DEST_SIG signature to decide "structural"
+   versus "volatile" changes and writing the volatile ones into existing nodes by hand.
+   A keyed diff does that correctly, for every field, without anyone maintaining the
+   signature. */
+const DEST_COL = { feeding: 'var(--ok)', stalled: 'var(--bad)', stopped: 'var(--dim)',
+                   idle: 'var(--dim)' };   // idle is the resting state, not a fault
+const DEST_WHY = {
+  stalled: 'alive but nothing is reaching the platform',
+  stopped: 'not running',
+  idle:    'nothing is being sent yet - start the stream in OBS',
+};
+/* \u26a0\ufe0f EVERY CHANNEL IS ALWAYS LISTED, set up or not. Showing only what is pushing meant
+   an unconfigured rig rendered an empty box - technically true and useless, because the
+   question behind "what is going out" is usually "why isn't it". Setup state and live
+   state are the same row at different moments. */
+const SETUP = {
+  needs_app:     { col: 'var(--dim)',    chip: 'no app',        step: 'app not registered \u2014 add its credentials to oauth.env' },
+  not_connected: { col: 'var(--accent)', chip: 'not signed in', step: 'sign in once at the desk: python connect.py ' },
+  no_key:        { col: 'var(--accent)', chip: 'no key',        step: 'signed in, no stream key yet: python connect.py ' },
+  off:           { col: 'var(--dim)',    chip: 'off',           step: 'key is set \u2014 flick the switch to arm it' },
+  /* \u26a0\ufe0f needs_key HAD NO ENTRY, so X fell through to the default and rendered its raw
+     state string - "needs_key" - with no guidance at all. connect.py has always reported
+     this state; the table simply never covered it. A row naming an internal constant is
+     worse than no row: it reads as a fault in the panel rather than a step you have not
+     done yet. Pre-existing - the classic SETUP had the same five keys - and converting
+     this card is what made it visible. */
+  needs_key:     { col: 'var(--accent)', chip: 'no key',        step: 'nothing to sign into \u2014 paste its key into keys.env' },
+  ready:         { col: 'var(--ok)',     chip: 'ready',         step: 'will receive the stream' },
+};
+
+const fmtBits = (d, account) => {
+  const bits = [];
+  if (d) {
+    if (d.kbps) bits.push(d.kbps + ' kbps');
+    if (d.bytes) bits.push(window.fmt.mb(d.bytes));
+    if (d.uptimeS != null) bits.push(window.fmt.hhmmss(d.uptimeS));
+    if (d.restarts) bits.push(d.restarts + ' restart' + (d.restarts === 1 ? '' : 's'));
+  }
+  if (account) bits.push(account);
+  return bits.join(' \u00b7 ');
+};
+
+function Dot({ col, solid, chip }) {
+  return html`<span class=${'pdot' + (solid ? '' : (chip === 'stalled' ? ' warn' : ' hollow'))}
+                    style=${solid ? 'background:' + col : ''}></span>`;
+}
+
+function DestRow({ p, d, ingestReady, busy, onArm }) {
+  const setup = SETUP[p.state] || { col: 'var(--accent)', chip: p.state, step: '' };
+  let col = setup.col, chip = setup.chip, why = setup.step;
+  if (setup.step.endsWith('connect.py ')) why = setup.step + p.name;
+  if (d) {
+    col = DEST_COL[d.health] || 'var(--accent)';
+    chip = d.retrying ? 'retrying' : d.health;
+    why = DEST_WHY[d.health] || '';
+  } else if (p.state === 'ready' && ingestReady) {
+    // Armed, OBS sending, and yet no pusher exists for it. That is a fault, not a state.
+    col = 'var(--bad)'; chip = 'not getting it';
+    why = 'armed, but no push is running while OBS is sending';
+  }
+  const solid = !!(d && d.health === 'feeding');
+  const bits = fmtBits(d, p.account);
+  return html`
+    <div class="brrow">
+      <div class="hdr">
+        <span class="nm">${p.label || p.name}</span>
+        <span class="sub brstate" style=${'color:' + col}>
+          <${Dot} col=${col} solid=${solid} chip=${chip} />${chip}
+        </span>
+        ${p.key_present ? html`
+          <button class=${'sw' + (p.enabled ? ' on' : '')} role="switch"
+                  aria-checked=${p.enabled ? 'true' : 'false'}
+                  aria-label=${(p.label || p.name) + ' armed'}
+                  disabled=${busy} onClick=${() => onArm(p)}></button>` : null}
+      </div>
+      ${why ? html`<div class="sub brwhy">${why}</div>` : null}
+      ${bits ? html`<div class="sub brlast">${bits}</div>` : null}
+      ${d && d.last ? html`<div class="sub brlast">${d.last}</div>` : null}
+    </div>`;
+}
+
+function OrphanRow({ d }) {
+  const col = DEST_COL[d.health] || 'var(--accent)';
+  const solid = d.health === 'feeding';
+  const bits = fmtBits(d, null);
+  return html`
+    <div class="brrow">
+      <div class="hdr"><span class="nm">${d.name}</span>
+        <span class="sub brstate" style=${'color:' + col}>
+          <${Dot} col=${col} solid=${solid} chip=${d.health} />
+          ${d.retrying ? 'retrying' : d.health}
+        </span></div>
+      <div class="sub brwhy">extra destination, not one of the known platforms</div>
+      ${bits ? html`<div class="sub brlast">${bits}</div>` : null}
+    </div>`;
+}
+
+function Destinations() {
+  const [s, setS] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  /* ⚠️ A FAILED READ MUST SAY SO. My first draft swallowed the error and left
+     "reading the relay..." on screen forever, which is indistinguishable from a slow
+     first load - exactly the silent failure this panel keeps being bitten by, written
+     by me in the same session as the audit that complained about it. A later failure
+     keeps the last good data, because stale numbers with a warning beat an empty card;
+     the first one must not pretend to still be in flight. */
+  const load = useCallback(async () => {
+    try {
+      setS(await (await fetch('/api/stream')).json());
+      setErr(null);
+    } catch (e) {
+      setErr('could not reach the dashboard');
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    window.destRefresh = load;
+    const t = setInterval(load, 2000);
+    return () => { clearInterval(t); delete window.destRefresh; };
+  }, [load]);
+
+  const onArm = useCallback(async (p) => {
+    setBusy(true);
+    try {
+      await fetch('/api/stream', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'enable', platform: p.name, on: !p.enabled }),
+      });
+    } finally { setBusy(false); load(); }
+  }, [load]);
+
+  if (!s) return html`<h2>Destinations</h2><div class="card">
+    <span class="sub" style=${err ? 'color:var(--bad)' : ''}>
+      ${err || 'reading the relay\u2026'}</span></div>`;
+
+  const ing = s.ingest || {};
+  const ds = s.destinations || [];
+  const plats = s.platforms || [];
+  const byName = Object.fromEntries(ds.map(d => [d.name, d]));
+  const known = new Set(plats.map(p => p.name));
+  const orphans = ds.filter(d => !known.has(d.name));
+
+  const ingText = ing.error ? 'relay not answering'
+    : (ing.ready
+        ? 'ready \u00b7 ' + ing.readers + ' reader' + (ing.readers === 1 ? '' : 's')
+          + ' \u00b7 ' + window.fmt.mb(ing.bytes)
+        : 'no source publishing');
+  const ingCol = ing.error ? 'var(--bad)' : (ing.ready ? 'var(--ok)' : 'var(--dim)');
+
+  return html`
+    <h2>Destinations</h2>
+    <div class="card">
+      <div class="row"><span class="k">Ingest from OBS</span>
+        <span class="v" style=${'color:' + ingCol}>${ingText}</span></div>
+      <div>
+        ${plats.map(p => html`<${DestRow} key=${p.name} p=${p} d=${byName[p.name]}
+                                          ingestReady=${!!ing.ready} busy=${busy}
+                                          onArm=${onArm} />`)}
+        ${orphans.map(d => html`<${OrphanRow} key=${'o' + d.name} d=${d} />`)}
+      </div>
+      <div class="g2">
+        <button disabled=${busy} onClick=${async () => {
+          setBusy(true);
+          try {
+            const r = await (await fetch('/api/stream', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ action: 'relay_restart' }),
+            })).json();
+            if (window.showReport)
+              window.showReport(r.ok ? 'relay restarted' : (r.error || 'restart failed'),
+                                r.steps || [], !r.ok);
+          } finally { setBusy(false); setTimeout(load, 4000); }
+        }}>Restart relay</button>
+      </div>
+      <div class="note">Each destination is its own ffmpeg reading the same local RTMP
+        path, so one platform dropping cannot take the others down, and a dead one retries
+        on its own with backoff. <b>Restart relay</b> bounces the whole scheduled task
+        \u2014 it does not touch OBS, and OBS keeps sending while it comes back.<br /><br />
+        Keys live in the relay's own <code>keys.env</code>, never here and never in a log.
+      </div>
+    </div>`;
+}
+
+{
+  const el = document.getElementById('destapp');
+  if (el) { render(html`<${Destinations} />`, el); window.__destMounted = true; }
+}
 
 const mount = document.getElementById('mixlist');
 if (mount) {
