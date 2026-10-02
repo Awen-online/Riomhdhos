@@ -400,8 +400,7 @@
 <section id="stream">
   <h2>Broadcast</h2>
   <div class="card">
-    <div class="row"><span class="k" id="v_bcast_k">Not streaming</span>
-      <span class="v" id="v_bcast">&mdash;</span></div>
+    <div id="bcastapp"></div>
     <div class="row"><span class="k">Title</span>
       <span class="v sub"><span class="pchips" id="pc_title"></span><span id="pw_title"></span>
       <span class="v" id="v_titlelen">0</span></span></div>
@@ -451,14 +450,7 @@
     </div>
 
     <div id="preflight"></div>
-    <div class="rec">
-      <button id="recbtn" class="recbtn cold"><span class="glyph"></span></button>
-      <div class="reclabel" id="reclabel">check first</div>
-      <div class="sub howto" id="howto"></div>
-    </div>
-    <div class="g2" id="recbtns"></div>
-    <div class="sub" id="recstate">&mdash;</div>
-    <div class="g2" id="bcastbtns"></div>
+    <div id="goliveapp"></div>
     <div class="note">&#9888;&#65039; <b>Green means bytes are moving.</b> A destination is
       only feeding while its progress file is both fresh AND advancing &mdash; the relay's
       own <code>.state</code> file is a hint, not evidence, because MediaMTX hard-kills the
@@ -1732,60 +1724,6 @@ window.fmt = { hhmmss, mb };
 
 function renderStream(){
   const s = STREAM; if (!s) return;
-  const ds = s.destinations || [];
-  const live = ds.filter(d => d.health === 'feeding').length;
-  const obs  = s.obs || {};
-
-  // ⚠️ THE DENOMINATOR IS WHAT IS ARMED, NOT WHAT IS RUNNING. Counting live pushers
-  // against live pushers can only ever say "all of them", so a channel that is ready and
-  // has no push at all would vanish from the count instead of showing as missing.
-  const armed = (s.platforms || []).filter(p => p.state === 'ready').length || ds.length;
-  let head, col;
-  if (!obs.active)        { head = 'Not streaming';                col = 'var(--dim)'; }
-  else if (!armed)        { head = 'OBS sending, nothing armed';   col = 'var(--accent)'; }
-  else if (live === armed){ head = 'LIVE';                         col = 'var(--ok)'; }
-  else if (live === 0)    { head = 'LIVE — nothing getting out'; col = 'var(--bad)'; }
-  else                    { head = 'DEGRADED — ' + live + ' of ' + armed;
-                            col = 'var(--bad)'; }
-  $('v_bcast_k').textContent = head;
-  $('v_bcast_k').style.color = col;
-  const longest = Math.max(0, ...ds.map(d => d.uptimeS || 0));
-  if (obs.active){
-    // Prefer a destination's real uptime; fall back to a client clock so a reload mid-set
-    // still shows something advancing rather than a dash.
-    if (!LIVE_SINCE) LIVE_SINCE = Date.now() - (longest || 0) * 1000;
-    const secs = longest || Math.floor((Date.now() - LIVE_SINCE) / 1000);
-    $('v_bcast').innerHTML = '<span class="livehdr"><span class="pulse"></span>'
-                           + hhmmss(secs) + '</span>';
-  } else {
-    LIVE_SINCE = 0;
-    $('v_bcast').textContent = obs.connected ? 'OBS idle' : 'OBS not reachable';
-  }
-
-  const btn = $('recbtn'), lab = $('reclabel');
-  btn.className = 'recbtn ' + (obs.active ? 'live' : (armed ? 'armed' : 'cold'));
-  lab.textContent = obs.active ? 'stop' : (armed ? 'go live' : 'nothing armed');
-  btn.setAttribute('aria-label', lab.textContent);
-  // ⚠️ SAY WHAT THE BUTTON ACTUALLY DOES. Nothing on this panel pushes video - OBS does.
-  // This starts OBS streaming to the local relay, and the relay fans that one stream out
-  // to whatever is switched on below. Without that sentence the obvious reading is that
-  // Riastrad is the encoder, and the first time a channel is dark you go looking in the
-  // wrong place.
-  const names = (s.platforms || []).filter(p => p.state === 'ready')
-                                   .map(p => p.label || p.name);
-  $('howto').textContent = obs.active
-    ? 'OBS is sending to the relay, which is forwarding to '
-      + (names.join(' and ') || 'nothing — no channel is armed') + '. Press to stop.'
-    : (armed
-        ? 'Press this and OBS starts sending to the relay here on this machine; the relay '
-          + 'forwards that one stream out to ' + (names.join(' and ') || 'the armed channels')
-          + '. Nothing to press in OBS.'
-        : 'Switch a channel on below first. This starts OBS sending to the local relay, '
-          + 'and the relay forwards it to whatever is armed.');
-  /* Local recording. Armed is a stored preference, so it is still true with OBS shut -
-     it says what WILL happen. Whether it IS happening is a separate fact and gets its
-     own line, because "armed" and "recording" being the same indicator is how you end up
-     with a set that was never saved. */
   /* ⚠️ TITLE AND DESCRIPTION ARE SERVER-SIDE NOW, NOT localStorage. This panel gets
      driven from a phone as often as from this desk, and localStorage is per-browser - so
      a title typed here was simply not there on the phone, each device kept its own stale
@@ -1835,42 +1773,6 @@ function renderStream(){
       : 'no image found at ' + (meta.thumb || '(unset)');
   }
 
-  const rec = s.record || {};
-  const rb2 = $('recbtns'); rb2.innerHTML = '';
-  camBtn(rb2, 'Record with stream', CAM_ICON.one, !!rec.armed, async () => {
-    await post('/api/stream', {action:'rec_arm', on: !rec.armed});
-    loadStream();
-  });
-  camBtn(rb2, rec.active ? 'Stop recording' : 'Record now', CAM_ICON.one, !!rec.active,
-    async () => {
-      const r = await post('/api/stream', {action: rec.active ? 'rec_stop' : 'rec_start'});
-      if (r && r.error) showReport(r.error, [], true);
-      setTimeout(loadStream, 900);
-    });
-  $('recstate').textContent = !rec.connected
-    ? 'OBS not reachable \u2014 cannot tell whether anything is recording'
-    : rec.active
-      ? ('recording \u2014 ' + Math.floor((rec.seconds||0)/60) + 'm '
-         + ((rec.seconds||0)%60) + 's'
-         + (rec.bytes ? ', ' + (rec.bytes/1073741824).toFixed(2) + ' GB' : ''))
-      : (rec.armed ? 'not recording \u2014 will start when you go live'
-                   : 'not recording, and not armed \u2014 nothing will be saved');
-
-  btn.onclick = async () => {
-    if (obs.active){
-      if (!confirm('Stop the broadcast?')) return;
-      await post('/api/stream', {action:'obs_stop'});
-      setTimeout(loadStream, 1200); return;
-    }
-    if (armed) { goLive(false); return; }
-    showReport('checking…', []);
-    const r = await post('/api/stream', {action:'preflight'});
-    PREFLIGHT_OK = !!r.ok;
-    showReport(r.ok ? 'armed — press again to go live'
-                    : 'not ready — see below', r.lines || [], !r.ok);
-    renderStream();
-  };
-
   /* ⚠️ THE TITLE BOX IS INERT UNTIL SOMETHING IS SIGNED IN, and a text field you can type
      into is an even stronger promise than a button you can press. Setting a title needs
      connect.py to reach the platform: YouTube names the broadcast from YouTube Studio when
@@ -1891,16 +1793,7 @@ function renderStream(){
   // Last, deliberately: it disables controls in groups that the lines above rebuild.
   renderChannelChips(s.platforms);
   renderSchedule();
-  const bb = $('bcastbtns'); bb.innerHTML = '';
-  if (!obs.active){
-    camBtn(bb, 'Re-check destinations', CAM_ICON.tight, false, async () => {
-      showReport('checking…', []);
-      const r = await post('/api/stream', {action:'preflight'});
-      PREFLIGHT_OK = !!r.ok;
-      showReport(r.ok ? 'armed' : 'not ready — see below', r.lines || [], !r.ok);
-      renderStream();
-    });
-  }
+
 }
 
 /* The per-platform report. connect.py prints one line per platform, "<name>: ok, ..." or
@@ -1916,8 +1809,14 @@ function showReport(head, lines, bad){
 }
 /* The Destinations module writes its relay-restart report here. */
 window.showReport = showReport;
+/* The Go Live panel drives these. goLive() stays in the classic half because it reads the
+   title, category and tag inputs, which are still classic nodes - moving it before those
+   are converted would mean the component reaching across for values it does not own. */
+window.rigGoLive   = (force) => goLive(force);
+window.rigLoadStream = () => loadStream();
+window.rigPost     = post;
+window.CAM_ICON    = CAM_ICON;
 
-let PREFLIGHT_OK = false, LIVE_SINCE = 0;
 let PRIVACY = 'unlisted';
 /* ⚠️ THESE ONLY DO ANYTHING FOR YOUTUBE, AND ONLY THROUGH OAUTH. Privacy is a property of
    a YouTube broadcast, which only exists when connect.py creates one. Twitch has no such
@@ -2016,6 +1915,7 @@ function renderPrivacy(){
 }
 
 async function goLive(force){
+  STREAM_FORCE = false;   // a fresh attempt retracts the previous one's override offer
   const title = $('s_title').value.trim();
   // No title is a legitimate choice, not an error - it is the whole no-OAuth path. Skip
   // the platform calls entirely rather than failing on them.
@@ -2042,13 +1942,24 @@ async function goLive(force){
     // - but there has to be a way past it mid-set, so offer the override explicitly rather
     // than making him go and drive OBS by hand.
     showReport('not started — nothing was sent', r.lines || [], true);
-    const bb = $('bcastbtns');
-    camBtn(bb, 'Start OBS anyway', CAM_ICON.flip, false, () => goLive(true));
+    STREAM_FORCE = true;
+    streamPublish(null);
   }
   setTimeout(loadStream, 2000);
 }
 
 let STREAM_AT = 0;
+/* ⚠️ THIS IS THE ONLY READER OF /api/stream, and the Preact panels subscribe to it
+   rather than fetching their own copy. The first conversion gave Destinations its own
+   setInterval, so the page asked for the same JSON twice every two seconds - and the
+   module's timer had none of the "is this tab even open" gating the poll below has, so
+   it kept polling from the Chat and Cams tabs with nothing on screen to show for it.
+   One fetch, gated once, handed to everyone who wants it. */
+let STREAM_FORCE = false;
+function streamPublish(err){
+  window.STREAM_SNAP = { s: STREAM, at: STREAM_AT, err: err || null, force: STREAM_FORCE };
+  if (window.streamNotify) window.streamNotify();
+}
 async function loadStream(){
   /* ⚠️ THE FETCH AND THE RENDER GET SEPARATE CATCHES, because one of them lies about
      the other. Both used to sit in the try below, whose job is to say "the answer never
@@ -2061,13 +1972,14 @@ async function loadStream(){
   try {
     STREAM = await (await fetch('/api/stream')).json();
     STREAM_AT = Date.now();
+    streamPublish(null);
   } catch(e){
     /* ⚠️ A FAILED FETCH MUST LOOK LIKE A FAILED FETCH. Leaving the last good numbers on
        screen makes a dead dashboard look like a live one, and that is how a healthy rig
        came to read "Stopped": the answer never arrived and the panel showed something
        confident anyway. Name it, and say how old what you are looking at is. */
     const age = STREAM_AT ? Math.round((Date.now() - STREAM_AT) / 1000) : null;
-    $('v_bcast').innerHTML = '<span style="color:var(--bad)">dashboard unreachable</span>';
+    streamPublish('dashboard unreachable');
     const note = $('preflight');
     if (note) note.innerHTML =
       '<div class="sub brwhy" style="color:var(--bad)">Could not reach Riastrad itself'
@@ -3069,41 +2981,18 @@ function OrphanRow({ d }) {
 }
 
 function Destinations() {
-  const [s, setS] = useState(null);
+  const { s, err } = useStream();
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
-
-  /* ⚠️ A FAILED READ MUST SAY SO. My first draft swallowed the error and left
-     "reading the relay..." on screen forever, which is indistinguishable from a slow
-     first load - exactly the silent failure this panel keeps being bitten by, written
-     by me in the same session as the audit that complained about it. A later failure
-     keeps the last good data, because stale numbers with a warning beat an empty card;
-     the first one must not pretend to still be in flight. */
-  const load = useCallback(async () => {
-    try {
-      setS(await (await fetch('/api/stream')).json());
-      setErr(null);
-    } catch (e) {
-      setErr('could not reach the dashboard');
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-    window.destRefresh = load;
-    const t = setInterval(load, 2000);
-    return () => { clearInterval(t); delete window.destRefresh; };
-  }, [load]);
 
   const onArm = useCallback(async (p) => {
     setBusy(true);
     try {
-      await fetch('/api/stream', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'enable', platform: p.name, on: !p.enabled }),
-      });
-    } finally { setBusy(false); load(); }
-  }, [load]);
+      await window.rigPost('/api/stream',
+                           { action: 'enable', platform: p.name, on: !p.enabled });
+    } catch (e) {
+      if (window.showReport) window.showReport(e.message, [], true);
+    } finally { setBusy(false); window.rigLoadStream(); }
+  }, []);
 
   if (!s) return html`<h2>Destinations</h2><div class="card">
     <span class="sub" style=${err ? 'color:var(--bad)' : ''}>
@@ -3155,6 +3044,212 @@ function Destinations() {
         Keys live in the relay's own <code>keys.env</code>, never here and never in a log.
       </div>
     </div>`;
+}
+
+/* ---- the shared /api/stream snapshot ------------------------------------------------
+   ⚠️ THE CLASSIC HALF OWNS THE FETCH; these panels only subscribe. Giving a
+   component its own setInterval looks tidier and is wrong twice over: the page then asks
+   for one piece of JSON twice every two seconds, and the component's timer knows nothing
+   about which tab is open, so it keeps polling with its own markup off screen. One
+   reader, gated once, publishes to everyone - see streamPublish() above. */
+const stSubs = new Set();
+window.streamNotify = () => { for (const f of stSubs) f(); };
+function useStream() {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const f = () => bump(n => n + 1);
+    stSubs.add(f);
+    /* The poll may have landed before this mounted - subscribing is not the same as
+       having the data, so take whatever is already there on the way in. */
+    f();
+    return () => { stSubs.delete(f); };
+  }, []);
+  return window.STREAM_SNAP || { s: null, at: 0, err: null, force: false };
+}
+
+/* camBtn's group lock, as a component. The lock matters: a second press during an action
+   queues another round trip behind the first and the panel drifts out of step with the
+   rig. `busy` locks the group, `pend` marks the one that was pressed. */
+function Btn({ label, icon, on, busy, onPress }) {
+  const [pend, setPend] = useState(false);
+  return html`
+    <button class=${(on ? 'sel' : '') + (pend ? ' pending' : '')}
+            disabled=${busy || pend}
+            onClick=${async () => {
+              setPend(true);
+              try { await onPress(); }
+              catch (e) { document.getElementById('err').textContent = e.message; }
+              finally { setPend(false); }
+            }}>
+      ${icon ? html`<span class="ic"
+                          dangerouslySetInnerHTML=${{ __html: icon }}></span>` : null}${label}
+    </button>`;
+}
+
+/* How long we have been on air, when no destination can tell us. Module scope rather than
+   state because it is not a thing being displayed - it is the fallback origin for the
+   clock, and it has to survive a re-render to be worth anything. */
+let LIVE_SINCE = 0;
+
+/* live / armed / degraded, from the same numbers the rest of the panel uses.
+   ⚠️ THE DENOMINATOR IS WHAT IS ARMED, NOT WHAT IS RUNNING. Counting feeding
+   pushers against feeding pushers can only ever say "all of them", so a channel that is
+   armed with no push at all would drop out of the count instead of showing as missing. */
+function liveFacts(s) {
+  const ds = (s && s.destinations) || [];
+  const obs = (s && s.obs) || {};
+  const live = ds.filter(d => d.health === 'feeding').length;
+  const armed = ((s && s.platforms) || []).filter(p => p.state === 'ready').length
+                || ds.length;
+  const names = ((s && s.platforms) || []).filter(p => p.state === 'ready')
+                                          .map(p => p.label || p.name);
+  let head, col;
+  if (!obs.active)         { head = 'Not streaming';               col = 'var(--dim)'; }
+  else if (!armed)         { head = 'OBS sending, nothing armed';  col = 'var(--accent)'; }
+  else if (live === armed) { head = 'LIVE';                        col = 'var(--ok)'; }
+  else if (live === 0)     { head = 'LIVE \u2014 nothing getting out'; col = 'var(--bad)'; }
+  else { head = 'DEGRADED \u2014 ' + live + ' of ' + armed;            col = 'var(--bad)'; }
+  return { ds, obs, live, armed, names, head, col };
+}
+
+function BcastHead() {
+  const { s, at, err } = useStream();
+  if (err) {
+    /* ⚠️ A DEAD PANEL MUST NOT LOOK LIKE A LIVE ONE. This is how a healthy rig
+       came to read "Stopped": the answer never arrived and the header kept showing the
+       last confident thing it knew. Name the failure and say how old the rest is. */
+    const age = at ? Math.round((Date.now() - at) / 1000) : null;
+    return html`<div class="row"><span class="k" style="color:var(--bad)">${err}</span>
+      <span class="v sub">${age === null ? 'nothing received yet'
+                                         : 'showing data ' + age + 's old'}</span></div>`;
+  }
+  if (!s) return html`<div class="row"><span class="k">Not streaming</span>
+    <span class="v sub">reading\u2026</span></div>`;
+
+  const { ds, obs, head, col } = liveFacts(s);
+  const longest = Math.max(0, ...ds.map(d => d.uptimeS || 0));
+  let right;
+  if (obs.active) {
+    // Prefer a destination's real uptime; fall back to a client clock so a reload
+    // mid-set still shows something advancing rather than a dash.
+    if (!LIVE_SINCE) LIVE_SINCE = Date.now() - (longest || 0) * 1000;
+    const secs = longest || Math.floor((Date.now() - LIVE_SINCE) / 1000);
+    right = html`<span class="livehdr"><span class="pulse"></span>
+      ${window.fmt.hhmmss(secs)}</span>`;
+  } else {
+    LIVE_SINCE = 0;
+    right = obs.connected ? 'OBS idle' : 'OBS not reachable';
+  }
+  return html`<div class="row"><span class="k" style=${'color:' + col}>${head}</span>
+    <span class="v">${right}</span></div>`;
+}
+
+function GoLive() {
+  const { s, err, force } = useStream();
+  const [busy, setBusy] = useState(false);
+  if (!s) return html`<div class="sub">${err || 'reading\u2026'}</div>`;
+
+  const { obs, armed, names } = liveFacts(s);
+  const rec = s.record || {};
+  const reload = (ms) => (ms ? setTimeout(() => window.rigLoadStream(), ms)
+                             : window.rigLoadStream());
+
+  const label = obs.active ? 'stop' : (armed ? 'go live' : 'nothing armed');
+
+  /* ⚠️ SAY WHAT THE BUTTON ACTUALLY DOES. Nothing on this panel pushes video -
+     OBS does. This starts OBS streaming to the local relay, and the relay fans that one
+     stream out to whatever is switched on below. Without that sentence the obvious
+     reading is that Riastrad is the encoder, and the first time a channel is dark you go
+     looking in the wrong place. */
+  const howto = obs.active
+    ? 'OBS is sending to the relay, which is forwarding to '
+      + (names.join(' and ') || 'nothing \u2014 no channel is armed') + '. Press to stop.'
+    : (armed
+        ? 'Press this and OBS starts sending to the relay here on this machine; the relay '
+          + 'forwards that one stream out to '
+          + (names.join(' and ') || 'the armed channels') + '. Nothing to press in OBS.'
+        : 'Switch a channel on below first. This starts OBS sending to the local relay, '
+          + 'and the relay forwards it to whatever is armed.');
+
+  const press = async () => {
+    if (obs.active) {
+      /* The one confirm() on the panel, and it earns its place: an accidental stop
+         mid-set costs the set. */
+      if (!confirm('Stop the broadcast?')) return;
+      await window.rigPost('/api/stream', { action: 'obs_stop' });
+      reload(1200); return;
+    }
+    if (armed) { await window.rigGoLive(false); return; }
+    window.showReport('checking\u2026', []);
+    const r = await window.rigPost('/api/stream', { action: 'preflight' });
+    window.showReport(r.ok ? 'armed \u2014 press again to go live'
+                           : 'not ready \u2014 see below', r.lines || [], !r.ok);
+  };
+
+  /* Local recording. Armed is a stored preference, so it is still true with OBS shut -
+     it says what WILL happen. Whether it IS happening is a separate fact on its own
+     line, because "armed" and "recording" sharing one indicator is how you end up with a
+     set that was never saved. */
+  const recText = !rec.connected
+    ? 'OBS not reachable \u2014 cannot tell whether anything is recording'
+    : rec.active
+      ? ('recording \u2014 ' + Math.floor((rec.seconds || 0) / 60) + 'm '
+         + ((rec.seconds || 0) % 60) + 's'
+         + (rec.bytes ? ', ' + (rec.bytes / 1073741824).toFixed(2) + ' GB' : ''))
+      : (rec.armed ? 'not recording \u2014 will start when you go live'
+                   : 'not recording, and not armed \u2014 nothing will be saved');
+
+  const I = window.CAM_ICON;
+  return html`
+    <div class="rec">
+      <button class=${'recbtn ' + (obs.active ? 'live' : (armed ? 'armed' : 'cold'))}
+              aria-label=${label} disabled=${busy}
+              onClick=${async () => {
+                setBusy(true);
+                try { await press(); }
+                catch (e) { document.getElementById('err').textContent = e.message; }
+                finally { setBusy(false); }
+              }}><span class="glyph"></span></button>
+      <div class="reclabel" style=${obs.active || armed ? 'color:var(--bad)' : ''}>
+        ${label}</div>
+      <div class="sub howto">${howto}</div>
+    </div>
+    <div class="g2">
+      <${Btn} label="Record with stream" icon=${I.one} on=${!!rec.armed} busy=${busy}
+              onPress=${async () => {
+                await window.rigPost('/api/stream',
+                                     { action: 'rec_arm', on: !rec.armed });
+                reload();
+              }} />
+      <${Btn} label=${rec.active ? 'Stop recording' : 'Record now'} icon=${I.one}
+              on=${!!rec.active} busy=${busy}
+              onPress=${async () => {
+                await window.rigPost('/api/stream',
+                                     { action: rec.active ? 'rec_stop' : 'rec_start' });
+                reload(900);
+              }} />
+    </div>
+    <div class="sub">${recText}</div>
+    <div class="g2">
+      ${!obs.active ? html`
+        <${Btn} label="Re-check destinations" icon=${I.tight} busy=${busy}
+                onPress=${async () => {
+                  window.showReport('checking\u2026', []);
+                  const r = await window.rigPost('/api/stream', { action: 'preflight' });
+                  window.showReport(r.ok ? 'armed' : 'not ready \u2014 see below',
+                                    r.lines || [], !r.ok);
+                }} />` : null}
+      ${force ? html`
+        <${Btn} label="Start OBS anyway" icon=${I.flip} busy=${busy}
+                onPress=${() => window.rigGoLive(true)} />` : null}
+    </div>`;
+}
+
+{
+  const h1 = document.getElementById('bcastapp');
+  if (h1) render(html`<${BcastHead} />`, h1);
+  const h2 = document.getElementById('goliveapp');
+  if (h2) render(html`<${GoLive} />`, h2);
 }
 
 {
