@@ -29,6 +29,7 @@ down mid-show.
 import argparse
 import json
 import os
+import pathlib
 import queue
 import random
 import re
@@ -688,10 +689,77 @@ def platform_status():
     return data
 
 
+# ⚠️ LINKEDIN IS THE ONE THAT REFUSES. Every other destination here takes what the single
+# encode gives it: Facebook degrades, Rumble transcodes down, Twitch and YouTube accept
+# 6 Mbps without complaint. LinkedIn publishes hard ceilings and drops the connection when
+# they are exceeded - so for this one row, "the key is set and it is armed" is NOT enough
+# to predict that anything will arrive, and a green row would be a lie.
+#
+# The relay is one encode fanned out with -c copy, so there is no per-destination bitrate
+# to tune: either OBS fits LinkedIn's envelope and everyone else gets a slightly smaller
+# stream, or LinkedIn cannot be fed from this rig. That is a decision, not a setting, and
+# the panel's job is to show the numbers rather than to make it quietly.
+LINKEDIN_MAX = {"video_kbps": 6000, "audio_kbps": 128, "fps": 30, "height": 1080}
+
+
+def linkedin_spec_problems():
+    """Which OBS output settings put LinkedIn out of reach. Empty list = it would fit.
+
+    Read from the profile on disk rather than over obs-websocket, so it answers with OBS
+    shut - which is when you are most likely to be planning a broadcast.
+    """
+    ini = (pathlib.Path(os.environ.get("APPDATA", "")) / "obs-studio" / "basic" /
+           "profiles")
+    try:
+        prof = next((d for d in ini.iterdir() if (d / "basic.ini").is_file()), None)
+    except Exception:
+        return []
+    if prof is None:
+        return []
+    cfg = {}
+    try:
+        for line in (prof / "basic.ini").read_text(encoding="utf-8",
+                                                   errors="replace").splitlines():
+            if "=" in line and not line.strip().startswith("["):
+                k, v = line.split("=", 1)
+                cfg[k.strip()] = v.strip()
+    except Exception:
+        return []
+
+    def num(*keys):
+        for k in keys:
+            try:
+                return float(cfg[k])
+            except (KeyError, ValueError):
+                continue
+        return None
+
+    bad = []
+    v = num("VBitrate")
+    if v is not None and v > LINKEDIN_MAX["video_kbps"]:
+        bad.append("video %d kbps over LinkedIn's %d" % (v, LINKEDIN_MAX["video_kbps"]))
+    elif v is not None and v == LINKEDIN_MAX["video_kbps"]:
+        # Exactly at the ceiling is not a violation, but it leaves no room for the
+        # overshoot a CBR encoder produces on a hard scene change.
+        bad.append("video %d kbps is exactly LinkedIn's ceiling - no headroom" % v)
+    a = num("ABitrate", "Track1Bitrate")
+    if a is not None and a > LINKEDIN_MAX["audio_kbps"]:
+        bad.append("audio %d kbps over LinkedIn's %d" % (a, LINKEDIN_MAX["audio_kbps"]))
+    f = num("FPSCommon", "FPSInt")
+    if f is not None and f > LINKEDIN_MAX["fps"]:
+        bad.append("%d fps over LinkedIn's %d" % (f, LINKEDIN_MAX["fps"]))
+    return bad
+
+
 def relay_status():
     """Ingest from MediaMTX, egress from each pusher's own progress file."""
     out = {"ingest": {"ready": False, "readers": 0, "bytes": 0, "error": None},
            "destinations": [], "platforms": platform_status(),
+           # Only computed when the row could actually matter, so the panel is not
+           # carrying a warning about a platform nobody has configured.
+           "linkedinSpec": (linkedin_spec_problems()
+                            if any(p.get("name") == "linkedin" and p.get("enabled")
+                                   for p in platform_status()) else []),
            "task": _task_state(RELAY_TASK)}
     try:
         with urllib.request.urlopen(MEDIAMTX_API + "/v3/paths/get/live", timeout=2) as r:
@@ -866,8 +934,15 @@ def stream_meta():
     video's thumbnail at all, and Twitch does not use one.
     """
     pr = prefs()
+    # ⚠️ CATEGORY AND TAGS BELONG HERE TOO. They were the last two fields still
+    # living in localStorage, which is per-browser - so a category picked at the desk was
+    # simply absent on the phone, and the Twitch leg would go out with whatever that
+    # device happened to remember. Same reasoning as the title above; it just took longer
+    # to notice because an empty category fails quietly rather than visibly.
     return {"title": pr.get("stream_title", "") or "",
             "desc": pr.get("stream_desc", "") or "",
+            "category": pr.get("stream_category", "") or "",
+            "tags": pr.get("stream_tags", "") or "",
             "thumb": pr.get("stream_thumb", "") or str(DEFAULT_THUMB),
             "thumb_name": os.path.basename(pr.get("stream_thumb") or str(DEFAULT_THUMB)),
             "thumb_at": _mtime(pr.get("stream_thumb") or str(DEFAULT_THUMB)),
@@ -1794,7 +1869,16 @@ def _fb_state(err):
     if code == 102:
         return ("failed", "the Page session is invalid - re-run: python connect.py facebook")
     if code in (10, 200, 299):
-        return ("failed", "permission denied - the token is missing pages_read_engagement")
+        # ⚠️ DO NOT NAME A CAUSE META DID NOT GIVE. This used to say "the token is
+        # missing pages_read_engagement", which is a guess dressed as a diagnosis - and
+        # on 2026-10-03 it was simply wrong: debug_token showed that scope present on the
+        # token while /{live_video}/comments still returned (#200) Missing Permissions.
+        # The scope was granted; the APP was not approved for the feature behind it. The
+        # wrong cause cost twenty minutes looking at the token instead of App Review.
+        # Say what was refused and where the answer lives, and let the reader look.
+        return ("failed", "Graph refused the read (#%d) - the token's scopes are not the "
+                          "whole story; check the app's App Review status for Live Video "
+                          "API and Page Public Content Access" % code)
     if code in (4, 17, 32, 613):
         # A wall we hit rather than broke, same as YouTube's quota: not red.
         return ("quota", "Graph rate limit reached - backing off")
@@ -2087,6 +2171,40 @@ def uvc_selected(text):
 CODE_HASH = "?"
 MOODS = ["COSMOS", "THE CAIRN", "ÉIRE", "THE DEEP"]
 
+# ⚠️ COLOUR IS A THEME, NOT THREE DIALS. The first cut of this exposed line, glow
+# and background as separate pickers, which is the wrong instrument: mid-set nobody wants
+# to mix three hues, and three free channels is also how you end up with a muddy screen.
+# A theme is one tap and is always a composed pair-plus-ground - the restraint the shader
+# comment asks for, enforced by the control rather than by willpower.
+#
+# Hex rather than floats on purpose: these end up in presets.json, where "#9e7bf2" can be
+# read and edited by hand and [0.62,0.48,0.95] cannot.
+THEMES = {
+    "COSMOS":    {"colBg": "#050310", "colLine": "#9e7bf2", "colGlow": "#40268c"},
+    "THE CAIRN": {"colBg": "#05080a", "colLine": "#8cb8db", "colGlow": "#1f3d57"},
+    "ÉIRE":      {"colBg": "#030a05", "colLine": "#73d98c", "colGlow": "#1a522e"},
+    "THE DEEP":  {"colBg": "#030808", "colLine": "#59ccc2", "colGlow": "#0f4247"},
+    "EMBER":     {"colBg": "#0a0402", "colLine": "#f2874e", "colGlow": "#6b2a10"},
+    "SOLAR":     {"colBg": "#0a0802", "colLine": "#f0c74a", "colGlow": "#6b4e0f"},
+    "ROSE":      {"colBg": "#0a0308", "colLine": "#e87ab0", "colGlow": "#6b2048"},
+    "BONE":      {"colBg": "#080807", "colLine": "#e8dfc8", "colGlow": "#514a38"},
+    "INK":       {"colBg": "#02060a", "colLine": "#a8c8e8", "colGlow": "#22405e"},
+    "MOSS":      {"colBg": "#050803", "colLine": "#a8c46a", "colGlow": "#3a4d1c"},
+}
+THEME_NAMES = list(THEMES)
+
+
+def _hex6(v, fallback):
+    """Accept '#rrggbb' or 'rrggbb'; anything else keeps the previous value.
+
+    These reach a shader in the live output, so a malformed value must not get through
+    and must not throw either - the same rule the numeric clamps already follow.
+    """
+    t = str(v or "").strip().lstrip("#")
+    if len(t) == 6 and all(c in "0123456789abcdefABCDEF" for c in t):
+        return "#" + t.lower()
+    return fallback
+
 # Index order MUST match PATTERN_NAMES in visuals/index.html - the wire format is the
 # integer, so a mismatch silently plays the wrong pattern rather than erroring.
 PATTERNS = ["chladni", "moire", "rings", "lissajous", "flow", "cells", "grid", "spiral"]
@@ -2114,7 +2232,10 @@ LIVE_SCENE = "LIVE"
 # they survive a restart and can be read, edited or version-controlled by hand.
 PRESET_FILE = Path(__file__).parent / "presets.json"
 PRESET_KEYS = ["patternA", "patternB", "xfade", "kaleido", "complexity",
-               "intensity", "echo", "echoTime", "vReact", "mood"]
+               "intensity", "echo", "echoTime", "vReact", "mood",
+               # Colour is part of a look, so a preset that did not carry it would recall
+               # half of one and leave the rest of the screen from whatever came before.
+               "theme", "colBg", "colLine", "colGlow"]
 
 # Per filter KIND, the parameters that may be written and their ranges. Anything not here
 # is silently dropped - notably model_select, which is what makes a filter reload its
@@ -2137,6 +2258,9 @@ STATE = {k: 0.0 for k in BANDS}
 # crashes the render thread. A number the page already receives costs nothing.
 STATE.update({"rms": 0.0, "centroid": 0.0, "peak": 0.0, "mood": "COSMOS",
               "intensity": 1.0, "t": 0.0,
+              # publish() serialises the whole of STATE, so these reach /feed - and
+              # therefore the shader - without touching the SSE code at all.
+              "theme": "COSMOS", **THEMES["COSMOS"],
               # Two decks and a crossfader, as a DJ would expect. Mixing happens in FIELD
               # space inside the shader, so the figure bends from one pattern into the
               # other rather than dissolving - a transition, not a cut.
@@ -2358,6 +2482,30 @@ def apply_preset(cl, preset):
                      if i["sourceName"] == OVERLAY_SOURCE), None)
         if item:
             cl.set_scene_item_blend_mode(scene, item["sceneItemId"], blend)
+
+
+def _blend_everywhere(cl):
+    """The blend mode shared by every scene holding the overlay, or None if they differ.
+
+    Reported separately from the program scene's value so the panel can show "mixed"
+    instead of quietly picking one and looking settled - the state that hid the
+    divergence in the first place.
+    """
+    seen = set()
+    for sc in cl.get_scene_list().scenes:
+        try:
+            items = cl.get_scene_item_list(sc["sceneName"]).scene_items
+        except Exception:
+            continue
+        item = next((i for i in items if i["sourceName"] == OVERLAY_SOURCE), None)
+        if item is None:
+            continue
+        try:
+            seen.add(cl.get_scene_item_blend_mode(
+                sc["sceneName"], item["sceneItemId"]).scene_item_blend_mode)
+        except Exception:
+            continue
+    return seen.pop() if len(seen) == 1 else None
 
 
 def _current_blend(cl, scene):
@@ -2866,7 +3014,9 @@ class Handler(BaseHTTPRequestHandler):
                     "presets": sorted(load_presets().keys()),
                     "patterns": PATTERNS,
                     "blendModes": BLEND_MODES,
+                    "themes": [dict(name=n, **THEMES[n]) for n in THEME_NAMES],
                     "blend": _current_blend(cl, sl.current_program_scene_name),
+                    "blendAll": _blend_everywhere(cl),
                     "health": {
                         "fps": round(fps, 2),
                         "budgetMs": round(1000.0 / fps, 2),
@@ -3085,6 +3235,8 @@ class Handler(BaseHTTPRequestHandler):
                     # Pure preference write; touches no platform.
                     try:
                         for k, pref in (("title", "stream_title"), ("desc", "stream_desc"),
+                                        ("category", "stream_category"),
+                                        ("tags", "stream_tags"),
                                         ("thumb", "stream_thumb")):
                             if k in body:
                                 set_pref(pref, str(body.get(k) or "")[:400])
@@ -3223,11 +3375,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": "OBS is not running", "obs": False}, 503); return
 
             if p == "/api/mood":
+                # ⚠️ A MOOD LOADS COLOURS, IT NO LONGER OWNS THEM. Picking one
+                # overwrites the three colour values, exactly as recalling a preset
+                # would - so the Look tab's pickers show what is actually on screen
+                # and can then be nudged. Nothing downstream reads the mood name for
+                # colour any more; it is a label and a shortcut.
                 name = str(body.get("mood", "")).upper()
                 if name in [m.upper() for m in MOODS]:
                     with _lock:
                         STATE["mood"] = next(m for m in MOODS if m.upper() == name)
-                self._json({"mood": STATE["mood"]}); return
+                        if STATE["mood"] in THEMES:
+                            STATE["theme"] = STATE["mood"]
+                            STATE.update(THEMES[STATE["mood"]])
+                self._json({"mood": STATE["mood"],
+                            **{k: STATE[k] for k in
+                               ("theme", "colBg", "colLine", "colGlow")}})
+                return
 
             if p == "/api/scene":
                 name = body.get("scene")
@@ -3247,12 +3410,25 @@ class Handler(BaseHTTPRequestHandler):
                             STATE[k] = max(lo, min(hi, float(body[k])))
                     if "vReact" in body:
                         STATE["vReact"] = max(0.0, min(1.0, float(body["vReact"])))
+                    # A theme sets all three at once. The individual colours stay
+                    # writable underneath so a preset can restore an edited look, but
+                    # nothing in the UI offers them any more.
+                    if "theme" in body:
+                        want = str(body["theme"]).strip().upper()
+                        name = next((n for n in THEME_NAMES if n.upper() == want), None)
+                        if name:
+                            STATE["theme"] = name
+                            STATE.update(THEMES[name])
+                    for k in ("colBg", "colLine", "colGlow"):
+                        if k in body:
+                            STATE[k] = _hex6(body[k], STATE[k])
                     for k in ("patternA", "patternB"):
                         if k in body:
                             STATE[k] = max(0, min(len(PATTERNS) - 1, int(body[k])))
                     out = {k: STATE[k] for k in
                            ("intensity", "xfade", "kaleido", "complexity",
-                            "patternA", "patternB", "vReact")}
+                            "patternA", "patternB", "vReact",
+                            "theme", "colBg", "colLine", "colGlow")}
                 self._json(out); return
 
             if p == "/api/preset":
@@ -3300,16 +3476,37 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"echo": STATE["echo"], "echoTime": STATE["echoTime"]}); return
 
             if p == "/api/blend":
+                # ⚠️ EVERY SCENE, NOT JUST THE ONE ON AIR. Blend is a scene-ITEM
+                # property in OBS, so setting it on the program scene left every other
+                # scene holding whatever it had - you picked a blend, cut to the next
+                # camera and it was gone. Found in the wild mid-show with four scenes on
+                # SCREEN and one on ADDITIVE, and no way to tell from the panel, because
+                # the row only ever reported the scene you happened to be on.
+                #
+                # Everything else on the Look tab is global: colour, patterns, opacity
+                # all live in the shader and apply everywhere at once. Blend is the only
+                # one OBS models per scene, and that distinction is an implementation
+                # detail of OBS rather than anything the person using it asked for.
                 mode = body.get("mode")
                 if mode not in BLEND_MODES:
                     self._json({"error": "unknown blend mode"}, 400); return
-                scene = cl.get_scene_list().current_program_scene_name
-                item = next((i for i in cl.get_scene_item_list(scene).scene_items
-                             if i["sourceName"] == OVERLAY_SOURCE), None)
-                if not item:
-                    self._json({"error": f"{OVERLAY_SOURCE} not in {scene}"}, 404); return
-                cl.set_scene_item_blend_mode(scene, item["sceneItemId"], mode)
-                self._json({"blend": mode, "scene": scene}); return
+                done, missing = [], []
+                for sc in cl.get_scene_list().scenes:
+                    name = sc["sceneName"]
+                    try:
+                        item = next((i for i in cl.get_scene_item_list(name).scene_items
+                                     if i["sourceName"] == OVERLAY_SOURCE), None)
+                    except Exception:
+                        continue                     # a scene we cannot read is not a failure
+                    if item is None:
+                        missing.append(name)
+                        continue
+                    cl.set_scene_item_blend_mode(name, item["sceneItemId"], mode)
+                    done.append(name)
+                if not done:
+                    self._json({"error": f"{OVERLAY_SOURCE} is not in any scene"}, 404)
+                    return
+                self._json({"blend": mode, "scenes": done, "without": missing}); return
 
             if p == "/api/toggle":
                 name = body.get("filter")
@@ -3468,7 +3665,17 @@ def main():
     # question you should have to answer by inference. Compare the hash.
     import hashlib
     global CODE_HASH
-    CODE_HASH = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:8]
+    # ⚠️ HASH THE PAGE TOO, NOT JUST THIS FILE. The hash existed so "is the thing
+    # under test the thing I changed" could be answered by comparison - but it covered
+    # dash.py alone, and the file that actually goes stale is dash.html, sitting in a
+    # phone browser cache that ignores no-cache on a restored tab. A UI change therefore
+    # left the stamp identical, which is the one case it was built for.
+    _src = Path(__file__).read_bytes()
+    try:
+        _src += PAGE.read_bytes()
+    except Exception:
+        pass
+    CODE_HASH = hashlib.sha256(_src).hexdigest()[:8]
     print(f"source: {SOURCE}  (video features at 5 Hz)  code {CODE_HASH}", flush=True)
     for label, ip in addresses(args.port):
         # Loopback needs no token; anything else does, so print the URL that actually

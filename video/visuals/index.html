@@ -270,7 +270,23 @@ function frame(t){
   S.vb = ease(S.vb, (f.vBright || 0) * vr, 0.03);
   S.vd = ease(S.vd, (f.vDetail || 0) * vr, 0.03);
 
-  const pal = PALETTES[f.mood] || PALETTES.COSMOS;
+  // ⚠️ THE FEED'S COLOURS WIN. Colour used to be a property of the mood, looked up
+  // here from PALETTES - four fixed looks and no way to say "that one, but warmer". The
+  // Look tab now owns the three colours and sends them with every frame of state; a mood
+  // just loads a set into them server-side. PALETTES stays as the fallback for the first
+  // frames before any state has arrived, and for a feed that never connects.
+  const hex2rgb = h => {
+    const t = String(h || '').replace('#', '');
+    return t.length === 6
+      ? [parseInt(t.slice(0, 2), 16) / 255,
+         parseInt(t.slice(2, 4), 16) / 255,
+         parseInt(t.slice(4, 6), 16) / 255]
+      : null;
+  };
+  const fb = PALETTES[f.mood] || PALETTES.COSMOS;
+  const pal = { bg:   hex2rgb(f.colBg)   || fb.bg,
+                line: hex2rgb(f.colLine) || fb.line,
+                glow: hex2rgb(f.colGlow) || fb.glow };
   gl.uniform2f(U('iRes'), cv.width, cv.height);
   gl.uniform1f(U('iTime'), time);
   gl.uniform1f(U('uA'), f.patternA || 0);

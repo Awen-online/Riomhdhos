@@ -155,6 +155,11 @@
            letter-spacing:.14em;text-transform:uppercase;border-radius:6px;cursor:pointer;
            background:var(--bad);border:1px solid var(--bad);color:#fff}
   #takebtn:disabled{opacity:.35;cursor:not-allowed}
+  /* Theme buttons show the palette rather than naming it: at a glance across a dark
+     room a pair of hues is readable and the word "EMBER" is not. */
+  #themes button{display:flex;align-items:center;gap:7px;justify-content:flex-start}
+  #themes .sw{width:13px;height:13px;border-radius:3px;flex:0 0 auto}
+  #themes .sw.g{border:1px solid var(--line)}
   .pchips{display:inline-flex;gap:5px;align-items:center;vertical-align:-3px}
   .pchip{width:15px;height:15px;display:block;opacity:.25;filter:grayscale(1)}
   .pchip.on{opacity:1;filter:none}
@@ -185,6 +190,12 @@
   /* A control the camera is driving. Dimmed and inert rather than hidden: knowing
      the ISO the camera chose is useful even when you cannot set it. */
   input[type=range]:disabled{opacity:.3;cursor:not-allowed}
+  /* The one control most likely to be reached for mid-performance, in the dark, without
+     looking - so it gets a thumb you can land on with a thumb. The others stay 36px
+     because a page of oversized sliders makes nothing stand out. */
+  input[type=range].big{height:62px}
+  input[type=range].big::-webkit-slider-thumb{width:38px;height:38px}
+  input[type=range].big::-moz-range-thumb{width:38px;height:38px}
   .row.auto .k,.row.auto .v{opacity:.45}
   button{padding:12px;font-size:14px;border-radius:10px;border:1px solid var(--line);
          background:#1b2129;color:var(--fg);font-weight:600}
@@ -486,13 +497,6 @@
     </div>
   </div>
 
-  <h2>Levels</h2>
-  <div class="card">
-    <div class="row"><span class="k">Overlay</span><span class="v" id="v_int">1.00</span></div>
-    <input type="range" id="r_int" min="0" max="1" step="0.01" value="1">
-    <div class="row"><span class="k">Echo trails</span><span class="v" id="v_echo">0.00</span></div>
-    <input type="range" id="r_echo" min="0" max="1" step="0.01" value="0">
-  </div>
 </section>
 
 <section id="look">
@@ -509,18 +513,39 @@
       dissolving.</div>
   </div>
 
+  <h2>Color</h2>
+  <div class="card">
+    <div class="row"><span class="k">Theme</span><span class="v" id="v_theme">—</span></div>
+    <div class="g2" id="themes"></div>
+    <div class="note">One tap, and always a composed pair over a ground — two hues and a
+      background is most of what separates atmosphere from screensaver, so the control
+      enforces it rather than leaving three dials to be mixed mid-set.<br /><br />
+      The <b>background</b> only shows where the overlay is opaque; over the camera it is
+      the lines and glow doing the work. Themes are saved with presets, and picking a
+      <b>mood</b> on Perform selects the matching theme.</div>
+  </div>
+
   <h2>Shape</h2>
   <div class="card">
     <div class="row"><span class="k">Kaleidoscope</span><span class="v" id="v_kal">off</span></div>
     <input type="range" id="r_kal" min="0" max="16" step="1" value="0">
     <div class="row"><span class="k">Complexity</span><span class="v" id="v_cx">1.00</span></div>
     <input type="range" id="r_cx" min="0.25" max="3" step="0.05" value="1">
+    <div class="row"><span class="k">Echo trails</span><span class="v" id="v_echo">0.00</span></div>
+    <input type="range" id="r_echo" min="0" max="1" step="0.01" value="0">
     <div class="row"><span class="k">Trail length</span><span class="v" id="v_et">1.00×</span></div>
     <input type="range" id="r_et" min="0.25" max="3" step="0.05" value="1">
+    <div class="note">How much of the previous frames survives, and how far back they
+      reach. Both were on Perform, a tab away from the shape they act on.</div>
   </div>
 
   <h2>Over the video</h2>
   <div class="card">
+    <div class="row"><span class="k">Master opacity</span>
+      <span class="v" id="v_op">1.00</span></div>
+    <input type="range" id="r_op" class="big" min="0" max="1" step="0.01" value="1">
+    <div class="note">Takes the whole overlay down to nothing without changing anything
+      else, so the look you built is still there when you bring it back.</div>
     <div class="row"><span class="k">Blend</span><span class="v" id="v_bl">—</span></div>
     <div class="g3" id="blend"></div>
     <div class="row"><span class="k">React to camera</span><span class="v" id="v_vr">0.00</span></div>
@@ -947,6 +972,7 @@ function slider(id, valId, fmt, onChange, ms){
 }
 
 let MOODS = [], PATTERNS = [], BLENDS = [], SCENES = [], curMood = null, curScene = null;
+let THEMES = [];
 let VIS = {patternA:0, patternB:1, xfade:0, kaleido:0, complexity:1};
 const pushVis = patch => { Object.assign(VIS, patch); return post('/api/visuals', patch); };
 
@@ -1007,7 +1033,10 @@ $('p_del').onclick = async () => {
   catch(e){ $('err').textContent = e.message; }
 };
 
-slider('r_int','v_int', v => v.toFixed(2), v => pushVis({intensity:v}));
+/* Master opacity lives in Look only. It was briefly mirrored on Perform as well, which
+   meant two sliders for one value and sync code to stop the untouched one lying about
+   what was on screen - cheaper to have one control than to keep two honest. */
+slider('r_op','v_op', v => v.toFixed(2), v => pushVis({intensity:v}));
 slider('r_echo','v_echo', v => v.toFixed(2), v => post('/api/echo', {echo:v}), 140);
 
 function renderDecks(){
@@ -1023,6 +1052,24 @@ function renderDecks(){
     });
   }
 }
+function renderThemes(){
+  const box = $('themes'); if (!box) return;
+  box.innerHTML = '';
+  for (const t of THEMES){
+    const b = document.createElement('button');
+    if (t.name === VIS.theme) b.className = 'sel';
+    b.innerHTML = '<span class="sw" style="background:' + esc(t.colLine) + '"></span>'
+                + '<span class="sw" style="background:' + esc(t.colGlow) + '"></span>'
+                + '<span class="sw g" style="background:' + esc(t.colBg) + '"></span>'
+                + esc(t.name);
+    b.onclick = () => pushVis({theme: t.name})
+      .then(j => { Object.assign(VIS, j); renderThemes(); })
+      .catch(e => $('err').textContent = e.message);
+    box.append(b);
+  }
+  const n = $('v_theme'); if (n) n.textContent = VIS.theme || '\u2014';
+}
+
 function renderBlend(cur){
   const box = $('blend'); box.innerHTML='';
   for (const m of BLENDS){
@@ -1724,7 +1771,8 @@ async function goLive(force){
   // The server is the real home now, so it learns the value on the way past. localStorage
   // stays as a same-browser fallback for filling the field instantly on the next load,
   // before the first poll has come back.
-  post('/api/stream', {action:'set_meta', title: title, desc: $('s_desc').value.trim()});
+  post('/api/stream', {action:'set_meta', title: title, desc: $('s_desc').value.trim(),
+                       category: $('s_cat').value.trim(), tags: $('s_tags').value.trim()});
   try { localStorage.setItem('riastrad.title', title);
         localStorage.setItem('riastrad.desc', $('s_desc').value.trim());
         localStorage.setItem('riastrad.cat',  $('s_cat').value.trim());
@@ -1978,6 +2026,9 @@ slider('r_kal','v_kal', v => v < 2 ? 'off' : v + ' fold', v => pushVis({kaleido:
 slider('r_cx','v_cx', v => v.toFixed(2), v => pushVis({complexity:v}));
 slider('r_et','v_et', v => v.toFixed(2) + '×', v => post('/api/echo', {echoTime:v}), 140);
 slider('r_vr','v_vr', v => v.toFixed(2), v => pushVis({vReact:v}));
+
+/* Colour is a theme now, so there is no per-channel wiring here any more -
+   renderThemes() owns it, the same way renderBlend() owns the blend row. */
 
 
 /* ---- phone marks ---------------------------------------------------------------------
@@ -2275,19 +2326,23 @@ async function refresh(){
   const a = s.audio || {};
   MOODS = s.moods || []; PATTERNS = s.patterns || [];
   BLENDS = s.blendModes || []; SCENES = s.scenes || [];
+  THEMES = s.themes || [];
   curMood = a.mood; curScene = s.currentScene;
   VIS = {patternA:a.patternA|0, patternB:a.patternB|0,
          xfade:a.xfade||0, kaleido:a.kaleido||0,
          complexity:a.complexity ?? 1};
   $('b_scene').textContent = curScene;
-  renderMoods(); renderScenes(); renderDecks(); renderBlend(s.blend);
+  renderMoods(); renderScenes(); renderDecks(); renderBlend(s.blend); renderThemes();
   CAMFX = s.cameraFilters || {};
   renderFxPicker();
   renderFilters(CAMFX[FXCAM] || s.filters || []);
   renderHealth(s.health); renderPresets(s.presets || []);
   const set = (id, valId, v, fmt) => { $(id).value = v; $(valId).textContent = fmt(v); };
-  set('r_int','v_int', a.intensity ?? 1, v => Number(v).toFixed(2));
+  set('r_op','v_op', a.intensity ?? 1, v => Number(v).toFixed(2));
   set('r_echo','v_echo', a.echo ?? 0, v => Number(v).toFixed(2));
+  /* A mood or a preset changes the theme server-side, so the swatch selection has
+     to follow or it would show the last thing tapped rather than what is on air. */
+  renderThemes();
   set('r_x','v_x', VIS.xfade, v => Number(v).toFixed(2));
   set('r_kal','v_kal', VIS.kaleido, v => v < 2 ? 'off' : v + ' fold');
   set('r_cx','v_cx', VIS.complexity, v => Number(v).toFixed(2));
@@ -3064,6 +3119,14 @@ function GoLive() {
    $('s_title').value - the markup moved, the read path did not. */
 const M = () => window.rigMeta;
 
+/* Starting values for the two Twitch-only fields, used only when nothing is stored.
+   DEFAULT_CAT is picked because Twitch has already accepted it from this channel - the
+   exact lowercase string is what /helix/games matched, so it is not a guess. The tags are
+   plain descriptions of what the stream is, each one inside Twitch's rules (<=10 tags,
+   <=25 characters, letters and numbers only). */
+const DEFAULT_CAT  = 'music';
+const DEFAULT_TAGS = 'music,piano,guitar,improv,livemusic,instrumental,latenight';
+
 function Marks({ names, on }) {
   const { PLAT_MARK, PLAT_SVG } = M();
   return html`<span class="pchips">${names.map(nm => {
@@ -3132,6 +3195,18 @@ function MetaFields() {
   const [tLen, setTLen]     = useState(0);
   const [tagMsg, setTagMsg] = useState({ text: 'Twitch only', bad: false });
   const [priv, setPriv]     = usePrivacy();
+  /* The category is the one CONTROLLED field here, and safely so: it is a select, so
+     there are no keystrokes to eat - the hazard that keeps every other field
+     uncontrolled does not exist for it. */
+  const [catVal, setCatVal] = useState('');
+  const catSeeded = useRef(false);
+
+  /* Declared ABOVE the effects on purpose: the category seeding effect reads cnames, and
+     a `const` further down the function body is in its temporal dead zone when the effect
+     runs - a ReferenceError that took the whole panel out. Caught by the smoketest's
+     browser console stage, which is exactly what that stage is for. */
+  const cats   = (s && s.twitch_categories) || null;
+  const cnames = (cats && cats.names) || [];
 
   const recount = useCallback(() => {
     setTLen(title.current ? title.current.value.length : 0);
@@ -3145,7 +3220,6 @@ function MetaFields() {
     const m = M();
     if (title.current) title.current.value = m.seeded.title || '';
     if (desc.current)  desc.current.value  = m.seeded.desc  || '';
-    if (cat.current)   cat.current.value   = m.seedCat();
     if (tags.current)  tags.current.value  = m.seedTags();
     recount();
   }, []);
@@ -3160,16 +3234,37 @@ function MetaFields() {
      asks for twice. */
   useEffect(() => {
     const m = M();
-    for (const [ref, key] of [[title, 'title'], [desc, 'desc']]) {
+    for (const [ref, key] of [[title, 'title'], [desc, 'desc'], [tags, 'tags']]) {
       const el = ref.current;
       if (!el || document.activeElement === el) continue;
-      if (el.value !== m.seeded[key]) continue;
+      if (el.value !== (m.seeded[key] || '')) continue;
       if (!meta[key] || meta[key] === el.value) continue;
       el.value = meta[key];
       m.seeded[key] = meta[key];
     }
     recount();
-  }, [meta.title, meta.desc]);
+  }, [meta.title, meta.desc, meta.tags]);
+
+  /* Seed the two Twitch fields once, from the server, falling back to a starting set so
+     neither goes out empty. Once only: after that they are his, and a later poll must not
+     reach in and change a choice he has made. */
+  useEffect(() => {
+    if (catSeeded.current) return;
+    if (meta.category) { catSeeded.current = true; setCatVal(meta.category); return; }
+    // Nothing stored yet: default to a category Twitch has already accepted from this
+    // channel, if the cache names one, rather than inventing a plausible-looking string.
+    if (cnames.length) {
+      catSeeded.current = true;
+      setCatVal(cnames.includes(DEFAULT_CAT) ? DEFAULT_CAT : cnames[0]);
+    }
+  }, [meta.category, cnames.length]);
+
+  useEffect(() => {
+    const el = tags.current;
+    if (!el || el.value || meta.tags || M().seedTags()) return;
+    el.value = DEFAULT_TAGS;
+    recount();
+  }, [meta.tags, recount]);
 
   const over   = M().TITLE_LIMITS.filter(([lim]) => tLen > lim)
                                  .map(([lim, who]) => who + ' ' + lim);
@@ -3178,9 +3273,13 @@ function MetaFields() {
   const ytIn   = !!plats.find(p => p.name === 'youtube' && p.signed_in);
   const off    = (f) => !F[f].some(n => on.has(n));
 
-  const cats   = (s && s.twitch_categories) || null;
-  const cnames = (cats && cats.names) || [];
-  const catMsg = cats ? (cats.why || (cnames.length ? M().catNote(cats) : '')) : '';
+  /* The tip is gone: "any other name still works" stopped being true the moment this
+     became a select, and a note that contradicts the control is worse than no note. What
+     remains is the one fact a fixed list has to disclose - how old it is. */
+  const catMsg = cats
+    ? (cats.why || (cnames.length ? (cnames.length + ' options \u00b7 list taken '
+        + (cats.top_at || '').slice(0, 10)) : 'no category list cached yet'))
+    : '';
 
   return html`
     <${FieldRow} label="Title" names=${F.title} on=${on}>
@@ -3210,18 +3309,26 @@ function MetaFields() {
            placeholder="optional" ref=${desc} disabled=${off('desc')} />
 
     <${FieldRow} label="Category" names=${F.cat} on=${on} />
-    <input type="text" id="s_cat" maxlength="60" autocomplete="off" list="catlist"
-           placeholder="e.g. Music \u2014 must match a Twitch category exactly"
-           ref=${cat} disabled=${off('cat')} />
-    ${/* ⚠️ A DATALIST, NOT A SELECT, AND THAT IS THE POINT. Twitch rejects any category
-          name that is not an exact match and fails the whole PATCH when it does, taking
-          the title down with it. These names come from connect.py's own cache, where an
-          entry is written only after /helix/games returned an id for that exact string,
-          so each was confirmed by Twitch at the moment it was used. A cache can still go
-          stale, so this offers without constraining: anything typed goes through. */ null}
-    <datalist id="catlist">
-      ${cnames.map(nm => html`<option key=${nm} value=${nm} />`)}
-    </datalist>
+    ${/* \u26a0\ufe0f A SELECT, SO IT CANNOT BE WRONG. Twitch rejects any category name that
+          is not an exact match and fails the whole PATCH when it does - taking the title
+          down with it - so a free-text box could lose the broadcast its name over a
+          capital letter. Every option here was confirmed by Twitch at the moment it was
+          used: connect.py writes an entry to its cache only after /helix/games returned
+          an id for that exact string.
+
+          The cost, deliberately accepted: a category Twitch has added since the cache was
+          taken cannot be picked at all, where typing it used to work. Refresh the list
+          with `python connect.py categories` when that bites. The date below is there so
+          the list never silently claims to be current. */ null}
+    <select id="s_cat" disabled=${off('cat')}
+            value=${catVal} onChange=${e => setCatVal(e.target.value)}>
+      <option value="">\u2014 no category \u2014</option>
+      ${/* An existing value that is not in the cache stays selectable rather than being
+            silently dropped the first time this renders. */ null}
+      ${catVal && !cnames.includes(catVal)
+        ? html`<option value=${catVal}>${catVal} (not in the cached list)</option>` : null}
+      ${cnames.map(nm => html`<option key=${nm} value=${nm}>${nm}</option>`)}
+    </select>
     <div class="sub">${catMsg}</div>
 
     <${FieldRow} label="Tags" names=${F.tags} on=${on}>
@@ -3231,10 +3338,11 @@ function MetaFields() {
     <input type="text" id="s_tags" maxlength="300" autocomplete="off" list="taglist"
            placeholder="comma separated, no spaces inside a tag"
            ref=${tags} disabled=${off('tags')} onInput=${recount} />
-    ${/* His own previous entries, and no claim that any of them is still valid at Twitch
-          - that is what the validator above is for. */ null}
+    ${/* Previous entries plus one starting set, and no claim that any of them is still
+          valid at Twitch - that is what the validator above is for. */ null}
     <datalist id="taglist">
-      ${M().loadTagsets().map(t => html`<option key=${t} value=${t} />`)}
+      ${[...new Set([...M().loadTagsets(), DEFAULT_TAGS])]
+          .map(t => html`<option key=${t} value=${t} />`)}
     </datalist>
 
     <${FieldRow} label="Privacy" names=${F.priv} on=${on}>
