@@ -745,9 +745,23 @@ def linkedin_spec_problems():
     a = num("ABitrate", "Track1Bitrate")
     if a is not None and a > LINKEDIN_MAX["audio_kbps"]:
         bad.append("audio %d kbps over LinkedIn's %d" % (a, LINKEDIN_MAX["audio_kbps"]))
-    f = num("FPSCommon", "FPSInt")
+    # ⚠️ FPSType DECIDES WHICH FIELD IS REAL, and the other two are stale leftovers.
+    # 0 = FPSCommon, 1 = FPSInt, 2 = FPSNum/FPSDen. This profile has FPSType=2 with
+    # FPSNum=30 and a FPSCommon=60 left over from an older setting - so reading
+    # FPSCommon, as the first version of this did, reported 60 fps on a rig running at
+    # 30 and called LinkedIn's ceiling broken when it was being met. obs-websocket said
+    # 30 all along; the ini was only confusing if you read one field out of three.
+    ftype = num("FPSType")
+    if ftype == 1:
+        f = num("FPSInt")
+    elif ftype == 2:
+        den = num("FPSDen") or 1
+        n = num("FPSNum")
+        f = (n / den) if n else None
+    else:
+        f = num("FPSCommon")
     if f is not None and f > LINKEDIN_MAX["fps"]:
-        bad.append("%d fps over LinkedIn's %d" % (f, LINKEDIN_MAX["fps"]))
+        bad.append("%g fps over LinkedIn's %d" % (f, LINKEDIN_MAX["fps"]))
     return bad
 
 
